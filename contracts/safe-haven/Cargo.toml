@@ -1,11 +1,11 @@
 [package]
-name = "time-lock-vault"
+name = "safe-haven"
 version = "0.1.0"
 edition = "2021"
 authors = ["Your Name <you@example.com>"]
-description = "A decentralized time-lock vault on Stellar Soroban"
+description = "SAFE-HAVEN — Decentralized vault on Stellar Soroban"
 license = "MIT"
-repository = "https://github.com/your-org/time-lock-vault"
+repository = "https://github.com/kenedybok3/SAFE-HAVEN"
 
 [lib]
 crate-type = ["cdylib", "rlib"]

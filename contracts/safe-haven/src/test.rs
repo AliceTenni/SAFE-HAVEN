@@ -10,14 +10,14 @@ use soroban_sdk::{
 };
 
 use crate::{
-    contract::{TimeLockVault, TimeLockVaultClient},
+    contract::{SafeHaven, SafeHavenClient},
     errors::VaultError,
     types::{VaultEntry, VaultKey, MAX_DEPOSIT_AMOUNT, MAX_LOCK_DURATION_SECS},
 };
 
 fn setup() -> (
     Env,
-    TimeLockVaultClient<'static>,
+    SafeHavenClient<'static>,
     Address,
     Address,
     Address,
@@ -26,8 +26,8 @@ fn setup() -> (
     let env = Env::default();
     env.mock_all_auths();
 
-    let vault_id = env.register(TimeLockVault, ());
-    let vault = TimeLockVaultClient::new(&env, &vault_id);
+    let vault_id = env.register(SafeHaven, ());
+    let vault = SafeHavenClient::new(&env, &vault_id);
 
     let admin: Address = Address::generate(&env);
     let alice: Address = Address::generate(&env);
@@ -84,8 +84,8 @@ fn test_is_initialized() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let vault_id = env.register(TimeLockVault, ());
-    let vault = TimeLockVaultClient::new(&env, &vault_id);
+    let vault_id = env.register(SafeHaven, ());
+    let vault = SafeHavenClient::new(&env, &vault_id);
     let admin: Address = Address::generate(&env);
     let fee: Address = Address::generate(&env);
 
@@ -1153,12 +1153,12 @@ fn test_redeposit_after_withdraw_adds_back_to_list() {
 fn setup_with_limits(
     max_deposit: Option<i128>,
     max_lock_secs: Option<u64>,
-) -> (Env, TimeLockVaultClient<'static>, Address, Address, Address) {
+) -> (Env, SafeHavenClient<'static>, Address, Address, Address) {
     let env = Env::default();
     env.mock_all_auths();
 
-    let vault_id = env.register(TimeLockVault, ());
-    let vault = TimeLockVaultClient::new(&env, &vault_id);
+    let vault_id = env.register(SafeHaven, ());
+    let vault = SafeHavenClient::new(&env, &vault_id);
 
     let admin: Address = Address::generate(&env);
     let alice: Address = Address::generate(&env);
@@ -1224,8 +1224,8 @@ fn test_default_fallback_when_no_custom_limits() {
 fn test_initialize_invalid_max_deposit_fails() {
     let env = Env::default();
     env.mock_all_auths();
-    let vault_id = env.register(TimeLockVault, ());
-    let vault = TimeLockVaultClient::new(&env, &vault_id);
+    let vault_id = env.register(SafeHaven, ());
+    let vault = SafeHavenClient::new(&env, &vault_id);
     let admin: Address = Address::generate(&env);
     let fee: Address = Address::generate(&env);
     let result = vault.try_initialize(&admin, &fee, &Some(0_i128), &None);
@@ -1236,8 +1236,8 @@ fn test_initialize_invalid_max_deposit_fails() {
 fn test_initialize_invalid_max_lock_secs_fails() {
     let env = Env::default();
     env.mock_all_auths();
-    let vault_id = env.register(TimeLockVault, ());
-    let vault = TimeLockVaultClient::new(&env, &vault_id);
+    let vault_id = env.register(SafeHaven, ());
+    let vault = SafeHavenClient::new(&env, &vault_id);
     let admin: Address = Address::generate(&env);
     let fee: Address = Address::generate(&env);
     let result = vault.try_initialize(&admin, &fee, &None, &Some(0_u64));

@@ -206,14 +206,14 @@ jobs:
       - name: Optimize WASM
         run: |
           stellar contract optimize \
-            --wasm target/wasm32-unknown-unknown/release/time_lock_vault.wasm \
-            --wasm-out target/time_lock_vault.optimized.wasm
+            --wasm target/wasm32-unknown-unknown/release/safe_haven.wasm \
+            --wasm-out target/safe_haven.optimized.wasm
 
       - name: Check WASM size regression
         env:
           MAX_WASM_BYTES: 51200  # 50 KB threshold
         run: |
-          ACTUAL=$(wc -c < target/time_lock_vault.optimized.wasm)
+          ACTUAL=$(wc -c < target/safe_haven.optimized.wasm)
           echo "Optimized WASM size: ${ACTUAL} bytes (threshold: ${MAX_WASM_BYTES} bytes)"
           if [ "$ACTUAL" -gt "$MAX_WASM_BYTES" ]; then
             echo "❌ ERROR: WASM size regression detected!"
@@ -229,10 +229,10 @@ jobs:
           MAX_WASM_BYTES: 65536
         run: |
           echo "=== Raw WASM ==="
-          ls -lh target/wasm32-unknown-unknown/release/time_lock_vault.wasm
+          ls -lh target/wasm32-unknown-unknown/release/safe_haven.wasm
           echo "=== Optimized WASM ==="
-          ls -lh target/time_lock_vault.optimized.wasm
-          ACTUAL=$(wc -c < target/time_lock_vault.optimized.wasm)
+          ls -lh target/safe_haven.optimized.wasm
+          ACTUAL=$(wc -c < target/safe_haven.optimized.wasm)
           echo "Optimized WASM size: ${ACTUAL} bytes (limit: ${MAX_WASM_BYTES})"
           if [ "$ACTUAL" -gt "$MAX_WASM_BYTES" ]; then
             echo "ERROR: WASM too large: ${ACTUAL} bytes exceeds limit of ${MAX_WASM_BYTES} bytes"
@@ -242,8 +242,8 @@ jobs:
       - name: Upload optimized WASM artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: time-lock-vault-wasm
-          path: target/time_lock_vault.optimized.wasm
+          name: safe-haven-wasm
+          path: target/safe_haven.optimized.wasm
           retention-days: 30
 
   # ----------------------------------------------------------------

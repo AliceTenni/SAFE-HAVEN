@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Usage: bash scripts/smoke_test_local.sh
 #
-# Smoke-tests the Time-Lock Vault contract against a local Soroban
+# Smoke-tests the SAFE-HAVEN contract against a local Soroban
 # standalone node (stellar network start local).
 #
 # Prerequisites:
@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-WASM="target/wasm32-unknown-unknown/release/time_lock_vault.wasm"
+WASM="target/wasm32-unknown-unknown/release/safe_haven.wasm"
 NETWORK="local"
 IDENTITY="smoke-test-user"
 

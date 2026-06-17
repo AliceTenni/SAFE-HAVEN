@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # =============================================================
 #  deploy_testnet.sh
-#  Deploys and initializes the Time-Lock Vault on Stellar Testnet.
+#  Deploys and initializes SAFE-HAVEN on Stellar Testnet.
 #
 #  Prerequisites:
 #    - soroban-cli installed  (cargo install --locked soroban-cli)
@@ -18,7 +18,7 @@ set -euo pipefail
 NETWORK="testnet"
 RPC_URL="https://soroban-testnet.stellar.org"
 NETWORK_PASSPHRASE="Test SDF Network ; September 2015"
-WASM_PATH="target/time_lock_vault.optimized.wasm"
+WASM_PATH="target/safe_haven.optimized.wasm"
 DEPLOY_LOG="deploy_testnet.log"
 
 # ---- Validate env --------------------------------------------
@@ -34,7 +34,7 @@ cargo build --target wasm32-unknown-unknown --release
 
 echo ">>> Optimizing WASM..."
 soroban contract optimize \
-  --wasm target/wasm32-unknown-unknown/release/time_lock_vault.wasm \
+  --wasm target/wasm32-unknown-unknown/release/safe_haven.wasm \
   --wasm-out "$WASM_PATH"
 
 echo ">>> Optimized WASM size: $(du -sh "$WASM_PATH" | cut -f1)"

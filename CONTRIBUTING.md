@@ -1,6 +1,6 @@
 ﻿# Contributing
 
-Thank you for your interest in contributing to the Decentralized Time-Lock Vault!
+Thank you for your interest in contributing to SAFE-HAVEN!
 
 ## Branch Naming
 
@@ -83,4 +83,4 @@ This convention applies to any repeated host accessor (`env.ledger().sequence()`
 
 ## Test Snapshots
 
-Running `cargo test` may generate a `contracts/time-lock-vault/test_snapshots/` directory containing XDR snapshots of contract state produced by the Soroban test environment. These are transient build artefacts, not committed regression fixtures, and are listed in `.gitignore`. Do not commit them.
+Running `cargo test` may generate a `contracts/safe-haven/test_snapshots/` directory containing XDR snapshots of contract state produced by the Soroban test environment. These are transient build artefacts, not committed regression fixtures, and are listed in `.gitignore`. Do not commit them.

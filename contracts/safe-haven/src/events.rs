@@ -68,3 +68,24 @@ pub fn deposit_cancelled(
     );
     env.events().publish(topics, (amount, penalty));
 }
+
+pub fn paused(env: &Env, admin: &Address) {
+    let topics = (Symbol::new(env, "paused"), admin.clone());
+    env.events().publish(topics, ());
+}
+
+pub fn unpaused(env: &Env, admin: &Address) {
+    let topics = (Symbol::new(env, "unpaused"), admin.clone());
+    env.events().publish(topics, ());
+}
+
+pub fn withdraw_to(
+    env: &Env,
+    depositor: &Address,
+    recipient: &Address,
+    token: &Address,
+    amount: i128,
+) {
+    let topics = (Symbol::new(env, "withdraw_to"), depositor.clone(), token.clone());
+    env.events().publish(topics, (recipient.clone(), amount));
+}

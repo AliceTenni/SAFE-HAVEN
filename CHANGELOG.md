@@ -104,5 +104,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `deny.toml` for license allowlist and dependency ban policy
 - 48+ unit tests covering all functions, error codes, and boundary conditions
 
-[Unreleased]: https://github.com/your-org/time-lock-vault/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/your-org/time-lock-vault/releases/tag/v0.1.0
+[Unreleased]: https://github.com/kenedybok3/SAFE-HAVEN/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/kenedybok3/SAFE-HAVEN/releases/tag/v0.1.0

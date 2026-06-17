@@ -1,5 +1,5 @@
 // ============================================================
-//  Time-Lock Vault — Soroban Smart Contract
+//  SAFE-HAVEN — Soroban Smart Contract
 //  Stellar Blockchain | Soroban SDK v22
 // ============================================================
 
@@ -9,14 +9,14 @@ use crate::{
     constants::{MAX_BATCH_SIZE, MAX_DEPOSIT_AMOUNT, MAX_LOCK_DURATION_SECS, MIN_LOCK_DURATION_SECS},
     errors::VaultError,
     events, storage,
-    types::{VaultEntry, LedgerVaultEntry, MAX_DEPOSIT_AMOUNT, MAX_LOCK_DURATION_SECS, MIN_LOCK_DURATION_SECS, MAX_BATCH_SIZE},
+    types::{VaultEntry, LedgerVaultEntry},
 };
 
 #[contract]
-pub struct TimeLockVault;
+pub struct SafeHaven;
 
 #[contractimpl]
-impl TimeLockVault {
+impl SafeHaven {
     // ----------------------------------------------------------------
     //  Initialization
     // ----------------------------------------------------------------

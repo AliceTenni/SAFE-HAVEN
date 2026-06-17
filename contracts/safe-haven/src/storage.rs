@@ -266,3 +266,15 @@ pub fn get_depositors_page(env: &Env, offset: u32, limit: u32) -> Vec<Address> {
     }
     page
 }
+
+// ----------------------------------------------------------------
+//  Admin authorization check helper
+// ----------------------------------------------------------------
+
+/// Returns `Ok(())` if `caller` matches the stored admin, else `Err(VaultError::Unauthorized)`.
+pub fn require_admin(env: &Env, caller: &Address) -> Result<(), crate::errors::VaultError> {
+    match get_admin(env) {
+        Some(ref stored) if stored == caller => Ok(()),
+        _ => Err(crate::errors::VaultError::Unauthorized),
+    }
+}

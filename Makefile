@@ -1,10 +1,10 @@
 # ============================================================
-#  Time-Lock Vault — Developer Makefile
+#  SAFE-HAVEN — Developer Makefile
 # ============================================================
 
 WASM_TARGET  := wasm32-unknown-unknown
-WASM_OUT     := target/wasm32-unknown-unknown/release/time_lock_vault.wasm
-OPTIMIZED    := target/time_lock_vault.optimized.wasm
+WASM_OUT     := target/wasm32-unknown-unknown/release/safe_haven.wasm
+OPTIMIZED    := target/safe_haven.optimized.wasm
 
 .PHONY: all build test fmt lint clean optimize deploy-testnet size check audit deny
 .PHONY: all build test watch fmt lint clean optimize deploy-testnet size check doc smoke-test-local
@@ -72,10 +72,10 @@ size: build
 ## Fail if optimized WASM exceeds MAX_WASM_BYTES (default 65536 = 64 KB)
 MAX_WASM_BYTES ?= 65536
 check-wasm-size: optimize
-	@ACTUAL=$$(wc -c < $(OPTIMIZED)); \
-	echo "Optimized WASM size: $${ACTUAL} bytes (limit: $(MAX_WASM_BYTES))"; \
-	if [ "$$ACTUAL" -gt "$(MAX_WASM_BYTES)" ]; then \
-		echo "ERROR: WASM too large: $${ACTUAL} bytes exceeds limit of $(MAX_WASM_BYTES) bytes"; \
+	@ACTUAL=$(wc -c < $(OPTIMIZED)); \
+	echo "Optimized WASM size: ${ACTUAL} bytes (limit: $(MAX_WASM_BYTES))"; \
+	if [ "$ACTUAL" -gt "$(MAX_WASM_BYTES)" ]; then \
+		echo "ERROR: WASM too large: ${ACTUAL} bytes exceeds limit of $(MAX_WASM_BYTES) bytes"; \
 		exit 1; \
 	fi
 

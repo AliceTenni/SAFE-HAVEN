@@ -1,6 +1,6 @@
 [workspace]
 members = [
-    "contracts/time-lock-vault",
+    "contracts/safe-haven",
 ]
 resolver = "2"
 
@@ -22,6 +22,6 @@ inherits = "release"
 debug-assertions = true
 
 [workspace.metadata]
-homepage = "https://github.com/kenedybok3/Decentralized-Time-Lock-Vault"
-repository = "https://github.com/kenedybok3/Decentralized-Time-Lock-Vault"
+homepage = "https://github.com/kenedybok3/SAFE-HAVEN"
+repository = "https://github.com/kenedybok3/SAFE-HAVEN"
 license = "MIT"
