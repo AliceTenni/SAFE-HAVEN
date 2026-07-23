@@ -1445,3 +1445,123 @@ fn test_full_lifecycle_deposit_withdraw_redeposit() {
     assert!(vault.get_vault(&alice, &new_id).is_some());
     assert_eq!(vault.get_vault(&alice, &new_id).unwrap().amount, 500);
 }
+
+// ================================================================
+//  deposit_by_ledger / withdraw_to / cancel_deposit — ledger path
+//  (fixes #10 and #11)
+// ================================================================
+
+fn advance_ledger(env: &Env, ledgers: u32) {
+    env.ledger().set(LedgerInfo {
+        timestamp: env.ledger().timestamp(),
+        protocol_version: env.ledger().protocol_version(),
+        sequence_number: env.ledger().sequence() + ledgers,
+        network_id: Default::default(),
+        base_reserve: 10,
+        min_temp_entry_ttl: 16,
+        min_persistent_entry_ttl: 4096,
+        max_entry_ttl: 33_000_000,
+    });
+}
+
+/// #10 — withdraw_to must handle ledger-based deposits
+#[test]
+fn test_withdraw_to_ledger_deposit_succeeds() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    let bob: Address = Address::generate(&env);
+    let token_client = TokenClient::new(&env, &token);
+
+    let unlock_ledger = env.ledger().sequence() + 10;
+    let id = vault.deposit_by_ledger(&alice, &token, &1_000, &unlock_ledger, &0);
+
+    // Advance past the unlock ledger
+    advance_ledger(&env, 10);
+
+    vault.withdraw_to(&alice, &id, &bob);
+
+    // Funds must arrive at the recipient, not the depositor
+    assert_eq!(token_client.balance(&bob), 1_000);
+    assert_eq!(token_client.balance(&alice), 9_000);
+}
+
+/// #10 — withdraw_to on a locked ledger-based deposit must fail
+#[test]
+fn test_withdraw_to_ledger_deposit_still_locked_fails() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    let bob: Address = Address::generate(&env);
+
+    let unlock_ledger = env.ledger().sequence() + 100;
+    let id = vault.deposit_by_ledger(&alice, &token, &1_000, &unlock_ledger, &0);
+
+    assert_eq!(
+        vault.try_withdraw_to(&alice, &id, &bob),
+        Err(Ok(VaultError::FundsStillLocked))
+    );
+}
+
+/// #10 — withdraw_to with no matching deposit (neither kind) must return NoDepositFound
+#[test]
+fn test_withdraw_to_ledger_deposit_not_found_fails() {
+    let (env, vault, _token, _admin, alice, _fee) = setup();
+    let bob: Address = Address::generate(&env);
+
+    assert_eq!(
+        vault.try_withdraw_to(&alice, &0, &bob),
+        Err(Ok(VaultError::NoDepositFound))
+    );
+}
+
+/// #11 — cancel_deposit must work for ledger-based deposits (zero penalty)
+#[test]
+fn test_cancel_ledger_deposit_zero_penalty_returns_full_amount() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    let token_client = TokenClient::new(&env, &token);
+
+    let unlock_ledger = env.ledger().sequence() + 100;
+    let id = vault.deposit_by_ledger(&alice, &token, &1_000, &unlock_ledger, &0);
+
+    vault.cancel_deposit(&alice, &id);
+
+    assert_eq!(token_client.balance(&alice), 10_000);
+}
+
+/// #11 — cancel_deposit with penalty on a ledger-based deposit splits correctly
+#[test]
+fn test_cancel_ledger_deposit_with_penalty_splits_correctly() {
+    let (env, vault, token, _admin, alice, fee) = setup();
+    let token_client = TokenClient::new(&env, &token);
+
+    let unlock_ledger = env.ledger().sequence() + 100;
+    let id = vault.deposit_by_ledger(&alice, &token, &1_000, &unlock_ledger, &1_000); // 10%
+
+    vault.cancel_deposit(&alice, &id);
+
+    assert_eq!(token_client.balance(&alice), 9_900);
+    assert_eq!(token_client.balance(&fee), 100);
+}
+
+/// #11 — cancel_deposit after the unlock ledger has passed must fail
+#[test]
+fn test_cancel_ledger_deposit_after_unlock_fails() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+
+    let unlock_ledger = env.ledger().sequence() + 10;
+    let id = vault.deposit_by_ledger(&alice, &token, &1_000, &unlock_ledger, &500);
+
+    advance_ledger(&env, 10);
+
+    assert_eq!(
+        vault.try_cancel_deposit(&alice, &id),
+        Err(Ok(VaultError::FundsStillLocked))
+    );
+}
+
+/// #11 — cancel_deposit on a non-existent deposit must return NoDepositFound
+#[test]
+fn test_cancel_ledger_deposit_not_found_fails() {
+    let (_env, vault, _token, _admin, alice, _fee) = setup();
+    assert_eq!(
+        vault.try_cancel_deposit(&alice, &99),
+        Err(Ok(VaultError::NoDepositFound))
+    );
+}
