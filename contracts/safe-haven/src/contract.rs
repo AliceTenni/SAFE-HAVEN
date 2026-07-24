@@ -86,6 +86,10 @@ impl SafeHaven {
             return Err(VaultError::InvalidPenaltyBps);
         }
 
+        if penalty_bps > 0 && storage::get_fee_recipient(&env).is_none() {
+            return Err(VaultError::MissingFeeRecipient);
+        }
+
         let now = env.ledger().timestamp();
         if unlock_time <= now {
             return Err(VaultError::UnlockTimeNotInFuture);
@@ -146,6 +150,10 @@ impl SafeHaven {
 
         if penalty_bps > 10_000 {
             return Err(VaultError::InvalidPenaltyBps);
+        }
+
+        if penalty_bps > 0 && storage::get_fee_recipient(&env).is_none() {
+            return Err(VaultError::MissingFeeRecipient);
         }
 
         let now = env.ledger().timestamp();
@@ -213,6 +221,10 @@ impl SafeHaven {
             return Err(VaultError::InvalidPenaltyBps);
         }
 
+        if penalty_bps > 0 && storage::get_fee_recipient(&env).is_none() {
+            return Err(VaultError::MissingFeeRecipient);
+        }
+
         let current_ledger = env.ledger().sequence();
         if unlock_ledger <= current_ledger {
             return Err(VaultError::UnlockTimeNotInFuture);
@@ -233,7 +245,7 @@ impl SafeHaven {
 
         storage::set_deposit_by_ledger(&env, &depositor, deposit_id, &entry);
         storage::add_depositor(&env, &depositor);
-        events::deposit(&env, &depositor, &token, amount, unlock_ledger as u64);
+        events::deposit_by_ledger(&env, &depositor, &token, amount, unlock_ledger);
 
         Ok(deposit_id)
     }
@@ -249,7 +261,7 @@ impl SafeHaven {
         if let Some(entry) = storage::get_deposit(&env, &depositor, deposit_id) {
             let now = env.ledger().timestamp();
             if now >= entry.unlock_time {
-                return Err(VaultError::FundsStillLocked);
+                return Err(VaultError::VaultAlreadyUnlocked);
             }
 
             storage::remove_deposit(&env, &depositor, deposit_id);
@@ -265,7 +277,7 @@ impl SafeHaven {
 
             if penalty > 0 {
                 let fee_recipient =
-                    storage::get_fee_recipient(&env).unwrap_or_else(|| depositor.clone());
+                    storage::get_fee_recipient(&env).ok_or(VaultError::MissingFeeRecipient)?;
                 token_client.transfer(&contract, &fee_recipient, &penalty);
             }
             if refund > 0 {
@@ -280,7 +292,7 @@ impl SafeHaven {
         if let Some(entry) = storage::get_deposit_by_ledger_readonly(&env, &depositor, deposit_id) {
             let current_ledger = env.ledger().sequence();
             if current_ledger >= entry.unlock_ledger {
-                return Err(VaultError::FundsStillLocked);
+                return Err(VaultError::VaultAlreadyUnlocked);
             }
 
             storage::remove_deposit_by_ledger(&env, &depositor, deposit_id);
@@ -296,7 +308,7 @@ impl SafeHaven {
 
             if penalty > 0 {
                 let fee_recipient =
-                    storage::get_fee_recipient(&env).unwrap_or_else(|| depositor.clone());
+                    storage::get_fee_recipient(&env).ok_or(VaultError::MissingFeeRecipient)?;
                 token_client.transfer(&contract, &fee_recipient, &penalty);
             }
             if refund > 0 {
