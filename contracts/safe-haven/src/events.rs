@@ -1,36 +1,30 @@
 use soroban_sdk::{symbol_short, Address, Env, Symbol};
 
-// Compile-time assertions to ensure event symbol literals are within Soroban's
-// symbol size limit (32 bytes). Soroban SDK v22 uses 32-byte symbols; these
-// checks will cause a compile failure if any literal exceeds that.
-const _: [(); 32 - "deposit_by_ledger".len()] = [(); 32 - "deposit_by_ledger".len()];
-const _: [(); 32 - "emrg_wdraw".len()] = [(); 32 - "emrg_wdraw".len()];
-const _: [(); 32 - "adm_xfr_init".len()] = [(); 32 - "adm_xfr_init".len()];
-const _: [(); 32 - "adm_xfr_cancel".len()] = [(); 32 - "adm_xfr_cancel".len()];
-const _: [(); 32 - "adm_xfr_done".len()] = [(); 32 - "adm_xfr_done".len()];
-const _: [(); 32 - "adm_renounce".len()] = [(); 32 - "adm_renounce".len()];
-const _: [(); 32 - "lock_extended".len()] = [(); 32 - "lock_extended".len()];
-const _: [(); 32 - "dep_cancel".len()] = [(); 32 - "dep_cancel".len()];
-const _: [(); 32 - "paused".len()] = [(); 32 - "paused".len()];
-const _: [(); 32 - "unpaused".len()] = [(); 32 - "unpaused".len()];
-const _: [(); 32 - "withdraw_to".len()] = [(); 32 - "withdraw_to".len()];
+pub fn contract_initialized(
+    env: &Env,
+    admin: &Address,
+    fee_recipient: &Address,
+    max_deposit: i128,
+    max_lock_secs: u64,
+) {
+    let topics = (Symbol::new(env, "initialized"),);
+    env.events()
+        .publish(topics, (admin.clone(), fee_recipient.clone(), max_deposit, max_lock_secs));
+}
 
-pub fn deposit(env: &Env, depositor: &Address, token: &Address, amount: i128, unlock_time: u64) {
+pub fn deposit(env: &Env, depositor: &Address, token: &Address, amount: i128, unlock_time: u64, deposit_id: u32) {
     let topics = (symbol_short!("deposit"), depositor.clone(), token.clone());
-    env.events().publish(topics, (amount, unlock_time));
+    env.events().publish(topics, (amount, unlock_time, deposit_id));
 }
 
-pub fn deposit_by_ledger(env: &Env, depositor: &Address, token: &Address, amount: i128, unlock_ledger: u32) {
-    // Emit a distinct event for ledger-based deposits so indexers and UIs
-    // can treat `unlock_ledger` as a u32 ledger sequence rather than a
-    // timestamp. Topic: `deposit_by_ledger(depositor, token)` Payload: `(amount, unlock_ledger:u32)`.
-    let topics = (Symbol::new(env, "deposit_by_ledger"), depositor.clone(), token.clone());
-    env.events().publish(topics, (amount, unlock_ledger));
+pub fn deposit_by_ledger(env: &Env, depositor: &Address, token: &Address, amount: i128, unlock_ledger: u32, deposit_id: u32) {
+    let topics = (Symbol::new(env, "dep_by_ledger"), depositor.clone(), token.clone());
+    env.events().publish(topics, (amount, unlock_ledger, deposit_id));
 }
 
-pub fn withdraw(env: &Env, depositor: &Address, token: &Address, amount: i128) {
+pub fn withdraw(env: &Env, depositor: &Address, token: &Address, amount: i128, deposit_id: u32) {
     let topics = (symbol_short!("withdraw"), depositor.clone(), token.clone());
-    env.events().publish(topics, amount);
+    env.events().publish(topics, (amount, deposit_id));
 }
 
 pub fn emergency_withdraw(
@@ -39,12 +33,13 @@ pub fn emergency_withdraw(
     depositor: &Address,
     token: &Address,
     amount: i128,
+    deposit_id: u32,
 ) {
     // admin is placed in the data payload rather than topics to avoid
     // leaking the admin address in the publicly-indexed event topic stream.
     let topics = (Symbol::new(env, "emrg_wdraw"), depositor.clone());
     env.events()
-        .publish(topics, (admin.clone(), token.clone(), amount));
+        .publish(topics, (admin.clone(), token.clone(), amount, deposit_id));
 }
 
 pub fn admin_transfer_initiated(env: &Env, current_admin: &Address, pending_admin: &Address) {
@@ -83,13 +78,14 @@ pub fn deposit_cancelled(
     token: &Address,
     amount: i128,
     penalty: i128,
+    deposit_id: u32,
 ) {
     let topics = (
         Symbol::new(env, "dep_cancel"),
         depositor.clone(),
         token.clone(),
     );
-    env.events().publish(topics, (amount, penalty));
+    env.events().publish(topics, (amount, penalty, deposit_id));
 }
 
 pub fn paused(env: &Env, admin: &Address) {

@@ -52,6 +52,10 @@ impl SafeHaven {
             storage::set_max_lock_secs(&env, v);
         }
 
+        let effective_max_deposit = storage::get_max_deposit(&env).unwrap_or(MAX_DEPOSIT_AMOUNT);
+        let effective_max_lock = storage::get_max_lock_secs(&env).unwrap_or(MAX_LOCK_DURATION_SECS);
+        events::contract_initialized(&env, &admin, &fee_recipient, effective_max_deposit, effective_max_lock);
+
         Ok(())
     }
 
@@ -119,7 +123,7 @@ impl SafeHaven {
 
         storage::set_deposit(&env, &depositor, deposit_id, &entry);
         storage::add_depositor(&env, &depositor);
-        events::deposit(&env, &depositor, &token, amount, unlock_time);
+        events::deposit(&env, &depositor, &token, amount, unlock_time, deposit_id);
 
         Ok(deposit_id)
     }
@@ -185,7 +189,7 @@ impl SafeHaven {
 
         storage::set_deposit(&env, &depositor, deposit_id, &entry);
         storage::add_depositor(&env, &depositor);
-        events::deposit(&env, &depositor, &token, amount, unlock_time);
+        events::deposit(&env, &depositor, &token, amount, unlock_time, deposit_id);
 
         Ok(deposit_id)
     }
@@ -245,7 +249,7 @@ impl SafeHaven {
 
         storage::set_deposit_by_ledger(&env, &depositor, deposit_id, &entry);
         storage::add_depositor(&env, &depositor);
-        events::deposit_by_ledger(&env, &depositor, &token, amount, unlock_ledger);
+        events::deposit_by_ledger(&env, &depositor, &token, amount, unlock_ledger, deposit_id);
 
         Ok(deposit_id)
     }
@@ -284,7 +288,7 @@ impl SafeHaven {
                 token_client.transfer(&contract, &depositor, &refund);
             }
 
-            events::deposit_cancelled(&env, &depositor, &entry.token, entry.amount, penalty);
+            events::deposit_cancelled(&env, &depositor, &entry.token, entry.amount, penalty, deposit_id);
             return Ok(());
         }
 
@@ -315,7 +319,7 @@ impl SafeHaven {
                 token_client.transfer(&contract, &depositor, &refund);
             }
 
-            events::deposit_cancelled(&env, &depositor, &entry.token, entry.amount, penalty);
+            events::deposit_cancelled(&env, &depositor, &entry.token, entry.amount, penalty, deposit_id);
             return Ok(());
         }
 
@@ -344,7 +348,7 @@ impl SafeHaven {
             let token_client = token::Client::new(&env, &entry.token);
             token_client.transfer(&env.current_contract_address(), &depositor, &entry.amount);
 
-            events::withdraw(&env, &depositor, &entry.token, entry.amount);
+            events::withdraw(&env, &depositor, &entry.token, entry.amount, deposit_id);
             return Ok(());
         }
 
@@ -363,7 +367,7 @@ impl SafeHaven {
             let token_client = token::Client::new(&env, &entry.token);
             token_client.transfer(&env.current_contract_address(), &depositor, &entry.amount);
 
-            events::withdraw(&env, &depositor, &entry.token, entry.amount);
+            events::withdraw(&env, &depositor, &entry.token, entry.amount, deposit_id);
             return Ok(());
         }
 
@@ -442,7 +446,7 @@ impl SafeHaven {
             let token_client = token::Client::new(&env, &entry.token);
             token_client.transfer(&env.current_contract_address(), &depositor, &entry.amount);
 
-            events::emergency_withdraw(&env, &admin, &depositor, &entry.token, entry.amount);
+            events::emergency_withdraw(&env, &admin, &depositor, &entry.token, entry.amount, deposit_id);
             return Ok(());
         }
 
@@ -456,7 +460,7 @@ impl SafeHaven {
             let token_client = token::Client::new(&env, &entry.token);
             token_client.transfer(&env.current_contract_address(), &depositor, &entry.amount);
 
-            events::emergency_withdraw(&env, &admin, &depositor, &entry.token, entry.amount);
+            events::emergency_withdraw(&env, &admin, &depositor, &entry.token, entry.amount, deposit_id);
             return Ok(());
         }
 
@@ -567,6 +571,12 @@ impl SafeHaven {
         storage::get_deposit_readonly(&env, &depositor, deposit_id)
     }
 
+    /// Returns the `LedgerVaultEntry` for a ledger-sequence-based deposit, or `None` if not found.
+    /// No auth required — public read-only query (closes #44).
+    pub fn get_ledger_vault(env: Env, depositor: Address, deposit_id: u32) -> Option<LedgerVaultEntry> {
+        storage::get_deposit_by_ledger_readonly(&env, &depositor, deposit_id)
+    }
+
     pub fn get_vault_batch(env: Env, depositors: Vec<Address>, deposit_id: u32) -> Vec<Option<VaultEntry>> {
         let limit = if depositors.len() > MAX_BATCH_SIZE { MAX_BATCH_SIZE } else { depositors.len() as u32 };
         let mut results = Vec::new(&env);
@@ -590,14 +600,28 @@ impl SafeHaven {
     }
 
     /// No auth required — this is a public read-only query (closes #81)
+    ///
+    /// For timestamp-based deposits: returns exact seconds remaining.
+    /// For ledger-based deposits: returns an estimate in seconds using
+    /// `LEDGER_SECONDS` (fixes #21). Returns 0 when unlocked or not found.
     pub fn time_remaining(env: Env, depositor: Address, deposit_id: u32) -> u64 {
-        match storage::get_deposit_readonly(&env, &depositor, deposit_id) {
-            None => 0,
-            Some(entry) => {
-                let now = env.ledger().timestamp();
-                entry.unlock_time.saturating_sub(now)
-            }
+        // Timestamp-based path
+        if let Some(entry) = storage::get_deposit_readonly(&env, &depositor, deposit_id) {
+            let now = env.ledger().timestamp();
+            return entry.unlock_time.saturating_sub(now);
         }
+
+        // Ledger-based path: convert remaining ledgers → estimated seconds (fixes #21)
+        if let Some(entry) = storage::get_deposit_by_ledger_readonly(&env, &depositor, deposit_id) {
+            let current = env.ledger().sequence();
+            if current >= entry.unlock_ledger {
+                return 0;
+            }
+            let remaining_ledgers = (entry.unlock_ledger - current) as u64;
+            return remaining_ledgers.saturating_mul(storage::LEDGER_SECONDS);
+        }
+
+        0
     }
 
     pub fn get_admin(env: Env) -> Option<Address> {
