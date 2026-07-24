@@ -1613,3 +1613,171 @@ fn test_emergency_withdraw_nonexistent_deposit_fails() {
         Err(Ok(VaultError::NoDepositFound))
     );
 }
+
+// ================================================================
+//  Regression tests for fixes #18, #19, #20, #21
+// ================================================================
+
+// ----------------------------------------------------------------
+//  Fix #18 — get_deposit_ids is O(1): active list, not counter scan
+// ----------------------------------------------------------------
+
+/// After depositing and withdrawing many times the returned IDs must only
+/// be the currently active ones, not all historical IDs up to the counter.
+#[test]
+fn test_get_deposit_ids_reflects_only_active_deposits() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    let asset_client = StellarAssetClient::new(&env, &token);
+    asset_client.mint(&alice, &100_000);
+
+    // Make 5 deposits then withdraw the first 3.
+    for _ in 0..5 {
+        let unlock = env.ledger().timestamp() + 3600;
+        vault.deposit(&alice, &token, &100, &unlock, &0);
+    }
+
+    advance_time(&env, 3601);
+    vault.withdraw(&alice, &0);
+    vault.withdraw(&alice, &1);
+    vault.withdraw(&alice, &2);
+
+    let ids = vault.get_deposit_ids(&alice);
+    // Only IDs 3 and 4 should remain.
+    assert_eq!(ids.len(), 2);
+    assert_eq!(ids.get(0).unwrap(), 3);
+    assert_eq!(ids.get(1).unwrap(), 4);
+}
+
+// ----------------------------------------------------------------
+//  Fix #19 — add_depositor uses O(1) flag; re-deposit still works
+// ----------------------------------------------------------------
+
+/// A depositor who withdraws all funds and then re-deposits must appear
+/// exactly once in the depositor list (not be absent, not appear twice).
+#[test]
+fn test_add_depositor_o1_flag_handles_redeposit_correctly() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+
+    // First deposit cycle.
+    let unlock = env.ledger().timestamp() + 3600;
+    vault.deposit(&alice, &token, &1_000, &unlock, &0);
+    assert_eq!(vault.get_depositor_count(), 1);
+
+    advance_time(&env, 3601);
+    vault.withdraw(&alice, &0);
+    assert_eq!(vault.get_depositor_count(), 0);
+
+    // Re-deposit: the flag must have been cleared on removal.
+    let unlock2 = env.ledger().timestamp() + 3600;
+    vault.deposit(&alice, &token, &500, &unlock2, &0);
+    assert_eq!(vault.get_depositor_count(), 1);
+
+    let page = vault.get_depositors(&0, &10);
+    assert_eq!(page.len(), 1);
+    assert_eq!(page.get(0).unwrap(), alice);
+}
+
+/// Multiple deposits by the same depositor must not add duplicate entries
+/// to the depositor list.
+#[test]
+fn test_add_depositor_no_duplicate_in_list() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    StellarAssetClient::new(&env, &token).mint(&alice, &10_000);
+
+    let unlock = env.ledger().timestamp() + 3600;
+    vault.deposit(&alice, &token, &1_000, &unlock, &0);
+    vault.deposit(&alice, &token, &1_000, &unlock, &0);
+    vault.deposit(&alice, &token, &1_000, &unlock, &0);
+
+    // Still only one entry for alice.
+    assert_eq!(vault.get_depositor_count(), 1);
+}
+
+// ----------------------------------------------------------------
+//  Fix #20 — get_deposit_ids includes ledger-based deposits
+// ----------------------------------------------------------------
+
+/// A depositor with both a timestamp-based and a ledger-based deposit must
+/// see both IDs returned by get_deposit_ids.
+#[test]
+fn test_get_deposit_ids_includes_ledger_deposits() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    StellarAssetClient::new(&env, &token).mint(&alice, &5_000);
+
+    // Timestamp-based deposit (id = 0)
+    let unlock_time = env.ledger().timestamp() + 3600;
+    vault.deposit(&alice, &token, &1_000, &unlock_time, &0);
+
+    // Ledger-based deposit (id = 1)
+    let unlock_ledger = env.ledger().sequence() + 100;
+    vault.deposit_by_ledger(&alice, &token, &1_000, &unlock_ledger, &0);
+
+    let ids = vault.get_deposit_ids(&alice);
+    assert_eq!(ids.len(), 2);
+    assert_eq!(ids.get(0).unwrap(), 0);
+    assert_eq!(ids.get(1).unwrap(), 1);
+}
+
+/// After withdrawing a ledger-based deposit its ID must be removed from the
+/// list returned by get_deposit_ids.
+#[test]
+fn test_get_deposit_ids_removes_ledger_deposit_on_withdraw() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    StellarAssetClient::new(&env, &token).mint(&alice, &5_000);
+
+    let unlock_ledger = env.ledger().sequence() + 10;
+    let id = vault.deposit_by_ledger(&alice, &token, &1_000, &unlock_ledger, &0);
+
+    assert_eq!(vault.get_deposit_ids(&alice).len(), 1);
+
+    advance_ledger(&env, 10);
+    vault.withdraw(&alice, &id);
+
+    assert_eq!(vault.get_deposit_ids(&alice).len(), 0);
+}
+
+// ----------------------------------------------------------------
+//  Fix #21 — time_remaining returns estimated seconds for ledger deposits
+// ----------------------------------------------------------------
+
+/// time_remaining must return a positive estimate (remaining_ledgers * 5)
+/// for a ledger-based deposit that is still locked.
+#[test]
+fn test_time_remaining_ledger_deposit_locked_returns_estimate() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+
+    let remaining_ledgers: u32 = 100;
+    let unlock_ledger = env.ledger().sequence() + remaining_ledgers;
+    let id = vault.deposit_by_ledger(&alice, &token, &1_000, &unlock_ledger, &0);
+
+    let expected_secs = remaining_ledgers as u64 * 5; // LEDGER_SECONDS = 5
+    assert_eq!(vault.time_remaining(&alice, &id), expected_secs);
+}
+
+/// time_remaining must return 0 for a ledger-based deposit whose unlock
+/// ledger has already been reached.
+#[test]
+fn test_time_remaining_ledger_deposit_unlocked_returns_zero() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+
+    let unlock_ledger = env.ledger().sequence() + 10;
+    let id = vault.deposit_by_ledger(&alice, &token, &1_000, &unlock_ledger, &0);
+
+    advance_ledger(&env, 10);
+
+    assert_eq!(vault.time_remaining(&alice, &id), 0);
+}
+
+/// time_remaining must still return the correct value for a timestamp-based
+/// deposit after the ledger-based fallback path is added.
+#[test]
+fn test_time_remaining_timestamp_deposit_unaffected() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+
+    let unlock_time = env.ledger().timestamp() + 3600;
+    let id = vault.deposit(&alice, &token, &1_000, &unlock_time, &0);
+
+    advance_time(&env, 1800);
+
+    assert_eq!(vault.time_remaining(&alice, &id), 1800);
+}

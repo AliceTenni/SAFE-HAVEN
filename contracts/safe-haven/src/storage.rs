@@ -23,17 +23,58 @@ pub fn next_deposit_id(env: &Env, depositor: &Address) -> u32 {
     id
 }
 
-pub fn get_deposit_ids(env: &Env, depositor: &Address) -> Vec<u32> {
-    let counter_key = VaultKey::DepositCounter(depositor.clone());
-    let count: u32 = env.storage().persistent().get(&counter_key).unwrap_or(0);
-    let mut ids = Vec::new(env);
-    for id in 0..count {
-        let key = VaultKey::Deposit(depositor.clone(), id);
-        if env.storage().persistent().has(&key) {
-            ids.push_back(id);
+// ----------------------------------------------------------------
+//  Active deposit ID list helpers (fixes #18 and #20)
+//
+//  A `Vec<u32>` stored under `ActiveDepositIds(depositor)` is the
+//  authoritative list of IDs that currently have either a timestamp-
+//  based or a ledger-based deposit entry. Maintained in O(1) on push
+//  and O(n-active) on removal (n-active is bounded by actual open
+//  deposits, not historical counter value).
+// ----------------------------------------------------------------
+
+fn get_active_ids(env: &Env, depositor: &Address) -> Vec<u32> {
+    let key = VaultKey::ActiveDepositIds(depositor.clone());
+    env.storage()
+        .persistent()
+        .get(&key)
+        .unwrap_or_else(|| Vec::new(env))
+}
+
+fn save_active_ids(env: &Env, depositor: &Address, ids: &Vec<u32>) {
+    let key = VaultKey::ActiveDepositIds(depositor.clone());
+    env.storage().persistent().set(&key, ids);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
+}
+
+/// Append `deposit_id` to the active ID list for `depositor`. Called
+/// immediately after a new deposit entry is written to storage.
+pub fn add_active_deposit_id(env: &Env, depositor: &Address, deposit_id: u32) {
+    let mut ids = get_active_ids(env, depositor);
+    ids.push_back(deposit_id);
+    save_active_ids(env, depositor, &ids);
+}
+
+/// Remove `deposit_id` from the active ID list for `depositor`. Called
+/// immediately after a deposit entry is removed from storage.
+pub fn remove_active_deposit_id(env: &Env, depositor: &Address, deposit_id: u32) {
+    let ids = get_active_ids(env, depositor);
+    let mut new_ids: Vec<u32> = Vec::new(env);
+    for id in ids.iter() {
+        if id != deposit_id {
+            new_ids.push_back(id);
         }
     }
-    ids
+    save_active_ids(env, depositor, &new_ids);
+}
+
+/// O(1) single storage read — returns all active deposit IDs for
+/// `depositor`, regardless of whether they are timestamp- or
+/// ledger-based (fixes #18 and #20).
+pub fn get_deposit_ids(env: &Env, depositor: &Address) -> Vec<u32> {
+    get_active_ids(env, depositor)
 }
 
 // ----------------------------------------------------------------
@@ -46,6 +87,7 @@ pub fn set_deposit(env: &Env, depositor: &Address, deposit_id: u32, entry: &Vaul
     env.storage()
         .persistent()
         .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
+    add_active_deposit_id(env, depositor, deposit_id);
 }
 
 pub fn get_deposit(env: &Env, depositor: &Address, deposit_id: u32) -> Option<VaultEntry> {
@@ -67,6 +109,7 @@ pub fn get_deposit_readonly(env: &Env, depositor: &Address, deposit_id: u32) -> 
 pub fn remove_deposit(env: &Env, depositor: &Address, deposit_id: u32) {
     let key = VaultKey::Deposit(depositor.clone(), deposit_id);
     env.storage().persistent().remove(&key);
+    remove_active_deposit_id(env, depositor, deposit_id);
 }
 
 // ----------------------------------------------------------------
@@ -79,6 +122,7 @@ pub fn set_deposit_by_ledger(env: &Env, depositor: &Address, deposit_id: u32, en
     env.storage()
         .persistent()
         .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
+    add_active_deposit_id(env, depositor, deposit_id);
 }
 
 pub fn get_deposit_by_ledger_readonly(env: &Env, depositor: &Address, deposit_id: u32) -> Option<LedgerVaultEntry> {
@@ -89,6 +133,7 @@ pub fn get_deposit_by_ledger_readonly(env: &Env, depositor: &Address, deposit_id
 pub fn remove_deposit_by_ledger(env: &Env, depositor: &Address, deposit_id: u32) {
     let key = VaultKey::DepositByLedger(depositor.clone(), deposit_id);
     env.storage().persistent().remove(&key);
+    remove_active_deposit_id(env, depositor, deposit_id);
 }
 
 // ----------------------------------------------------------------
@@ -213,17 +258,32 @@ fn save_depositor_list(env: &Env, list: &Vec<Address>) {
 }
 
 pub fn add_depositor(env: &Env, depositor: &Address) {
-    let mut list = get_depositor_list(env);
-    for addr in list.iter() {
-        if &addr == depositor {
-            return;
-        }
+    // O(1) existence check via a per-depositor boolean flag (fixes #19).
+    let flag_key = VaultKey::DepositorFlag(depositor.clone());
+    if env
+        .storage()
+        .persistent()
+        .get::<VaultKey, bool>(&flag_key)
+        .unwrap_or(false)
+    {
+        return; // already registered
     }
+    // Mark as registered before touching the list.
+    env.storage().persistent().set(&flag_key, &true);
+    env.storage()
+        .persistent()
+        .extend_ttl(&flag_key, BUMP_THRESHOLD, BUMP_TARGET);
+
+    let mut list = get_depositor_list(env);
     list.push_back(depositor.clone());
     save_depositor_list(env, &list);
 }
 
 pub fn remove_depositor(env: &Env, depositor: &Address) {
+    // Clear the O(1) flag so a future re-deposit is correctly re-registered.
+    let flag_key = VaultKey::DepositorFlag(depositor.clone());
+    env.storage().persistent().remove(&flag_key);
+
     let list = get_depositor_list(env);
     let mut new_list: Vec<Address> = Vec::new(env);
     for addr in list.iter() {
