@@ -1565,3 +1565,111 @@ fn test_cancel_ledger_deposit_not_found_fails() {
         Err(Ok(VaultError::NoDepositFound))
     );
 }
+
+// ================================================================
+//  Bug-fix regression tests
+// ================================================================
+
+// ----------------------------------------------------------------
+//  Fix #6 — deposit_by_ledger must respect is_paused
+// ----------------------------------------------------------------
+
+/// Pausing the contract must block deposit_by_ledger just like deposit.
+#[test]
+fn test_deposit_by_ledger_blocked_when_paused() {
+    let (env, vault, token, admin, alice, _fee) = setup();
+
+    vault.pause(&admin);
+    assert!(vault.is_paused());
+
+    let unlock_ledger = env.ledger().sequence() + 100;
+    assert_eq!(
+        vault.try_deposit_by_ledger(&alice, &token, &1_000, &unlock_ledger, &0),
+        Err(Ok(VaultError::ContractPaused))
+    );
+}
+
+/// After unpausing, deposit_by_ledger must succeed again.
+#[test]
+fn test_deposit_by_ledger_succeeds_after_unpause() {
+    let (env, vault, token, admin, alice, _fee) = setup();
+
+    vault.pause(&admin);
+    vault.unpause(&admin);
+    assert!(!vault.is_paused());
+
+    let unlock_ledger = env.ledger().sequence() + 100;
+    let id = vault.deposit_by_ledger(&alice, &token, &1_000, &unlock_ledger, &0);
+    assert!(id == 0);
+}
+
+// ----------------------------------------------------------------
+//  Fix #7 — initialize must not be callable again after renounce_admin
+// ----------------------------------------------------------------
+
+/// After renounce_admin the is_initialized flag is still set, so initialize
+/// must return Unauthorized and must not overwrite fee_recipient or admin.
+#[test]
+fn test_reinitialize_after_renounce_admin_fails() {
+    let (env, vault, _token, admin, _alice, fee) = setup();
+    let attacker: Address = Address::generate(&env);
+
+    vault.renounce_admin(&admin);
+    assert_eq!(vault.get_admin(), None);
+    assert!(vault.is_initialized());
+
+    // Attacker tries to seize control.
+    let result = vault.try_initialize(&attacker, &attacker, &None, &None);
+    assert_eq!(result, Err(Ok(VaultError::Unauthorized)));
+
+    // State must be unchanged.
+    assert_eq!(vault.get_admin(), None);
+    assert_eq!(vault.get_fee_recipient(), Some(fee));
+}
+
+// ----------------------------------------------------------------
+//  Fix #9 — emergency_withdraw must handle ledger-based deposits
+// ----------------------------------------------------------------
+
+/// Admin must be able to emergency-withdraw a ledger-sequence deposit.
+#[test]
+fn test_emergency_withdraw_ledger_deposit_succeeds() {
+    let (env, vault, token, admin, alice, _fee) = setup();
+    let token_client = TokenClient::new(&env, &token);
+
+    let unlock_ledger = env.ledger().sequence() + 1_000;
+    let id = vault.deposit_by_ledger(&alice, &token, &2_000, &unlock_ledger, &0);
+
+    // Funds go to the depositor, never the admin.
+    vault.emergency_withdraw(&admin, &alice, &id);
+
+    assert!(vault.get_vault(&alice, &id).is_none());
+    assert_eq!(token_client.balance(&alice), 10_000);
+    assert_eq!(token_client.balance(&admin), 0);
+}
+
+/// After emergency-withdraw of a ledger deposit the depositor is removed from
+/// the global list when they have no remaining deposits.
+#[test]
+fn test_emergency_withdraw_ledger_deposit_removes_depositor() {
+    let (env, vault, token, admin, alice, _fee) = setup();
+
+    let unlock_ledger = env.ledger().sequence() + 1_000;
+    let id = vault.deposit_by_ledger(&alice, &token, &1_000, &unlock_ledger, &0);
+    assert_eq!(vault.get_depositor_count(), 1);
+
+    vault.emergency_withdraw(&admin, &alice, &id);
+
+    assert_eq!(vault.get_depositor_count(), 0);
+}
+
+/// emergency_withdraw must still fail with NoDepositFound when neither a
+/// timestamp-based nor a ledger-based deposit exists for the given ID.
+#[test]
+fn test_emergency_withdraw_nonexistent_deposit_fails() {
+    let (_env, vault, _token, admin, alice, _fee) = setup();
+    assert_eq!(
+        vault.try_emergency_withdraw(&admin, &alice, &99),
+        Err(Ok(VaultError::NoDepositFound))
+    );
+}
