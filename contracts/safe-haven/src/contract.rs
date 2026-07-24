@@ -590,14 +590,28 @@ impl SafeHaven {
     }
 
     /// No auth required — this is a public read-only query (closes #81)
+    ///
+    /// For timestamp-based deposits: returns exact seconds remaining.
+    /// For ledger-based deposits: returns an estimate in seconds using
+    /// `LEDGER_SECONDS` (fixes #21). Returns 0 when unlocked or not found.
     pub fn time_remaining(env: Env, depositor: Address, deposit_id: u32) -> u64 {
-        match storage::get_deposit_readonly(&env, &depositor, deposit_id) {
-            None => 0,
-            Some(entry) => {
-                let now = env.ledger().timestamp();
-                entry.unlock_time.saturating_sub(now)
-            }
+        // Timestamp-based path
+        if let Some(entry) = storage::get_deposit_readonly(&env, &depositor, deposit_id) {
+            let now = env.ledger().timestamp();
+            return entry.unlock_time.saturating_sub(now);
         }
+
+        // Ledger-based path: convert remaining ledgers → estimated seconds (fixes #21)
+        if let Some(entry) = storage::get_deposit_by_ledger_readonly(&env, &depositor, deposit_id) {
+            let current = env.ledger().sequence();
+            if current >= entry.unlock_ledger {
+                return 0;
+            }
+            let remaining_ledgers = (entry.unlock_ledger - current) as u64;
+            return remaining_ledgers.saturating_mul(storage::LEDGER_SECONDS);
+        }
+
+        0
     }
 
     pub fn get_admin(env: Env) -> Option<Address> {

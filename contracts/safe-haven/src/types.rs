@@ -10,10 +10,15 @@ pub enum VaultKey {
     Deposit(Address, u32),
     DepositByLedger(Address, u32),
     DepositCounter(Address),
+    /// Stores a `Vec<u32>` of active deposit IDs for a depositor (both timestamp- and
+    /// ledger-based). Maintained alongside the counter so `get_deposit_ids` is O(1).
+    ActiveDepositIds(Address),
     Admin,
     PendingAdmin,
     Initialized,
     DepositorList,
+    /// Boolean existence flag per depositor — O(1) duplicate check in `add_depositor`.
+    DepositorFlag(Address),
     FeeRecipient,
     MaxDeposit,
     MaxLockSecs,
