@@ -3,13 +3,23 @@
 //  Update CONTRACT_ID and NETWORK after deploying your contract
 // ============================================================
 
+// Validate critical env vars at startup so misconfigured deployments fail fast
+// rather than silently targeting the wrong network (#13).
+if (!import.meta.env.VITE_NETWORK_PASSPHRASE) {
+  throw new Error(
+    '[SAFE-HAVEN] VITE_NETWORK_PASSPHRASE is not set. ' +
+    'Add it to your .env file (e.g. "Test SDF Network ; September 2015" for testnet ' +
+    'or "Public Global Stellar Network ; September 2015" for mainnet). ' +
+    'Refusing to start to prevent transactions from being signed for the wrong network.'
+  )
+}
+
 export const CONFIG = {
   /** Deployed contract ID — set via VITE_CONTRACT_ID env var or paste here */
   CONTRACT_ID: import.meta.env.VITE_CONTRACT_ID as string ?? 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4',
 
   /** Stellar network passphrase */
-  NETWORK_PASSPHRASE: (import.meta.env.VITE_NETWORK_PASSPHRASE as string) ??
-    'Test SDF Network ; September 2015',
+  NETWORK_PASSPHRASE: import.meta.env.VITE_NETWORK_PASSPHRASE as string,
 
   /** Horizon / Soroban RPC endpoint */
   RPC_URL: (import.meta.env.VITE_RPC_URL as string) ??
