@@ -1,12 +1,30 @@
 use soroban_sdk::{symbol_short, Address, Env, Symbol};
 
+// Compile-time assertions to ensure event symbol literals are within Soroban's
+// symbol size limit (32 bytes). Soroban SDK v22 uses 32-byte symbols; these
+// checks will cause a compile failure if any literal exceeds that.
+const _: [(); 32 - "deposit_by_ledger".len()] = [(); 32 - "deposit_by_ledger".len()];
+const _: [(); 32 - "emrg_wdraw".len()] = [(); 32 - "emrg_wdraw".len()];
+const _: [(); 32 - "adm_xfr_init".len()] = [(); 32 - "adm_xfr_init".len()];
+const _: [(); 32 - "adm_xfr_cancel".len()] = [(); 32 - "adm_xfr_cancel".len()];
+const _: [(); 32 - "adm_xfr_done".len()] = [(); 32 - "adm_xfr_done".len()];
+const _: [(); 32 - "adm_renounce".len()] = [(); 32 - "adm_renounce".len()];
+const _: [(); 32 - "lock_extended".len()] = [(); 32 - "lock_extended".len()];
+const _: [(); 32 - "dep_cancel".len()] = [(); 32 - "dep_cancel".len()];
+const _: [(); 32 - "paused".len()] = [(); 32 - "paused".len()];
+const _: [(); 32 - "unpaused".len()] = [(); 32 - "unpaused".len()];
+const _: [(); 32 - "withdraw_to".len()] = [(); 32 - "withdraw_to".len()];
+
 pub fn deposit(env: &Env, depositor: &Address, token: &Address, amount: i128, unlock_time: u64) {
     let topics = (symbol_short!("deposit"), depositor.clone(), token.clone());
     env.events().publish(topics, (amount, unlock_time));
 }
 
 pub fn deposit_by_ledger(env: &Env, depositor: &Address, token: &Address, amount: i128, unlock_ledger: u32) {
-    let topics = (Symbol::new(env, "dep_by_ledger"), depositor.clone(), token.clone());
+    // Emit a distinct event for ledger-based deposits so indexers and UIs
+    // can treat `unlock_ledger` as a u32 ledger sequence rather than a
+    // timestamp. Topic: `deposit_by_ledger(depositor, token)` Payload: `(amount, unlock_ledger:u32)`.
+    let topics = (Symbol::new(env, "deposit_by_ledger"), depositor.clone(), token.clone());
     env.events().publish(topics, (amount, unlock_ledger));
 }
 

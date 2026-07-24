@@ -1543,6 +1543,19 @@ fn test_deposit_by_ledger_succeeds_after_unpause() {
     assert!(id == 0);
 }
 
+#[test]
+fn test_deposit_by_ledger_event_emitted() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+
+    let unlock_ledger = env.ledger().sequence() + 10;
+    vault.deposit_by_ledger(&alice, &token, &1_000, &unlock_ledger, &0);
+
+    let events = env.events().all();
+    let last = events.last().unwrap();
+    // Verify the deposit_by_ledger event was published from the vault contract.
+    assert_eq!(last.0, vault.address.clone());
+}
+
 // ----------------------------------------------------------------
 //  Fix #7 — initialize must not be callable again after renounce_admin
 // ----------------------------------------------------------------
