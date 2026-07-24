@@ -30,7 +30,7 @@ impl SafeHaven {
     ) -> Result<(), VaultError> {
         admin.require_auth();
 
-        if storage::get_admin(&env).is_some() {
+        if storage::is_initialized(&env) {
             return Err(VaultError::Unauthorized);
         }
 
@@ -195,6 +195,10 @@ impl SafeHaven {
         penalty_bps: u32,
     ) -> Result<u32, VaultError> {
         depositor.require_auth();
+
+        if storage::is_paused(&env) {
+            return Err(VaultError::ContractPaused);
+        }
 
         if amount <= 0 {
             return Err(VaultError::InvalidAmount);
@@ -416,19 +420,35 @@ impl SafeHaven {
         admin.require_auth();
         storage::require_admin(&env, &admin)?;
 
-        let entry = storage::get_deposit_readonly(&env, &depositor, deposit_id)
-            .ok_or(VaultError::NoDepositFound)?;
+        // Try timestamp-based deposit first
+        if let Some(entry) = storage::get_deposit_readonly(&env, &depositor, deposit_id) {
+            storage::remove_deposit(&env, &depositor, deposit_id);
+            if storage::get_deposit_ids(&env, &depositor).len() == 0 {
+                storage::remove_depositor(&env, &depositor);
+            }
 
-        storage::remove_deposit(&env, &depositor, deposit_id);
-        if storage::get_deposit_ids(&env, &depositor).len() == 0 {
-            storage::remove_depositor(&env, &depositor);
+            let token_client = token::Client::new(&env, &entry.token);
+            token_client.transfer(&env.current_contract_address(), &depositor, &entry.amount);
+
+            events::emergency_withdraw(&env, &admin, &depositor, &entry.token, entry.amount);
+            return Ok(());
         }
 
-        let token_client = token::Client::new(&env, &entry.token);
-        token_client.transfer(&env.current_contract_address(), &depositor, &entry.amount);
+        // Try ledger-based deposit
+        if let Some(entry) = storage::get_deposit_by_ledger_readonly(&env, &depositor, deposit_id) {
+            storage::remove_deposit_by_ledger(&env, &depositor, deposit_id);
+            if storage::get_deposit_ids(&env, &depositor).len() == 0 {
+                storage::remove_depositor(&env, &depositor);
+            }
 
-        events::emergency_withdraw(&env, &admin, &depositor, &entry.token, entry.amount);
-        Ok(())
+            let token_client = token::Client::new(&env, &entry.token);
+            token_client.transfer(&env.current_contract_address(), &depositor, &entry.amount);
+
+            events::emergency_withdraw(&env, &admin, &depositor, &entry.token, entry.amount);
+            return Ok(());
+        }
+
+        Err(VaultError::NoDepositFound)
     }
 
     // ----------------------------------------------------------------

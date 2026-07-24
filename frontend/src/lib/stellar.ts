@@ -62,15 +62,44 @@ function parseVaultEntry(scVal: xdr.ScVal): VaultEntry | null {
 //  Read-only contract queries (no signing needed)
 // ----------------------------------------------------------------
 
+/**
+ * Source account for simulation transactions.
+ *
+ * Priority:
+ *  1. Connected wallet address passed in (best – always exists on-chain)
+ *  2. VITE_SIMULATION_ACCOUNT env var (operator-configured per-network)
+ *  3. The contract ID itself as a last-resort fallback (Soroban simulation
+ *     does not validate the source account's on-chain existence for read-only
+ *     calls, so this works even when the account isn't funded)
+ */
+function getSimulationAccount(): string {
+  return (import.meta.env.VITE_SIMULATION_ACCOUNT as string | undefined) ?? CONFIG.CONTRACT_ID
+}
+
 async function simulateReadOnly<T>(
   method: string,
   args: xdr.ScVal[],
   parser: (v: xdr.ScVal) => T,
+  /** Optional connected wallet address — used as the source account when provided */
+  walletAddress?: string,
 ): Promise<T | null> {
   try {
     const rpc = getRpc()
     const contract = new Contract(CONFIG.CONTRACT_ID)
-    const account = await rpc.getAccount('GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN')
+
+    // Resolve the source account: wallet > env config > contract ID as fallback
+    const sourceAddress = walletAddress ?? getSimulationAccount()
+
+    let account: Awaited<ReturnType<typeof rpc.getAccount>>
+    try {
+      account = await rpc.getAccount(sourceAddress)
+    } catch {
+      // Account not found on-chain — build a minimal synthetic account.
+      // Soroban ignores the sequence number for read-only simulations.
+      const { Account } = await import('@stellar/stellar-sdk')
+      account = new Account(sourceAddress, '0') as unknown as Awaited<ReturnType<typeof rpc.getAccount>>
+    }
+
     const tx = new TransactionBuilder(account, {
       fee: BASE_FEE,
       networkPassphrase: CONFIG.NETWORK_PASSPHRASE,
