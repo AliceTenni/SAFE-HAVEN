@@ -5,6 +5,11 @@ pub fn deposit(env: &Env, depositor: &Address, token: &Address, amount: i128, un
     env.events().publish(topics, (amount, unlock_time));
 }
 
+pub fn deposit_by_ledger(env: &Env, depositor: &Address, token: &Address, amount: i128, unlock_ledger: u32) {
+    let topics = (Symbol::new(env, "dep_by_ledger"), depositor.clone(), token.clone());
+    env.events().publish(topics, (amount, unlock_ledger));
+}
+
 pub fn withdraw(env: &Env, depositor: &Address, token: &Address, amount: i128) {
     let topics = (symbol_short!("withdraw"), depositor.clone(), token.clone());
     env.events().publish(topics, amount);

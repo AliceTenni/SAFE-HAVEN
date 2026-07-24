@@ -16,4 +16,6 @@ pub enum VaultError {
     InvalidAdmin = 10,
     LockDurationTooShort = 11,
     ContractPaused = 12,
+    VaultAlreadyUnlocked = 13,
+    MissingFeeRecipient = 14,
 }
