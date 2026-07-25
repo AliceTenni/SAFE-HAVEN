@@ -2,8 +2,16 @@ import { useState } from 'react'
 import toast from 'react-hot-toast'
 import { useWallet } from '../context/WalletContext'
 import { TxStatusBadge } from '../components/TxStatusBadge'
-import { buildPause, buildUnpause, buildEmergencyWithdraw, submitTx } from '../lib/stellar'
-import { shortAddr, explorerAddrUrl } from '../lib/format'
+import {
+  buildPause,
+  buildUnpause,
+  buildEmergencyWithdraw,
+  buildTransferAdmin,
+  buildAcceptAdmin,
+  buildCancelTransferAdmin,
+  submitTx,
+} from '../lib/stellar'
+import { shortAddr, explorerAddrUrl, isValidStellarAddress } from '../lib/format'
 import type { TxStatus } from '../types'
 import type { ContractInfo } from '../App'
 
@@ -21,18 +29,52 @@ export function AdminPage({ contractInfo, onContractInfoRefresh }: AdminPageProp
   const [pauseTxError,  setPauseTxError]  = useState<string | undefined>()
 
   // Emergency withdraw
-  const [emrgDepositor,  setEmrgDepositor]  = useState('')
-  const [emrgDepositId,  setEmrgDepositId]  = useState('')
-  const [emrgTxStatus,   setEmrgTxStatus]   = useState<TxStatus>('idle')
-  const [emrgTxHash,     setEmrgTxHash]     = useState<string | undefined>()
-  const [emrgTxError,    setEmrgTxError]    = useState<string | undefined>()
+  const [emrgDepositor,      setEmrgDepositor]      = useState('')
+  const [emrgDepositId,      setEmrgDepositId]      = useState('')
+  const [emrgDepositorError, setEmrgDepositorError] = useState('')
+  const [emrgTxStatus,       setEmrgTxStatus]       = useState<TxStatus>('idle')
+  const [emrgTxHash,         setEmrgTxHash]         = useState<string | undefined>()
+  const [emrgTxError,        setEmrgTxError]        = useState<string | undefined>()
+
+  // Transfer admin
+  const [transferNewAdmin,  setTransferNewAdmin]  = useState('')
+  const [transferTxStatus,  setTransferTxStatus]  = useState<TxStatus>('idle')
+  const [transferTxHash,    setTransferTxHash]    = useState<string | undefined>()
+  const [transferTxError,   setTransferTxError]   = useState<string | undefined>()
+
+  // Accept admin
+  const [acceptTxStatus, setAcceptTxStatus] = useState<TxStatus>('idle')
+  const [acceptTxHash,   setAcceptTxHash]   = useState<string | undefined>()
+  const [acceptTxError,  setAcceptTxError]  = useState<string | undefined>()
+
+  // Cancel transfer admin
+  const [cancelTxStatus, setCancelTxStatus] = useState<TxStatus>('idle')
+  const [cancelTxHash,   setCancelTxHash]   = useState<string | undefined>()
+  const [cancelTxError,  setCancelTxError]  = useState<string | undefined>()
 
   const isAdmin = wallet?.address === contractInfo.admin
   const pausePending = pauseTxStatus === 'signing' || pauseTxStatus === 'submitting' || pauseTxStatus === 'confirming'
   const emrgPending  = emrgTxStatus  === 'signing' || emrgTxStatus  === 'submitting' || emrgTxStatus  === 'confirming'
+  const transferPending = transferTxStatus === 'signing' || transferTxStatus === 'submitting' || transferTxStatus === 'confirming'
+  const acceptPending = acceptTxStatus === 'signing' || acceptTxStatus === 'submitting' || acceptTxStatus === 'confirming'
+  const cancelPending = cancelTxStatus === 'signing' || cancelTxStatus === 'submitting' || cancelTxStatus === 'confirming'
+
+  // Validate emergency withdraw depositor address
+  const emrgDepositorIsValid = emrgDepositor === '' || isValidStellarAddress(emrgDepositor)
+  
+  const handleEmrgDepositorChange = (value: string) => {
+    const trimmed = value.trim()
+    setEmrgDepositor(trimmed)
+    if (trimmed && !isValidStellarAddress(trimmed)) {
+      setEmrgDepositorError('Invalid address format. Must be a G-address or C-address.')
+    } else {
+      setEmrgDepositorError('')
+    }
+  }
 
   async function handleTogglePause() {
-    if (!wallet) return
+    if (!wallet || pausePending) return
+    
     setPauseTxStatus('signing')
     setPauseTxError(undefined)
     setPauseTxHash(undefined)
@@ -52,7 +94,14 @@ export function AdminPage({ contractInfo, onContractInfoRefresh }: AdminPageProp
         setPauseTxStatus('success')
         setPauseTxHash(result.txHash)
         toast.success(contractInfo.paused ? 'Contract unpaused.' : 'Contract paused.')
+        // Refresh contract info to get latest pause state
         setTimeout(onContractInfoRefresh, 1500)
+        // Reset state after success
+        setTimeout(() => {
+          setPauseTxStatus('idle')
+          setPauseTxHash(undefined)
+          setPauseTxError(undefined)
+        }, 3000)
       } else {
         setPauseTxStatus('error')
         setPauseTxError(result.error)
@@ -68,7 +117,7 @@ export function AdminPage({ contractInfo, onContractInfoRefresh }: AdminPageProp
 
   async function handleEmergencyWithdraw(e: React.FormEvent) {
     e.preventDefault()
-    if (!wallet || !emrgDepositor || !emrgDepositId) return
+    if (!wallet || !emrgDepositor || !emrgDepositId || !emrgDepositorIsValid) return
 
     setEmrgTxStatus('signing')
     setEmrgTxError(undefined)
@@ -89,6 +138,7 @@ export function AdminPage({ contractInfo, onContractInfoRefresh }: AdminPageProp
         toast.success('Emergency withdrawal successful. Funds returned to depositor.')
         setEmrgDepositor('')
         setEmrgDepositId('')
+        setEmrgDepositorError('')
       } else {
         setEmrgTxStatus('error')
         setEmrgTxError(result.error)
@@ -98,6 +148,110 @@ export function AdminPage({ contractInfo, onContractInfoRefresh }: AdminPageProp
       const msg = e instanceof Error ? e.message : 'Unexpected error'
       setEmrgTxStatus('error')
       setEmrgTxError(msg)
+      toast.error(msg)
+    }
+  }
+
+  async function handleTransferAdmin(e: React.FormEvent) {
+    e.preventDefault()
+    if (!wallet || !transferNewAdmin) return
+
+    setTransferTxStatus('signing')
+    setTransferTxError(undefined)
+    setTransferTxHash(undefined)
+
+    try {
+      const xdr = await buildTransferAdmin(wallet.address, transferNewAdmin)
+      if (!xdr) throw new Error('Failed to build transaction')
+
+      const signed = await signTransaction(xdr)
+      if (!signed) { setTransferTxStatus('idle'); return }
+
+      setTransferTxStatus('submitting')
+      const result = await submitTx(signed)
+      if (result.success) {
+        setTransferTxStatus('success')
+        setTransferTxHash(result.txHash)
+        toast.success('Admin transfer initiated. Awaiting acceptance from new admin.')
+        setTransferNewAdmin('')
+        setTimeout(onContractInfoRefresh, 1500)
+      } else {
+        setTransferTxStatus('error')
+        setTransferTxError(result.error)
+        toast.error(result.error ?? 'Transfer admin failed')
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Unexpected error'
+      setTransferTxStatus('error')
+      setTransferTxError(msg)
+      toast.error(msg)
+    }
+  }
+
+  async function handleAcceptAdmin() {
+    if (!wallet) return
+
+    setAcceptTxStatus('signing')
+    setAcceptTxError(undefined)
+    setAcceptTxHash(undefined)
+
+    try {
+      const xdr = await buildAcceptAdmin(wallet.address)
+      if (!xdr) throw new Error('Failed to build transaction')
+
+      const signed = await signTransaction(xdr)
+      if (!signed) { setAcceptTxStatus('idle'); return }
+
+      setAcceptTxStatus('submitting')
+      const result = await submitTx(signed)
+      if (result.success) {
+        setAcceptTxStatus('success')
+        setAcceptTxHash(result.txHash)
+        toast.success('Admin transfer accepted!')
+        setTimeout(onContractInfoRefresh, 1500)
+      } else {
+        setAcceptTxStatus('error')
+        setAcceptTxError(result.error)
+        toast.error(result.error ?? 'Failed to accept admin')
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Unexpected error'
+      setAcceptTxStatus('error')
+      setAcceptTxError(msg)
+      toast.error(msg)
+    }
+  }
+
+  async function handleCancelTransfer() {
+    if (!wallet) return
+
+    setCancelTxStatus('signing')
+    setCancelTxError(undefined)
+    setCancelTxHash(undefined)
+
+    try {
+      const xdr = await buildCancelTransferAdmin(wallet.address)
+      if (!xdr) throw new Error('Failed to build transaction')
+
+      const signed = await signTransaction(xdr)
+      if (!signed) { setCancelTxStatus('idle'); return }
+
+      setCancelTxStatus('submitting')
+      const result = await submitTx(signed)
+      if (result.success) {
+        setCancelTxStatus('success')
+        setCancelTxHash(result.txHash)
+        toast.success('Admin transfer cancelled.')
+        setTimeout(onContractInfoRefresh, 1500)
+      } else {
+        setCancelTxStatus('error')
+        setCancelTxError(result.error)
+        toast.error(result.error ?? 'Failed to cancel transfer')
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Unexpected error'
+      setCancelTxStatus('error')
+      setCancelTxError(msg)
       toast.error(msg)
     }
   }
@@ -208,13 +362,16 @@ export function AdminPage({ contractInfo, onContractInfoRefresh }: AdminPageProp
           <div>
             <label className="label">Depositor address</label>
             <input
-              className="input"
+              className={`input ${emrgDepositorError ? 'border-red-500/50' : ''}`}
               type="text"
               value={emrgDepositor}
-              onChange={(e) => setEmrgDepositor(e.target.value.trim())}
+              onChange={(e) => handleEmrgDepositorChange(e.target.value)}
               placeholder="G... or C..."
               disabled={emrgPending}
             />
+            {emrgDepositorError && (
+              <p className="text-xs text-red-400 mt-1">{emrgDepositorError}</p>
+            )}
           </div>
 
           <div>
@@ -235,7 +392,7 @@ export function AdminPage({ contractInfo, onContractInfoRefresh }: AdminPageProp
           <button
             type="submit"
             className="btn-danger w-full"
-            disabled={!emrgDepositor || !emrgDepositId || emrgPending}
+            disabled={!emrgDepositor || !emrgDepositId || !emrgDepositorIsValid || emrgPending}
           >
             {emrgPending
               ? <span className="w-4 h-4 border-2 border-current/30 border-t-current rounded-full animate-spin" />
@@ -243,6 +400,91 @@ export function AdminPage({ contractInfo, onContractInfoRefresh }: AdminPageProp
             }
           </button>
         </form>
+      </div>
+
+      {/* Transfer admin */}
+      <div className="card p-6">
+        <h2 className="font-semibold text-lg mb-1">Transfer Admin</h2>
+        <p className="text-sm text-slate-400 mb-5">
+          Initiate a two-step admin transfer. The new admin must accept the transfer to complete ownership change.
+        </p>
+
+        {contractInfo.pendingAdmin ? (
+          <div className="space-y-4">
+            <div className="rounded-lg bg-blue-900/20 border border-blue-700/40 p-4">
+              <p className="text-sm text-blue-300 mb-2">Pending admin transfer</p>
+              <a
+                href={explorerAddrUrl(contractInfo.pendingAdmin)}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="font-mono text-stellar-400 hover:text-stellar-300 break-all"
+              >
+                {contractInfo.pendingAdmin}
+              </a>
+            </div>
+
+            <TxStatusBadge status={cancelTxStatus} txHash={cancelTxHash} error={cancelTxError} />
+
+            <button
+              onClick={handleCancelTransfer}
+              className="btn-secondary w-full"
+              disabled={cancelPending}
+            >
+              {cancelPending
+                ? <span className="w-4 h-4 border-2 border-current/30 border-t-current rounded-full animate-spin" />
+                : 'Cancel pending transfer'
+              }
+            </button>
+          </div>
+        ) : (
+          <form onSubmit={handleTransferAdmin} className="space-y-4">
+            <div>
+              <label className="label">New admin address</label>
+              <input
+                className="input"
+                type="text"
+                value={transferNewAdmin}
+                onChange={(e) => setTransferNewAdmin(e.target.value.trim())}
+                placeholder="G... or C..."
+                disabled={transferPending}
+              />
+            </div>
+
+            <TxStatusBadge status={transferTxStatus} txHash={transferTxHash} error={transferTxError} />
+
+            <button
+              type="submit"
+              className="btn-primary w-full"
+              disabled={!transferNewAdmin || transferPending}
+            >
+              {transferPending
+                ? <span className="w-4 h-4 border-2 border-current/30 border-t-current rounded-full animate-spin" />
+                : 'Initiate transfer'
+              }
+            </button>
+          </form>
+        )}
+
+        {contractInfo.pendingAdmin && wallet?.address === contractInfo.pendingAdmin && (
+          <div className="mt-6 border-t border-slate-700/40 pt-6">
+            <p className="text-sm text-slate-400 mb-4">
+              You are the pending admin. Accept the transfer to complete it.
+            </p>
+
+            <TxStatusBadge status={acceptTxStatus} txHash={acceptTxHash} error={acceptTxError} />
+
+            <button
+              onClick={handleAcceptAdmin}
+              className="btn-primary w-full"
+              disabled={acceptPending}
+            >
+              {acceptPending
+                ? <span className="w-4 h-4 border-2 border-current/30 border-t-current rounded-full animate-spin" />
+                : 'Accept admin role'
+              }
+            </button>
+          </div>
+        )}
       </div>
     </div>
   )

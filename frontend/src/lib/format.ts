@@ -67,3 +67,16 @@ export function explorerTxUrl(txHash: string): string {
 export function explorerAddrUrl(addr: string): string {
   return `${CONFIG.EXPLORER_URL}/account/${addr}`
 }
+
+/** Validate if a string is a valid Stellar address (G-address or C-address) */
+export function isValidStellarAddress(addr: string): boolean {
+  if (!addr) return false
+  
+  // G-address: starts with 'G', 56 characters total, alphanumeric
+  const gAddressPattern = /^G[A-Z2-7]{54}$/
+  
+  // C-address: starts with 'C', 56 characters total, alphanumeric
+  const cAddressPattern = /^C[A-Z2-7]{54}$/
+  
+  return gAddressPattern.test(addr) || cAddressPattern.test(addr)
+}

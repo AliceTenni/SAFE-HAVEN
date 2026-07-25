@@ -3,10 +3,11 @@
 // ============================================================
 
 import { useCallback, useEffect, useState } from 'react'
-import { getAdmin, isPaused, getConstants, getDepositorCount, getFeeRecipient } from '../lib/stellar'
+import { getAdmin, isPaused, getConstants, getDepositorCount, getFeeRecipient, getPendingAdmin } from '../lib/stellar'
 
 interface ContractInfo {
   admin: string | null
+  pendingAdmin: string | null
   paused: boolean
   maxDeposit: bigint
   maxLockSecs: number
@@ -18,6 +19,7 @@ interface ContractInfo {
 
 export function useContractInfo(): ContractInfo {
   const [admin,          setAdmin]          = useState<string | null>(null)
+  const [pendingAdmin,   setPendingAdmin]   = useState<string | null>(null)
   const [paused,         setPaused]         = useState(false)
   const [maxDeposit,     setMaxDeposit]     = useState<bigint>(1_000_000_000_000_000n)
   const [maxLockSecs,    setMaxLockSecs]    = useState(157_788_000)
@@ -28,14 +30,16 @@ export function useContractInfo(): ContractInfo {
   const refresh = useCallback(async () => {
     setLoading(true)
     try {
-      const [adminVal, pausedVal, constants, count, fee] = await Promise.all([
+      const [adminVal, pendingAdminVal, pausedVal, constants, count, fee] = await Promise.all([
         getAdmin(),
+        getPendingAdmin(),
         isPaused(),
         getConstants(),
         getDepositorCount(),
         getFeeRecipient(),
       ])
       setAdmin(adminVal)
+      setPendingAdmin(pendingAdminVal)
       setPaused(pausedVal)
       if (constants) {
         setMaxDeposit(constants.maxDeposit)
@@ -53,6 +57,6 @@ export function useContractInfo(): ContractInfo {
   useEffect(() => { void refresh() }, [refresh])
 
   return {
-    admin, paused, maxDeposit, maxLockSecs, depositorCount, feeRecipient, loading, refresh,
+    admin, pendingAdmin, paused, maxDeposit, maxLockSecs, depositorCount, feeRecipient, loading, refresh,
   }
 }
