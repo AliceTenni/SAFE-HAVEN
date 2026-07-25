@@ -1058,6 +1058,16 @@ fn test_pagination_offset_beyond_end_returns_empty() {
 }
 
 #[test]
+fn test_pagination_with_large_offset_does_not_overflow() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    let unlock_time = env.ledger().timestamp() + 3600;
+    vault.deposit(&alice, &token, &1_000, &unlock_time, &0);
+
+    let page = vault.get_depositors(&(u32::MAX - 1), &2);
+    assert!(page.is_empty());
+}
+
+#[test]
 fn test_pagination_limit_zero_returns_empty() {
     let (env, vault, token, _admin, alice, _fee) = setup();
     let unlock_time = env.ledger().timestamp() + 3600;
