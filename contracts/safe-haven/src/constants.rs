@@ -2,6 +2,8 @@
 //  Protocol Constants
 // ----------------------------------------------------------------
 
+use crate::storage::LEDGER_SECONDS;
+
 /// Maximum deposit amount (in stroops or token base units).
 pub const MAX_DEPOSIT_AMOUNT: i128 = 1_000_000_000_000_000;
 
@@ -10,6 +12,9 @@ pub const MAX_LOCK_DURATION_SECS: u64 = 157_788_000;
 
 /// Minimum lock duration: prevent trivial, pointless vaults that waste storage.
 pub const MIN_LOCK_DURATION_SECS: u64 = 60;
+
+/// Minimum number of ledgers required for a ledger-based deposit.
+pub const MIN_LOCK_LEDGERS: u32 = (MIN_LOCK_DURATION_SECS / LEDGER_SECONDS) as u32;
 
 /// Maximum depositors per `batch_emergency_withdraw` call.
 ///
