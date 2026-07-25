@@ -597,6 +597,29 @@ impl SafeHaven {
         results
     }
 
+    /// Fetch multiple deposits for a single depositor in one RPC call.
+    /// Limit: up to 25 deposit IDs per call.
+    /// Returns Vec of (deposit_id, Option<VaultEntry>) pairs.
+    pub fn get_deposit_batch(
+        env: Env,
+        depositor: Address,
+        deposit_ids: Vec<u32>,
+    ) -> Vec<(u32, Option<VaultEntry>)> {
+        let limit = if deposit_ids.len() > MAX_BATCH_SIZE {
+            MAX_BATCH_SIZE as usize
+        } else {
+            deposit_ids.len()
+        };
+        let mut results = Vec::new(&env);
+        for i in 0..limit {
+            if let Some(id) = deposit_ids.get(i as u32) {
+                let entry = storage::get_deposit_readonly(&env, &depositor, id);
+                results.push_back((id, entry));
+            }
+        }
+        results
+    }
+
     pub fn get_deposit_ids(env: Env, depositor: Address) -> Vec<u32> {
         storage::get_deposit_ids(&env, &depositor)
     }
