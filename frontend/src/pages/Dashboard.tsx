@@ -15,7 +15,7 @@ interface DashboardProps {
 
 export function Dashboard({ contractInfo }: DashboardProps) {
   const { wallet, signTransaction } = useWallet()
-  const { deposits, loading, error, refresh } = useDeposits(wallet?.address ?? null)
+  const { deposits, loading, error, refresh, pollRemoveDeposit } = useDeposits(wallet?.address ?? null)
   const [txStatus, setTxStatus] = useState<TxStatus>('idle')
   const [txHash,   setTxHash]   = useState<string | undefined>()
   const [txError,  setTxError]  = useState<string | undefined>()
@@ -42,7 +42,8 @@ export function Dashboard({ contractInfo }: DashboardProps) {
         setTxStatus('success')
         setTxHash(result.txHash)
         toast.success('Withdrawal successful!')
-        setTimeout(refresh, 2000)
+        // Poll for individual deposit removal instead of full refresh
+        await pollRemoveDeposit(depositId)
       } else {
         setTxStatus('error')
         setTxError(result.error)
@@ -79,7 +80,8 @@ export function Dashboard({ contractInfo }: DashboardProps) {
         setTxStatus('success')
         setTxHash(result.txHash)
         toast.success('Deposit cancelled.')
-        setTimeout(refresh, 2000)
+        // Poll for individual deposit removal instead of full refresh
+        await pollRemoveDeposit(depositId)
       } else {
         setTxStatus('error')
         setTxError(result.error)
@@ -113,10 +115,22 @@ export function Dashboard({ contractInfo }: DashboardProps) {
     <div className="space-y-6">
       {/* Stats row */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <StatCard label="Your Deposits" value={String(deposits.length)} />
-        <StatCard label="Unlocked" value={String(deposits.filter(d => d.timeRemaining === 0).length)} accent="green" />
-        <StatCard label="Locked" value={String(deposits.filter(d => d.timeRemaining > 0).length)} accent="yellow" />
-        <StatCard label="Total Depositors" value={contractInfo.depositorCount > 0 ? String(contractInfo.depositorCount) : '–'} />
+        {loading && deposits.length === 0 ? (
+          // Loading skeleton for stats
+          <>
+            <StatCardSkeleton />
+            <StatCardSkeleton />
+            <StatCardSkeleton />
+            <StatCardSkeleton />
+          </>
+        ) : (
+          <>
+            <StatCard label="Your Deposits" value={String(deposits.length)} />
+            <StatCard label="Unlocked" value={String(deposits.filter(d => d.timeRemaining !== null && d.timeRemaining === 0).length)} accent="green" />
+            <StatCard label="Locked" value={String(deposits.filter(d => d.timeRemaining !== null && d.timeRemaining > 0).length)} accent="yellow" />
+            <StatCard label="Total Depositors" value={contractInfo.depositorCount > 0 ? String(contractInfo.depositorCount) : '–'} />
+          </>
+        )}
       </div>
 
       {/* Tx status */}
@@ -191,6 +205,15 @@ function StatCard({ label, value, accent }: { label: string; value: string; acce
     <div className="card p-4">
       <p className="text-xs text-slate-500 uppercase tracking-wide">{label}</p>
       <p className={`text-2xl font-bold mt-1 ${valueClass}`}>{value}</p>
+    </div>
+  )
+}
+
+function StatCardSkeleton() {
+  return (
+    <div className="card p-4 animate-pulse">
+      <div className="h-3 bg-slate-700/60 rounded w-1/2" />
+      <div className="h-7 bg-slate-700/40 rounded w-2/3 mt-2" />
     </div>
   )
 }
