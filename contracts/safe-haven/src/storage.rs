@@ -320,7 +320,7 @@ pub fn get_depositors_page(env: &Env, offset: u32, limit: u32) -> Vec<Address> {
     let list = get_depositor_list(env);
     let len = list.len();
     let mut page: Vec<Address> = Vec::new(env);
-    let end = (offset + limit).min(len);
+    let end = offset.saturating_add(limit).min(len);
     for i in offset..end {
         page.push_back(list.get(i).unwrap());
     }
