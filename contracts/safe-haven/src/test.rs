@@ -9,6 +9,7 @@ use soroban_sdk::{
 };
 
 use crate::{
+    constants::MIN_LOCK_LEDGERS,
     contract::{SafeHaven, SafeHavenClient},
     errors::VaultError,
     types::{VaultEntry, VaultKey, MAX_DEPOSIT_AMOUNT, MAX_LOCK_DURATION_SECS},
@@ -1554,6 +1555,17 @@ fn test_deposit_by_ledger_event_emitted() {
     let last = events.last().unwrap();
     // Verify the deposit_by_ledger event was published from the vault contract.
     assert_eq!(last.0, vault.address.clone());
+}
+
+#[test]
+fn test_deposit_by_ledger_lock_duration_too_short_fails() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+
+    let unlock_ledger = env.ledger().sequence() + (MIN_LOCK_LEDGERS - 1);
+    assert_eq!(
+        vault.try_deposit_by_ledger(&alice, &token, &1_000, &unlock_ledger, &0),
+        Err(Ok(VaultError::LockDurationTooShort))
+    );
 }
 
 // ----------------------------------------------------------------
