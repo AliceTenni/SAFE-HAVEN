@@ -13,6 +13,17 @@ pub const BUMP_TARGET: u32 = ((MAX_LOCK_DURATION_SECS + LEDGER_SECONDS - 1) / LE
 //  Deposit counter helpers
 // ----------------------------------------------------------------
 
+// `next_deposit_id` returns the next unused deposit ID for a depositor.
+// The counter is monotonic and is never decremented when deposits are
+// removed. If all deposits are withdrawn, the counter still advances
+// from its historical maximum, so a new deposit after a full drain will
+// receive the next unused ID and cannot collide with any prior deposit.
+//
+// The active deposit IDs are tracked separately in `ActiveDepositIds`, so
+// `get_deposit_ids` does not rely on scanning `0..counter` or checking
+// whether each historical deposit key exists. This keeps active ID
+// enumeration bounded by the number of open deposits rather than by the
+// historical counter value.
 pub fn next_deposit_id(env: &Env, depositor: &Address) -> u32 {
     let key = VaultKey::DepositCounter(depositor.clone());
     let id: u32 = env.storage().persistent().get(&key).unwrap_or(0);
