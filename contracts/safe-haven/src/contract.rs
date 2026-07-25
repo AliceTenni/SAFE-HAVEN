@@ -6,10 +6,13 @@
 use soroban_sdk::{contract, contractimpl, token, Address, Env, Vec};
 
 use crate::{
-    constants::{MAX_BATCH_SIZE, MAX_DEPOSIT_AMOUNT, MAX_LOCK_DURATION_SECS, MIN_LOCK_DURATION_SECS},
+    constants::{
+        MAX_BATCH_SIZE, MAX_DEPOSIT_AMOUNT, MAX_LOCK_DURATION_SECS, MIN_LOCK_DURATION_SECS,
+        MIN_LOCK_LEDGERS,
+    },
     errors::VaultError,
     events, storage,
-    types::{VaultEntry, LedgerVaultEntry},
+    types::{VaultEntry, LedgerVaultEntry, STORAGE_VERSION},
 };
 
 #[contract]
@@ -232,6 +235,11 @@ impl SafeHaven {
         let current_ledger = env.ledger().sequence();
         if unlock_ledger <= current_ledger {
             return Err(VaultError::UnlockTimeNotInFuture);
+        }
+
+        let ledger_gap = unlock_ledger.saturating_sub(current_ledger);
+        if ledger_gap < MIN_LOCK_LEDGERS {
+            return Err(VaultError::LockDurationTooShort);
         }
 
         let deposit_id = storage::next_deposit_id(&env, &depositor);
@@ -652,5 +660,103 @@ impl SafeHaven {
 
     pub fn is_initialized(env: Env) -> bool {
         storage::is_initialized(&env)
+    }
+
+    // ----------------------------------------------------------------
+    //  Read-only: Paginated flat deposits view (Task 1)
+    // ----------------------------------------------------------------
+
+    /// Returns a paginated flat list of all active timestamp-based deposits across
+    /// every depositor.  Each element is `(depositor, deposit_id, VaultEntry)`.
+    ///
+    /// `offset` and `limit` are applied to the *deposit* stream, not the depositor
+    /// list, so callers get a predictable page size regardless of how many deposits
+    /// each depositor holds.  Ledger-based deposits are not included here; use
+    /// `get_depositors` + `get_deposit_ids` to enumerate those.
+    ///
+    /// Gas note: this function reads every depositor's ID list up to `offset + limit`
+    /// deposits.  Keep `limit` reasonable (≤ 50) in production to stay within the
+    /// Soroban instruction budget.
+    pub fn get_deposits_page(
+        env: Env,
+        offset: u32,
+        limit: u32,
+    ) -> Vec<(Address, u32, VaultEntry)> {
+        let mut results: Vec<(Address, u32, VaultEntry)> = Vec::new(&env);
+        let mut global_index: u32 = 0;
+        let end_at = offset.saturating_add(limit);
+
+        // Walk all depositors in insertion order, skipping stale (flag-removed) ones.
+        let depositor_list = storage::get_all_depositors_raw(&env);
+        for depositor in depositor_list.iter() {
+            if global_index >= end_at {
+                break;
+            }
+            // Skip depositors whose flag has been cleared (O(1) remove).
+            if !storage::depositor_is_active(&env, &depositor) {
+                continue;
+            }
+            let ids = storage::get_deposit_ids(&env, &depositor);
+            for id in ids.iter() {
+                if global_index >= end_at {
+                    break;
+                }
+                if let Some(entry) = storage::get_deposit_readonly(&env, &depositor, id) {
+                    if global_index >= offset {
+                        results.push_back((depositor.clone(), id, entry));
+                    }
+                    global_index = global_index.saturating_add(1);
+                }
+            }
+        }
+        results
+    }
+
+    // ----------------------------------------------------------------
+    //  Admin: Storage migration (Task 4)
+    // ----------------------------------------------------------------
+
+    /// Returns the schema version currently stored on-chain.
+    /// Returns `None` for contracts deployed before versioning was introduced
+    /// (treat as version 0 / pre-migration).
+    pub fn get_storage_version(env: Env) -> Option<u32> {
+        storage::get_storage_version(&env)
+    }
+
+    /// Admin-only migration hook.
+    ///
+    /// Call this after upgrading the contract WASM to a version that changed the
+    /// layout of a `#[contracttype]` struct.  The function:
+    ///
+    /// 1. Verifies admin auth.
+    /// 2. Reads the current on-chain version (`None` → 0).
+    /// 3. Applies each migration step in order (currently a no-op placeholder
+    ///    that demonstrates the pattern — replace with real field backfills when
+    ///    `VaultEntry` gains new fields).
+    /// 4. Writes `STORAGE_VERSION` so subsequent calls are idempotent.
+    ///
+    /// Returning `Ok(false)` means the schema was already up-to-date; no work done.
+    /// Returning `Ok(true)` means migration was applied.
+    pub fn migrate(env: Env, admin: Address) -> Result<bool, VaultError> {
+        admin.require_auth();
+        storage::require_admin(&env, &admin)?;
+
+        let current_version = storage::get_storage_version(&env).unwrap_or(0);
+
+        if current_version >= STORAGE_VERSION {
+            // Already at the current schema version — nothing to do.
+            return Ok(false);
+        }
+
+        // ── Migration v0 → v1 ───────────────────────────────────────────────
+        // Version 1 introduces the StorageVersion key itself.  No struct fields
+        // changed in this version, so the migration is a no-op data-wise.
+        // When a future version (e.g. v2) adds a field to VaultEntry, add a
+        // loop here that reads every deposit in the old format and rewrites it
+        // with the new default field value.
+        // ────────────────────────────────────────────────────────────────────
+
+        storage::set_storage_version(&env, STORAGE_VERSION);
+        Ok(true)
     }
 }

@@ -9,6 +9,7 @@ use soroban_sdk::{
 };
 
 use crate::{
+    constants::MIN_LOCK_LEDGERS,
     contract::{SafeHaven, SafeHavenClient},
     errors::VaultError,
     types::{VaultEntry, VaultKey, MAX_DEPOSIT_AMOUNT, MAX_LOCK_DURATION_SECS},
@@ -1566,6 +1567,17 @@ fn test_deposit_by_ledger_event_emitted() {
     assert_eq!(last.0, vault.address.clone());
 }
 
+#[test]
+fn test_deposit_by_ledger_lock_duration_too_short_fails() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+
+    let unlock_ledger = env.ledger().sequence() + (MIN_LOCK_LEDGERS - 1);
+    assert_eq!(
+        vault.try_deposit_by_ledger(&alice, &token, &1_000, &unlock_ledger, &0),
+        Err(Ok(VaultError::LockDurationTooShort))
+    );
+}
+
 // ----------------------------------------------------------------
 //  Fix #7 — initialize must not be callable again after renounce_admin
 // ----------------------------------------------------------------
@@ -1803,4 +1815,162 @@ fn test_time_remaining_timestamp_deposit_unaffected() {
     advance_time(&env, 1800);
 
     assert_eq!(vault.time_remaining(&alice, &id), 1800);
+}
+
+// ================================================================
+//  get_deposits_page (Task 1)
+// ================================================================
+
+/// An empty contract returns an empty page.
+#[test]
+fn test_get_deposits_page_empty() {
+    let (_env, vault, _token, _admin, _alice, _fee) = setup();
+    let page = vault.get_deposits_page(&0, &10);
+    assert_eq!(page.len(), 0);
+}
+
+/// A single deposit from one depositor appears in the first page.
+#[test]
+fn test_get_deposits_page_single_deposit() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    let unlock = env.ledger().timestamp() + 3600;
+    let id = vault.deposit(&alice, &token, &1_000, &unlock, &0);
+
+    let page = vault.get_deposits_page(&0, &10);
+    assert_eq!(page.len(), 1);
+    let (addr, dep_id, entry) = page.get(0).unwrap();
+    assert_eq!(addr, alice);
+    assert_eq!(dep_id, id);
+    assert_eq!(entry.amount, 1_000);
+}
+
+/// Deposits from multiple depositors are all returned in one page.
+#[test]
+fn test_get_deposits_page_multiple_depositors() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    let bob: Address = Address::generate(&env);
+    StellarAssetClient::new(&env, &token).mint(&bob, &5_000);
+
+    let unlock = env.ledger().timestamp() + 3600;
+    vault.deposit(&alice, &token, &1_000, &unlock, &0);
+    vault.deposit(&bob, &token, &2_000, &unlock, &0);
+
+    let page = vault.get_deposits_page(&0, &10);
+    assert_eq!(page.len(), 2);
+}
+
+/// Pagination: offset and limit slice the flat deposit stream correctly.
+#[test]
+fn test_get_deposits_page_pagination() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    StellarAssetClient::new(&env, &token).mint(&alice, &50_000);
+
+    let unlock = env.ledger().timestamp() + 3600;
+    // Three deposits from Alice.
+    vault.deposit(&alice, &token, &100, &unlock, &0);
+    vault.deposit(&alice, &token, &200, &unlock, &0);
+    vault.deposit(&alice, &token, &300, &unlock, &0);
+
+    let page0 = vault.get_deposits_page(&0, &2);
+    assert_eq!(page0.len(), 2);
+
+    let page1 = vault.get_deposits_page(&2, &2);
+    assert_eq!(page1.len(), 1);
+
+    let page2 = vault.get_deposits_page(&3, &10);
+    assert_eq!(page2.len(), 0);
+}
+
+/// Withdrawn deposits must not appear in get_deposits_page.
+#[test]
+fn test_get_deposits_page_excludes_withdrawn() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    let unlock = env.ledger().timestamp() + 3600;
+    let id = vault.deposit(&alice, &token, &1_000, &unlock, &0);
+
+    advance_time(&env, 3601);
+    vault.withdraw(&alice, &id);
+
+    let page = vault.get_deposits_page(&0, &10);
+    assert_eq!(page.len(), 0);
+}
+
+// ================================================================
+//  BUMP_THRESHOLD derived from BUMP_TARGET (Task 3)
+// ================================================================
+
+/// BUMP_THRESHOLD must equal BUMP_TARGET / 2 and both must be non-zero.
+#[test]
+fn test_bump_threshold_derived_from_bump_target() {
+    use crate::storage::{BUMP_TARGET, BUMP_THRESHOLD};
+    assert!(BUMP_TARGET > 0, "BUMP_TARGET must be positive");
+    assert_eq!(BUMP_THRESHOLD, BUMP_TARGET / 2,
+        "BUMP_THRESHOLD must be derived as BUMP_TARGET / 2");
+}
+
+// ================================================================
+//  migrate / get_storage_version (Task 4)
+// ================================================================
+
+/// A freshly initialised contract has no stored version (None).
+#[test]
+fn test_get_storage_version_unset() {
+    let (_env, vault, _token, _admin, _alice, _fee) = setup();
+    assert_eq!(vault.get_storage_version(), None);
+}
+
+/// migrate() sets the version to STORAGE_VERSION and returns true.
+#[test]
+fn test_migrate_sets_version() {
+    let (_env, vault, _token, admin, _alice, _fee) = setup();
+    let migrated = vault.migrate(&admin);
+    assert!(migrated, "first migrate call should return true");
+    assert_eq!(vault.get_storage_version(), Some(1));
+}
+
+/// A second call to migrate() is idempotent and returns false.
+#[test]
+fn test_migrate_idempotent() {
+    let (_env, vault, _token, admin, _alice, _fee) = setup();
+    vault.migrate(&admin);
+    let migrated_again = vault.migrate(&admin);
+    assert!(!migrated_again, "second migrate call should return false");
+    assert_eq!(vault.get_storage_version(), Some(1));
+}
+
+/// migrate() must fail when called by a non-admin.
+#[test]
+fn test_migrate_non_admin_fails() {
+    let (env, vault, _token, _admin, alice, _fee) = setup();
+    let result = vault.try_migrate(&alice);
+    assert_eq!(result, Err(Ok(VaultError::Unauthorized)));
+}
+
+// ================================================================
+//  O(1) remove_depositor — no duplicate list entries (Task 2)
+// ================================================================
+
+/// Depositing, withdrawing, and re-depositing must not create duplicate
+/// entries in the depositor list or inflate get_depositor_count.
+#[test]
+fn test_remove_depositor_o1_no_duplicate_on_redeposit() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    StellarAssetClient::new(&env, &token).mint(&alice, &10_000);
+
+    let unlock = env.ledger().timestamp() + 3600;
+    vault.deposit(&alice, &token, &1_000, &unlock, &0);
+    assert_eq!(vault.get_depositor_count(), 1);
+
+    advance_time(&env, 3601);
+    vault.withdraw(&alice, &0);
+    assert_eq!(vault.get_depositor_count(), 0);
+
+    let unlock2 = env.ledger().timestamp() + 3600;
+    vault.deposit(&alice, &token, &500, &unlock2, &0);
+    // Must still be 1, not 2.
+    assert_eq!(vault.get_depositor_count(), 1);
+
+    let page = vault.get_depositors(&0, &10);
+    assert_eq!(page.len(), 1);
+    assert_eq!(page.get(0).unwrap(), alice);
 }

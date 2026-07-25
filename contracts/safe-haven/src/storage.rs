@@ -6,13 +6,26 @@ use crate::types::{VaultEntry, VaultKey, LedgerVaultEntry, MAX_LOCK_DURATION_SEC
 pub const LEDGER_SECONDS: u64 = 5;
 
 // How many ledgers to extend TTL to cover the maximum allowed lock duration.
-pub const BUMP_THRESHOLD: u32 = 518_400;
+// BUMP_THRESHOLD is derived from BUMP_TARGET so both stay in sync automatically
+// when MAX_LOCK_DURATION_SECS changes — no silent inconsistency.
 pub const BUMP_TARGET: u32 = ((MAX_LOCK_DURATION_SECS + LEDGER_SECONDS - 1) / LEDGER_SECONDS) as u32;
+pub const BUMP_THRESHOLD: u32 = BUMP_TARGET / 2;
 
 // ----------------------------------------------------------------
 //  Deposit counter helpers
 // ----------------------------------------------------------------
 
+// `next_deposit_id` returns the next unused deposit ID for a depositor.
+// The counter is monotonic and is never decremented when deposits are
+// removed. If all deposits are withdrawn, the counter still advances
+// from its historical maximum, so a new deposit after a full drain will
+// receive the next unused ID and cannot collide with any prior deposit.
+//
+// The active deposit IDs are tracked separately in `ActiveDepositIds`, so
+// `get_deposit_ids` does not rely on scanning `0..counter` or checking
+// whether each historical deposit key exists. This keeps active ID
+// enumeration bounded by the number of open deposits rather than by the
+// historical counter value.
 pub fn next_deposit_id(env: &Env, depositor: &Address) -> u32 {
     let key = VaultKey::DepositCounter(depositor.clone());
     let id: u32 = env.storage().persistent().get(&key).unwrap_or(0);
@@ -258,44 +271,73 @@ fn save_depositor_list(env: &Env, list: &Vec<Address>) {
 }
 
 pub fn add_depositor(env: &Env, depositor: &Address) {
-    // O(1) existence check via a per-depositor boolean flag (fixes #19).
+    // DepositorFlag tracks *current* active status (set here, cleared by remove_depositor).
+    // DepositorInList tracks *ever appended to list* (set-once, never cleared) so that
+    // re-deposits after a withdrawal don't create duplicate list entries.
     let flag_key = VaultKey::DepositorFlag(depositor.clone());
+    let in_list_key = VaultKey::DepositorInList(depositor.clone());
+
+    // If already active, nothing to do at all.
     if env
         .storage()
         .persistent()
         .get::<VaultKey, bool>(&flag_key)
         .unwrap_or(false)
     {
-        return; // already registered
+        return;
     }
-    // Mark as registered before touching the list.
+
+    // (Re-)mark as active.
     env.storage().persistent().set(&flag_key, &true);
     env.storage()
         .persistent()
         .extend_ttl(&flag_key, BUMP_THRESHOLD, BUMP_TARGET);
 
-    let mut list = get_depositor_list(env);
-    list.push_back(depositor.clone());
-    save_depositor_list(env, &list);
+    // Only append to the list the very first time this address is seen.
+    if !env
+        .storage()
+        .persistent()
+        .get::<VaultKey, bool>(&in_list_key)
+        .unwrap_or(false)
+    {
+        env.storage().persistent().set(&in_list_key, &true);
+        env.storage()
+            .persistent()
+            .extend_ttl(&in_list_key, BUMP_THRESHOLD, BUMP_TARGET);
+
+        let mut list = get_depositor_list(env);
+        list.push_back(depositor.clone());
+        save_depositor_list(env, &list);
+    }
 }
 
 pub fn remove_depositor(env: &Env, depositor: &Address) {
-    // Clear the O(1) flag so a future re-deposit is correctly re-registered.
+    // O(1): deleting the per-depositor flag is enough to logically remove the
+    // depositor.  The DepositorList is an append-only index used exclusively
+    // for page enumeration; stale addresses are skipped at read time when the
+    // flag is absent.  This avoids deserialising and re-serialising the entire
+    // list on every withdrawal that empties a depositor's last vault — which
+    // would exceed Soroban's per-transaction budget for large lists.
     let flag_key = VaultKey::DepositorFlag(depositor.clone());
     env.storage().persistent().remove(&flag_key);
-
-    let list = get_depositor_list(env);
-    let mut new_list: Vec<Address> = Vec::new(env);
-    for addr in list.iter() {
-        if &addr != depositor {
-            new_list.push_back(addr);
-        }
-    }
-    save_depositor_list(env, &new_list);
 }
 
 pub fn get_depositor_count(env: &Env) -> u32 {
-    get_depositor_list(env).len()
+    // Count only addresses that still have an active flag.
+    let list = get_depositor_list(env);
+    let mut count: u32 = 0;
+    for addr in list.iter() {
+        let flag_key = VaultKey::DepositorFlag(addr.clone());
+        if env
+            .storage()
+            .persistent()
+            .get::<VaultKey, bool>(&flag_key)
+            .unwrap_or(false)
+        {
+            count = count.saturating_add(1);
+        }
+    }
+    count
 }
 
 // ----------------------------------------------------------------
@@ -316,13 +358,45 @@ pub fn is_paused(env: &Env) -> bool {
         .unwrap_or(false)
 }
 
+/// Returns the raw append-only depositor list (may contain stale entries after
+/// O(1) removes).  Callers that need only *active* depositors should filter with
+/// `depositor_is_active`.
+pub fn get_all_depositors_raw(env: &Env) -> Vec<Address> {
+    get_depositor_list(env)
+}
+
+/// Returns `true` if `depositor` currently has an active existence flag,
+/// i.e. they have at least one open deposit and have not been O(1)-removed.
+pub fn depositor_is_active(env: &Env, depositor: &Address) -> bool {
+    let flag_key = VaultKey::DepositorFlag(depositor.clone());
+    env.storage()
+        .persistent()
+        .get::<VaultKey, bool>(&flag_key)
+        .unwrap_or(false)
+}
+
 pub fn get_depositors_page(env: &Env, offset: u32, limit: u32) -> Vec<Address> {
     let list = get_depositor_list(env);
-    let len = list.len();
     let mut page: Vec<Address> = Vec::new(env);
-    let end = offset.saturating_add(limit).min(len);
-    for i in offset..end {
-        page.push_back(list.get(i).unwrap());
+    let mut active_seen: u32 = 0;
+    let end_at = offset.saturating_add(limit);
+    for addr in list.iter() {
+        let flag_key = VaultKey::DepositorFlag(addr.clone());
+        if !env
+            .storage()
+            .persistent()
+            .get::<VaultKey, bool>(&flag_key)
+            .unwrap_or(false)
+        {
+            continue; // stale entry left by O(1) remove — skip
+        }
+        if active_seen >= offset && active_seen < end_at {
+            page.push_back(addr.clone());
+        }
+        active_seen = active_seen.saturating_add(1);
+        if active_seen >= end_at {
+            break;
+        }
     }
     page
 }
@@ -337,4 +411,27 @@ pub fn require_admin(env: &Env, caller: &Address) -> Result<(), crate::errors::V
         Some(ref stored) if stored == caller => Ok(()),
         _ => Err(crate::errors::VaultError::Unauthorized),
     }
+}
+
+// ----------------------------------------------------------------
+//  Storage version helpers (Task 4)
+// ----------------------------------------------------------------
+
+/// Write the current schema version into persistent storage.
+/// Called at the end of a successful `migrate()` invocation.
+pub fn set_storage_version(env: &Env, version: u32) {
+    env.storage()
+        .persistent()
+        .set(&VaultKey::StorageVersion, &version);
+    env.storage()
+        .persistent()
+        .extend_ttl(&VaultKey::StorageVersion, BUMP_THRESHOLD, BUMP_TARGET);
+}
+
+/// Read the schema version that was last written by `migrate()`.
+/// Returns `None` for contracts deployed before versioning was introduced.
+pub fn get_storage_version(env: &Env) -> Option<u32> {
+    env.storage()
+        .persistent()
+        .get(&VaultKey::StorageVersion)
 }
