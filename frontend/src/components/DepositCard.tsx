@@ -14,7 +14,7 @@ export function DepositCard({ deposit, onWithdraw, onCancel, txPending }: Deposi
   const [showDetails, setShowDetails] = useState(false)
 
   const isXlm   = deposit.token === CONFIG.NATIVE_TOKEN
-  const isUnlocked = deposit.timeRemaining === 0
+  const isUnlocked = deposit.timeRemaining !== null && deposit.timeRemaining === 0
   const hasPenalty = deposit.penaltyBps > 0
 
   const penaltyAmount = isUnlocked

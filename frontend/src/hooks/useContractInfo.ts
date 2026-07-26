@@ -26,6 +26,7 @@ export function useContractInfo(): ContractInfo {
   const [depositorCount, setDepositorCount] = useState(0)
   const [feeRecipient,   setFeeRecipient]   = useState<string | null>(null)
   const [loading,        setLoading]        = useState(true)
+  const prevPausedRef = useRef<boolean>(false)
 
   const refresh = useCallback(async () => {
     setLoading(true)
@@ -54,7 +55,17 @@ export function useContractInfo(): ContractInfo {
     }
   }, [])
 
+  // Initial fetch on mount
   useEffect(() => { void refresh() }, [refresh])
+
+  // Set up 30-second polling interval for pause state
+  useEffect(() => {
+    const intervalId = setInterval(() => {
+      void refresh()
+    }, 30_000) // 30 seconds
+
+    return () => clearInterval(intervalId)
+  }, [refresh])
 
   return {
     admin, pendingAdmin, paused, maxDeposit, maxLockSecs, depositorCount, feeRecipient, loading, refresh,

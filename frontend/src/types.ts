@@ -14,8 +14,8 @@ export interface VaultEntry {
 /** A deposit with its ID attached */
 export interface Deposit extends VaultEntry {
   depositId: number
-  /** Seconds remaining until unlock (0 if unlocked) */
-  timeRemaining: number
+  /** Seconds remaining until unlock (0 if unlocked, null during initial load) */
+  timeRemaining: number | null
 }
 
 /** Result of wallet connection */
