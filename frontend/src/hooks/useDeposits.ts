@@ -3,7 +3,7 @@
 // ============================================================
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { getDepositIds, getVault, getTimeRemaining } from '../lib/stellar'
+import { getDepositIds, getDepositBatch, getLedgerTime } from '../lib/stellar'
 import type { Deposit } from '../types'
 
 interface UseDepositsResult {
@@ -15,8 +15,8 @@ interface UseDepositsResult {
 
 export function useDeposits(depositorAddress: string | null): UseDepositsResult {
   const [deposits, setDeposits] = useState<Deposit[]>([])
-  const [loading,  setLoading]  = useState(false)
-  const [error,    setError]    = useState<string | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
   const abortRef = useRef<AbortController | null>(null)
 
   const refresh = useCallback(async () => {
@@ -37,19 +37,34 @@ export function useDeposits(depositorAddress: string | null): UseDepositsResult 
       const ids = await getDepositIds(depositorAddress)
       if (ctrl.signal.aborted) return
 
-      const results = await Promise.all(
-        ids.map(async (id) => {
-          const [entry, remaining] = await Promise.all([
-            getVault(depositorAddress, id),
-            getTimeRemaining(depositorAddress, id),
-          ])
-          if (!entry) return null
-          return { ...entry, depositId: id, timeRemaining: remaining } as Deposit
-        }),
-      )
+      // Get current ledger time for computing timeRemaining
+      const now = await getLedgerTime()
+      if (ctrl.signal.aborted) return
+
+      // Fetch all vault entries in batches (max 25 per call)
+      const batchSize = 25
+      const allDeposits: Deposit[] = []
+
+      for (let i = 0; i < ids.length; i += batchSize) {
+        const batch = ids.slice(i, i + batchSize)
+        const results = await getDepositBatch(depositorAddress, batch)
+        if (ctrl.signal.aborted) return
+
+        for (let j = 0; j < results.length; j++) {
+          const { entry } = results[j]
+          if (entry) {
+            const timeRemaining = Math.max(0, entry.unlockTime - now)
+            allDeposits.push({
+              ...entry,
+              depositId: batch[j],
+              timeRemaining,
+            })
+          }
+        }
+      }
 
       if (ctrl.signal.aborted) return
-      setDeposits(results.filter((d): d is Deposit => d !== null))
+      setDeposits(allDeposits)
     } catch (e) {
       if (ctrl.signal.aborted) return
       setError(e instanceof Error ? e.message : 'Failed to load deposits')
