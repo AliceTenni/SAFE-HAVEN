@@ -116,6 +116,32 @@ jobs:
         run: cargo test --doc --features testutils
 
   # ----------------------------------------------------------------
+  #  Frontend (TypeScript + Vite build)
+  # ----------------------------------------------------------------
+  frontend:
+    name: Frontend (TypeScript + build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Type check
+        run: npx tsc --noEmit
+
+  # ----------------------------------------------------------------
   #  Unsafe Code Scanner (cargo-geiger)
   # ----------------------------------------------------------------
   geiger:
