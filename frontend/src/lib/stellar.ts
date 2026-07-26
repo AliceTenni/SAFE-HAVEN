@@ -136,6 +136,43 @@ export async function getVault(depositor: string, depositId: number): Promise<Va
   )
 }
 
+/** Fetch multiple deposits for a single depositor in one RPC call (batch fetch) */
+export async function getDepositBatch(
+  depositor: string,
+  depositIds: number[],
+): Promise<{ id: number; entry: VaultEntry | null }[]> {
+  return simulateReadOnly(
+    'get_deposit_batch',
+    [
+      new Address(depositor).toScVal(),
+      nativeToScVal(depositIds, { type: 'Vec<u32>' }),
+    ],
+    (v) => {
+      const result = scValToNative(v) as Array<Record<string, unknown>>
+      return result.map((item) => {
+        const id = Number(item[0] ?? item.id ?? 0) as number
+        const entryRaw = item[1] ?? item.entry
+        let entry: VaultEntry | null = null
+        if (entryRaw) {
+          try {
+            const raw = entryRaw as Record<string, unknown>
+            entry = {
+              token: raw['token'] as string,
+              amount: BigInt(raw['amount'] as string | number),
+              unlockTime: Number(raw['unlock_time']),
+              depositor: raw['depositor'] as string,
+              penaltyBps: Number(raw['penalty_bps']),
+            }
+          } catch {
+            entry = null
+          }
+        }
+        return { id, entry }
+      })
+    },
+  ).then((result) => result ?? [])
+}
+
 /** Fetch all deposit IDs for an address */
 export async function getDepositIds(depositor: string): Promise<number[]> {
   const result = await simulateReadOnly(
@@ -358,4 +395,43 @@ export async function buildEmergencyWithdraw(
     new Address(depositor).toScVal(),
     nativeToScVal(depositId, { type: 'u32' }),
   ])
+}
+
+export async function buildTransferAdmin(
+  admin: string,
+  newAdmin: string,
+): Promise<string | null> {
+  return buildTx(admin, 'transfer_admin', [
+    new Address(admin).toScVal(),
+    new Address(newAdmin).toScVal(),
+  ])
+}
+
+export async function buildAcceptAdmin(
+  newAdmin: string,
+): Promise<string | null> {
+  return buildTx(newAdmin, 'accept_admin', [
+    new Address(newAdmin).toScVal(),
+  ])
+}
+
+export async function buildCancelTransferAdmin(
+  admin: string,
+): Promise<string | null> {
+  return buildTx(admin, 'cancel_transfer_admin', [
+    new Address(admin).toScVal(),
+  ])
+}
+
+/** Fetch pending admin address */
+export async function getPendingAdmin(): Promise<string | null> {
+  const result = await simulateReadOnly(
+    'get_pending_admin',
+    [],
+    (v) => {
+      if (v.switch() === xdr.ScValType.scvVoid()) return null
+      return scValToNative(v) as string
+    },
+  )
+  return result ?? null
 }
