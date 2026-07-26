@@ -156,7 +156,7 @@ jobs:
           targets: wasm32-unknown-unknown
 
       - name: Cache cargo registry
-        uses: actions/cache@v5
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: |
             ~/.cargo/registry
@@ -165,8 +165,15 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
           restore-keys: ${{ runner.os }}-cargo-
 
+      - name: Cache cargo-geiger binary
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ~/.cargo/bin/cargo-geiger
+          key: ${{ runner.os }}-cargo-geiger-0.11.7
+          restore-keys: ${{ runner.os }}-cargo-geiger-
+
       - name: Install cargo-geiger
-        run: cargo install cargo-geiger
+        run: cargo install cargo-geiger --version =0.11.7 --locked
 
       - name: Scan for unsafe code
         run: cargo geiger --all-features
