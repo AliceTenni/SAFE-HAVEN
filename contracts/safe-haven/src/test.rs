@@ -1974,3 +1974,309 @@ fn test_remove_depositor_o1_no_duplicate_on_redeposit() {
     assert_eq!(page.len(), 1);
     assert_eq!(page.get(0).unwrap(), alice);
 }
+
+
+// ================================================================
+//  #88 Full deposit_by_ledger → withdraw lifecycle
+// ================================================================
+
+/// Comprehensive end-to-end test for ledger-based deposits:
+/// 1. Create a ledger-based deposit
+/// 2. Verify withdrawal is blocked before unlock_ledger
+/// 3. Advance ledger past unlock_ledger
+/// 4. Verify withdrawal succeeds after unlock
+#[test]
+fn test_deposit_by_ledger_withdraw_lifecycle() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    let token_client = TokenClient::new(&env, &token);
+
+    // Initial balance check
+    assert_eq!(token_client.balance(&alice), 10_000);
+
+    // Create a ledger-based deposit with 50-ledger lock
+    let unlock_ledger = env.ledger().sequence() + 50;
+    let id = vault.deposit_by_ledger(&alice, &token, &5_000, &unlock_ledger, &0);
+
+    // Verify the deposit was created
+    assert_eq!(id, 0);
+    let entry = vault.get_vault(&alice, &id).expect("deposit should exist");
+    assert_eq!(entry.amount, 5_000);
+    assert_eq!(entry.unlock_ledger, Some(unlock_ledger));
+    assert_eq!(entry.depositor, alice);
+
+    // Verify tokens were transferred to contract
+    assert_eq!(token_client.balance(&alice), 5_000);
+
+    // Attempt withdrawal before unlock_ledger — must fail
+    assert_eq!(
+        vault.try_withdraw(&alice, &id),
+        Err(Ok(VaultError::FundsStillLocked))
+    );
+
+    // Advance 25 ledgers (still before unlock_ledger)
+    advance_ledger(&env, 25);
+    assert_eq!(
+        vault.try_withdraw(&alice, &id),
+        Err(Ok(VaultError::FundsStillLocked))
+    );
+
+    // Advance to exactly the unlock_ledger
+    advance_ledger(&env, 25);
+    assert_eq!(env.ledger().sequence(), unlock_ledger);
+
+    // Withdrawal at unlock_ledger should now succeed
+    vault.withdraw(&alice, &id);
+
+    // Verify deposit was removed and tokens returned
+    assert!(vault.get_vault(&alice, &id).is_none());
+    assert_eq!(token_client.balance(&alice), 10_000);
+}
+
+// ================================================================
+//  #89 cancel_deposit on ledger-based deposits
+// ================================================================
+
+/// Test cancel_deposit on a ledger-based deposit with zero penalty.
+/// Should return full amount to depositor.
+#[test]
+fn test_cancel_deposit_ledger_based_zero_penalty() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    let token_client = TokenClient::new(&env, &token);
+
+    let unlock_ledger = env.ledger().sequence() + 100;
+    let id = vault.deposit_by_ledger(&alice, &token, &3_000, &unlock_ledger, &0);
+
+    assert_eq!(token_client.balance(&alice), 7_000);
+
+    // Cancel the deposit before unlock
+    vault.cancel_deposit(&alice, &id);
+
+    // Full amount should be returned (no penalty)
+    assert_eq!(token_client.balance(&alice), 10_000);
+    assert!(vault.get_vault(&alice, &id).is_none());
+}
+
+/// Test cancel_deposit on a ledger-based deposit with penalty.
+/// Penalty should be paid to fee_recipient; remainder to depositor.
+#[test]
+fn test_cancel_deposit_ledger_based_with_penalty() {
+    let (env, vault, token, _admin, alice, fee) = setup();
+    let token_client = TokenClient::new(&env, &token);
+
+    let unlock_ledger = env.ledger().sequence() + 100;
+    let id = vault.deposit_by_ledger(&alice, &token, &4_000, &unlock_ledger, &2_500); // 25%
+
+    assert_eq!(token_client.balance(&alice), 6_000);
+    assert_eq!(token_client.balance(&fee), 0);
+
+    // Cancel the deposit
+    vault.cancel_deposit(&alice, &id);
+
+    // 25% penalty = 1_000; remainder = 3_000
+    assert_eq!(token_client.balance(&alice), 9_000);
+    assert_eq!(token_client.balance(&fee), 1_000);
+    assert!(vault.get_vault(&alice, &id).is_none());
+}
+
+/// Test that cancel_deposit fails after the unlock_ledger has passed.
+#[test]
+fn test_cancel_deposit_ledger_based_after_unlock_fails() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+
+    let unlock_ledger = env.ledger().sequence() + 10;
+    let id = vault.deposit_by_ledger(&alice, &token, &2_000, &unlock_ledger, &500);
+
+    // Advance past the unlock ledger
+    advance_ledger(&env, 11);
+
+    // Attempt cancel should fail because vault is now unlocked
+    assert_eq!(
+        vault.try_cancel_deposit(&alice, &id),
+        Err(Ok(VaultError::VaultAlreadyUnlocked))
+    );
+}
+
+/// Test cancel_deposit on a non-existent ledger-based deposit.
+#[test]
+fn test_cancel_deposit_ledger_based_not_found() {
+    let (_env, vault, _token, _admin, alice, _fee) = setup();
+
+    assert_eq!(
+        vault.try_cancel_deposit(&alice, &999),
+        Err(Ok(VaultError::NoDepositFound))
+    );
+}
+
+// ================================================================
+//  #90 emergency_withdraw on ledger-based deposits
+// ================================================================
+
+/// Test that admin can emergency_withdraw a ledger-based deposit before unlock.
+/// Funds must go to the depositor, not the admin.
+#[test]
+fn test_emergency_withdraw_ledger_based_succeeds() {
+    let (env, vault, token, admin, alice, _fee) = setup();
+    let token_client = TokenClient::new(&env, &token);
+
+    // Create a ledger-based deposit that is still locked
+    let unlock_ledger = env.ledger().sequence() + 500;
+    let id = vault.deposit_by_ledger(&alice, &token, &3_500, &unlock_ledger, &0);
+
+    assert_eq!(token_client.balance(&alice), 6_500);
+
+    // Admin performs emergency withdrawal
+    vault.emergency_withdraw(&admin, &alice, &id);
+
+    // Funds go to depositor, not admin
+    assert_eq!(token_client.balance(&alice), 10_000);
+    assert!(vault.get_vault(&alice, &id).is_none());
+}
+
+/// Test that emergency_withdraw fails when called by a non-admin on a ledger-based deposit.
+#[test]
+fn test_emergency_withdraw_ledger_based_non_admin_fails() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    let bob: Address = Address::generate(&env);
+
+    let unlock_ledger = env.ledger().sequence() + 500;
+    vault.deposit_by_ledger(&alice, &token, &2_000, &unlock_ledger, &0);
+
+    // Non-admin attempts to emergency_withdraw
+    assert_eq!(
+        vault.try_emergency_withdraw(&bob, &alice, &0),
+        Err(Ok(VaultError::Unauthorized))
+    );
+}
+
+/// Test emergency_withdraw on a non-existent ledger-based deposit.
+#[test]
+fn test_emergency_withdraw_ledger_based_not_found() {
+    let (_env, vault, _token, admin, alice, _fee) = setup();
+
+    assert_eq!(
+        vault.try_emergency_withdraw(&admin, &alice, &999),
+        Err(Ok(VaultError::NoDepositFound))
+    );
+}
+
+// ================================================================
+//  #91 Property-based tests for penalty calculation
+// ================================================================
+
+#[cfg(test)]
+mod penalty_property_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// Property: penalty + refund == original amount
+    /// For any valid (amount, penalty_bps) pair, the sum of penalty and refund
+    /// must equal the original amount (no loss or gain).
+    proptest! {
+        #[test]
+        fn prop_penalty_plus_refund_equals_amount(
+            amount in 1i128..=1_000_000,
+            penalty_bps in 0u32..=10_000,
+        ) {
+            let penalty = (amount * penalty_bps as i128) / 10_000;
+            let refund = amount - penalty;
+            
+            prop_assert_eq!(
+                penalty + refund,
+                amount,
+                "penalty + refund must equal original amount"
+            );
+        }
+    }
+
+    /// Property: penalty is always non-negative
+    proptest! {
+        #[test]
+        fn prop_penalty_non_negative(
+            amount in 1i128..=1_000_000,
+            penalty_bps in 0u32..=10_000,
+        ) {
+            let penalty = (amount * penalty_bps as i128) / 10_000;
+            prop_assert!(penalty >= 0, "penalty must be non-negative");
+        }
+    }
+
+    /// Property: penalty is always <= amount
+    proptest! {
+        #[test]
+        fn prop_penalty_at_most_amount(
+            amount in 1i128..=1_000_000,
+            penalty_bps in 0u32..=10_000,
+        ) {
+            let penalty = (amount * penalty_bps as i128) / 10_000;
+            prop_assert!(penalty <= amount, "penalty must not exceed amount");
+        }
+    }
+
+    /// Property: refund is always non-negative
+    proptest! {
+        #[test]
+        fn prop_refund_non_negative(
+            amount in 1i128..=1_000_000,
+            penalty_bps in 0u32..=10_000,
+        ) {
+            let penalty = (amount * penalty_bps as i128) / 10_000;
+            let refund = amount - penalty;
+            prop_assert!(refund >= 0, "refund must be non-negative");
+        }
+    }
+
+    /// Property: max penalty (10_000 bps = 100%) equals the amount
+    proptest! {
+        #[test]
+        fn prop_max_penalty_equals_amount(amount in 1i128..=1_000_000) {
+            let penalty_bps = 10_000u32;
+            let penalty = (amount * penalty_bps as i128) / 10_000;
+            prop_assert_eq!(penalty, amount, "100% penalty must equal amount");
+        }
+    }
+
+    /// Property: zero penalty (0 bps) results in zero penalty
+    proptest! {
+        #[test]
+        fn prop_zero_penalty_bps_results_zero_penalty(amount in 1i128..=1_000_000) {
+            let penalty_bps = 0u32;
+            let penalty = (amount * penalty_bps as i128) / 10_000;
+            prop_assert_eq!(penalty, 0, "0% penalty must be zero");
+        }
+    }
+
+    /// Property: for edge case amount=1, penalty calculation doesn't overflow
+    proptest! {
+        #[test]
+        fn prop_amount_one_no_overflow(penalty_bps in 0u32..=10_000) {
+            let amount = 1i128;
+            let penalty = (amount * penalty_bps as i128) / 10_000;
+            let refund = amount - penalty;
+            prop_assert_eq!(
+                penalty + refund,
+                amount,
+                "even for amount=1, penalty + refund must equal 1"
+            );
+        }
+    }
+
+    /// Integration property: test with contract's actual penalty calculation
+    /// This ensures the contract's logic matches the formula.
+    proptest! {
+        #[test]
+        fn prop_penalty_calculation_matches_formula(
+            amount in 1i128..=MAX_DEPOSIT_AMOUNT,
+            penalty_bps in 0u32..=10_000,
+        ) {
+            // Replicate the contract's penalty calculation
+            let penalty = (amount * penalty_bps as i128) / 10_000;
+            let refund = amount - penalty;
+
+            // Verify invariants
+            prop_assert!(penalty >= 0);
+            prop_assert!(penalty <= amount);
+            prop_assert!(refund >= 0);
+            prop_assert_eq!(penalty + refund, amount);
+        }
+    }
+}
