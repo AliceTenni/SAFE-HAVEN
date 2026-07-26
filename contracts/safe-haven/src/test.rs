@@ -1,4 +1,3 @@
-#![cfg(test)]
 //! # SAFE-HAVEN Contract Test Suite
 //!
 //! This module contains all integration and unit tests for the `SafeHaven` vault
@@ -58,6 +57,8 @@
 //! ```bash
 //! cargo test -p safe-haven -- test_deposit_success
 //! ```
+
+#![cfg(test)]
 
 extern crate std;
 
@@ -2338,4 +2339,81 @@ mod penalty_property_tests {
             prop_assert_eq!(penalty + refund, amount);
         }
     }
+}
+
+// ================================================================
+//  get_vault_batch / get_deposit_batch — MAX_BATCH_SIZE clamping
+// ================================================================
+
+#[test]
+fn test_get_vault_batch_clamps_at_max_batch_size() {
+    use crate::constants::MAX_BATCH_SIZE;
+
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    let unlock_time = env.ledger().timestamp() + 3600;
+
+    // Create a single deposit for alice at id 0
+    vault.deposit(&alice, &token, &1_000, &unlock_time, &0);
+
+    // Build a depositor list larger than MAX_BATCH_SIZE (25)
+    let mut depositors = soroban_sdk::Vec::new(&env);
+    let excess = MAX_BATCH_SIZE + 5;
+    for _ in 0..excess {
+        depositors.push_back(alice.clone());
+    }
+
+    // Call get_vault_batch — should silently clamp to MAX_BATCH_SIZE results
+    let results = vault.get_vault_batch(&depositors, &0);
+    assert_eq!(results.len(), MAX_BATCH_SIZE);
+
+    // All returned entries should be Some (alice has a deposit at id 0)
+    for i in 0..MAX_BATCH_SIZE {
+        let entry = results.get(i).unwrap();
+        assert!(entry.is_some(), "index {} should have a deposit", i);
+        let e = entry.unwrap();
+        assert_eq!(e.amount, 1_000);
+    }
+}
+
+#[test]
+fn test_get_vault_batch_smaller_than_max_returns_exact_count() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    let bob: Address = Address::generate(&env);
+    let carol: Address = Address::generate(&env);
+
+    let asset_client = StellarAssetClient::new(&env, &token);
+    asset_client.mint(&bob, &5_000);
+    asset_client.mint(&carol, &5_000);
+
+    let unlock_time = env.ledger().timestamp() + 3600;
+    vault.deposit(&alice, &token, &1_000, &unlock_time, &0);
+    vault.deposit(&bob, &token, &2_000, &unlock_time, &0);
+    vault.deposit(&carol, &token, &3_000, &unlock_time, &0);
+
+    // Build a depositor list of 3 — fewer than MAX_BATCH_SIZE
+    let mut depositors = soroban_sdk::Vec::new(&env);
+    depositors.push_back(alice.clone());
+    depositors.push_back(bob.clone());
+    depositors.push_back(carol.clone());
+
+    let results = vault.get_vault_batch(&depositors, &0);
+    assert_eq!(results.len(), 3);
+}
+
+#[test]
+fn test_get_deposit_batch_clamps_at_max_batch_size() {
+    use crate::constants::MAX_BATCH_SIZE;
+
+    let (env, vault, token, _admin, alice, _fee) = setup();
+
+    // Build a deposit_ids list longer than MAX_BATCH_SIZE (30 items).
+    // Some of the IDs won't have deposits — that's fine; the test is only
+    // verifying that the response is clamped to MAX_BATCH_SIZE entries.
+    let mut deposit_ids = soroban_sdk::Vec::new(&env);
+    for i in 0u32..(MAX_BATCH_SIZE + 5) {
+        deposit_ids.push_back(i);
+    }
+
+    let results = vault.get_deposit_batch(&alice, &deposit_ids);
+    assert_eq!(results.len(), MAX_BATCH_SIZE as usize);
 }
