@@ -647,6 +647,24 @@ fn test_time_remaining_no_deposit_is_zero() {
     assert_eq!(vault.time_remaining(&alice, &0), 0);
 }
 
+/// Asserts that time_remaining returns 0 for a non-existent deposit ID even
+/// when the caller has active deposits — the frontend relies on this to
+/// detect "unlocked" / non-existent deposits.
+#[test]
+fn test_time_remaining_nonexistent_deposit_id_returns_zero() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    let unlock_time = env.ledger().timestamp() + 3600;
+
+    // Alice has deposit 0, but deposit 99 does not exist.
+    vault.deposit(&alice, &token, &1_000, &unlock_time, &0);
+    assert_eq!(vault.time_remaining(&alice, &99), 0);
+
+    // After withdrawing deposit 0, querying it must also return 0.
+    advance_time(&env, 3601);
+    vault.withdraw(&alice, &0);
+    assert_eq!(vault.time_remaining(&alice, &0), 0);
+}
+
 /// #105 — get_time must return the current ledger timestamp.
 #[test]
 fn test_get_time_returns_ledger_timestamp() {
