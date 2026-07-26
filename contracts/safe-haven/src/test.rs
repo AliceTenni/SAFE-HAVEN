@@ -2001,7 +2001,8 @@ fn test_deposit_by_ledger_withdraw_lifecycle() {
     assert_eq!(id, 0);
     let entry = vault.get_vault(&alice, &id).expect("deposit should exist");
     assert_eq!(entry.amount, 5_000);
-    assert_eq!(entry.unlock_ledger, Some(unlock_ledger));
+    let ledger_entry = vault.get_ledger_vault(&alice, &id).expect("ledger deposit should exist");
+    assert_eq!(ledger_entry.unlock_ledger, unlock_ledger);
     assert_eq!(entry.depositor, alice);
 
     // Verify tokens were transferred to contract
@@ -2279,4 +2280,322 @@ mod penalty_property_tests {
             prop_assert_eq!(penalty + refund, amount);
         }
     }
+}
+
+// ================================================================
+//  Cross-user withdrawal prevention (Task 2)
+// ================================================================
+
+/// Verifies that depositor A cannot withdraw deposit_id 0 that belongs to
+/// depositor B.  The auth check (require_auth) combined with the
+/// `VaultKey::Deposit(depositor, id)` key scoping must prevent cross-user
+/// withdrawal — a depositor can only withdraw their own deposits.
+#[test]
+fn test_cross_user_withdrawal_prevented() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    let bob: Address = Address::generate(&env);
+
+    // Mint tokens for Bob so he can deposit
+    StellarAssetClient::new(&env, &token).mint(&bob, &5_000);
+
+    let unlock_time = env.ledger().timestamp() + 3600;
+
+    // Alice deposits her own vault (id = 0 for Alice)
+    vault.deposit(&alice, &token, &1_000, &unlock_time, &0);
+
+    // Bob deposits his own vault (id = 0 for Bob — same id, different depositor)
+    vault.deposit(&bob, &token, &500, &unlock_time, &0);
+
+    // Both vaults exist under their respective depositors
+    assert!(vault.get_vault(&alice, &0).is_some());
+    assert!(vault.get_vault(&bob, &0).is_some());
+
+    advance_time(&env, 3601);
+
+    // Alice withdraws her own deposit — succeeds
+    let result = vault.try_withdraw(&alice, &0);
+    assert!(result.is_ok());
+
+    // Bob's vault should still exist — Alice's withdrawal couldn't touch it
+    // because the key is VaultKey::Deposit(alice, 0) ≠ VaultKey::Deposit(bob, 0)
+    assert!(vault.get_vault(&bob, &0).is_some());
+    assert_eq!(vault.get_vault(&bob, &0).unwrap().amount, 500);
+
+    // Alice's vault is now gone
+    assert!(vault.get_vault(&alice, &0).is_none());
+
+    // Bob withdraws his own deposit — succeeds independently
+    vault.withdraw(&bob, &0);
+    assert!(vault.get_vault(&bob, &0).is_none());
+
+    // Cross-user attempt: Bob tries to withdraw using Alice's deposit id,
+    // which does not exist in Bob's keyspace
+    assert_eq!(
+        vault.try_withdraw(&bob, &99),
+        Err(Ok(VaultError::NoDepositFound))
+    );
+}
+
+/// A depositor who never had a deposit tries to withdraw another depositor's
+/// active deposit ID — must get NoDepositFound, not FundsStillLocked.
+#[test]
+fn test_cross_user_withdrawal_nonexistent_depositor_fails() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    let bob: Address = Address::generate(&env);
+
+    let unlock_time = env.ledger().timestamp() + 3600;
+
+    // Alice deposits
+    vault.deposit(&alice, &token, &1_000, &unlock_time, &0);
+
+    advance_time(&env, 3601);
+
+    // Bob tries to withdraw Alice's deposit (id=0) — Bob has no deposits, so
+    // VaultKey::Deposit(bob, 0) won't exist.
+    let result = vault.try_withdraw(&bob, &0);
+    assert_eq!(result, Err(Ok(VaultError::NoDepositFound)));
+
+    // Alice's deposit is still intact
+    assert!(vault.get_vault(&alice, &0).is_some());
+    assert_eq!(vault.get_vault(&alice, &0).unwrap().amount, 1_000);
+}
+
+// ================================================================
+//  get_depositors_page — additional edge-case tests (Task 3)
+// ================================================================
+
+/// Verify that get_depositors returns depositors in insertion order.
+#[test]
+fn test_pagination_insertion_order_preserved() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    let bob: Address = Address::generate(&env);
+    let carol: Address = Address::generate(&env);
+    let dave: Address = Address::generate(&env);
+
+    let asset_client = StellarAssetClient::new(&env, &token);
+    asset_client.mint(&bob, &5_000);
+    asset_client.mint(&carol, &5_000);
+    asset_client.mint(&dave, &5_000);
+
+    let unlock_time = env.ledger().timestamp() + 3600;
+
+    // Insert in a known order: alice, bob, carol, dave
+    vault.deposit(&alice, &token, &1_000, &unlock_time, &0);
+    vault.deposit(&bob, &token, &2_000, &unlock_time, &0);
+    vault.deposit(&carol, &token, &3_000, &unlock_time, &0);
+    vault.deposit(&dave, &token, &4_000, &unlock_time, &0);
+
+    // Full page must return all four in insertion order
+    let page = vault.get_depositors(&0, &10);
+    assert_eq!(page.len(), 4);
+    assert_eq!(page.get(0).unwrap(), alice);
+    assert_eq!(page.get(1).unwrap(), bob);
+    assert_eq!(page.get(2).unwrap(), carol);
+    assert_eq!(page.get(3).unwrap(), dave);
+}
+
+/// offset + limit overflowing: offset near u32::MAX with a non-zero limit
+/// must saturate to an empty range rather than wrapping.
+#[test]
+fn test_pagination_offset_plus_limit_saturates() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    let unlock_time = env.ledger().timestamp() + 3600;
+    vault.deposit(&alice, &token, &1_000, &unlock_time, &0);
+
+    // offset = u32::MAX, limit = 1 — offset + limit would overflow without
+    // saturating_add.  The page must be empty (no active depositors at that offset).
+    let page = vault.get_depositors(&u32::MAX, &1);
+    assert_eq!(page.len(), 0);
+}
+
+/// limit = 0 with multiple depositors must return an empty page.
+#[test]
+fn test_pagination_limit_zero_with_multiple_depositors() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    let bob: Address = Address::generate(&env);
+    let carol: Address = Address::generate(&env);
+
+    let asset_client = StellarAssetClient::new(&env, &token);
+    asset_client.mint(&bob, &5_000);
+    asset_client.mint(&carol, &5_000);
+
+    let unlock_time = env.ledger().timestamp() + 3600;
+    vault.deposit(&alice, &token, &1_000, &unlock_time, &0);
+    vault.deposit(&bob, &token, &2_000, &unlock_time, &0);
+    vault.deposit(&carol, &token, &3_000, &unlock_time, &0);
+
+    let page = vault.get_depositors(&0, &0);
+    assert_eq!(page.len(), 0);
+}
+
+/// offset exactly at the active count must return an empty page.
+#[test]
+fn test_pagination_offset_exactly_at_count_returns_empty() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    let bob: Address = Address::generate(&env);
+
+    let asset_client = StellarAssetClient::new(&env, &token);
+    asset_client.mint(&bob, &5_000);
+
+    let unlock_time = env.ledger().timestamp() + 3600;
+    vault.deposit(&alice, &token, &1_000, &unlock_time, &0);
+    vault.deposit(&bob, &token, &2_000, &unlock_time, &0);
+
+    assert_eq!(vault.get_depositor_count(), 2);
+
+    // offset = count (2) → empty
+    let page = vault.get_depositors(&2, &5);
+    assert_eq!(page.len(), 0);
+}
+
+/// offset = 0, limit = 1 on a multi-depositor set returns exactly 1 entry.
+#[test]
+fn test_pagination_limit_one_returns_single_entry() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    let bob: Address = Address::generate(&env);
+
+    let asset_client = StellarAssetClient::new(&env, &token);
+    asset_client.mint(&bob, &5_000);
+
+    let unlock_time = env.ledger().timestamp() + 3600;
+    vault.deposit(&alice, &token, &1_000, &unlock_time, &0);
+    vault.deposit(&bob, &token, &2_000, &unlock_time, &0);
+
+    let page = vault.get_depositors(&0, &1);
+    assert_eq!(page.len(), 1);
+    assert_eq!(page.get(0).unwrap(), alice);
+}
+
+// ================================================================
+//  remove_depositor lifecycle — multi-depositor drain test (Task 4)
+// ================================================================
+
+/// Creates multiple depositors (some with multiple deposits), withdraws all
+/// deposits for a subset, then asserts the depositor list and count are correct.
+/// This verifies that remove_depositor correctly handles the O(n) / O(1) list
+/// mutation logic when depositors are fully drained vs. partially active.
+#[test]
+fn test_multi_depositor_full_drain_removes_from_list() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    let bob: Address = Address::generate(&env);
+    let carol: Address = Address::generate(&env);
+    let dave: Address = Address::generate(&env);
+
+    let asset_client = StellarAssetClient::new(&env, &token);
+    asset_client.mint(&alice, &10_000);
+    asset_client.mint(&bob, &10_000);
+    asset_client.mint(&carol, &10_000);
+    asset_client.mint(&dave, &10_000);
+
+    let t1 = env.ledger().timestamp() + 3600;
+    let t2 = env.ledger().timestamp() + 7200;
+    let t3 = env.ledger().timestamp() + 10800;
+
+    // Alice: 2 deposits
+    vault.deposit(&alice, &token, &1_000, &t1, &0);
+    vault.deposit(&alice, &token, &2_000, &t2, &0);
+
+    // Bob: 1 deposit
+    vault.deposit(&bob, &token, &3_000, &t1, &0);
+
+    // Carol: 2 deposits
+    vault.deposit(&carol, &token, &4_000, &t1, &0);
+    vault.deposit(&carol, &token, &5_000, &t2, &0);
+
+    // Dave: 1 deposit
+    vault.deposit(&dave, &token, &6_000, &t1, &0);
+
+    // All four should be in the depositor list
+    assert_eq!(vault.get_depositor_count(), 4);
+    let page = vault.get_depositors(&0, &10);
+    assert_eq!(page.len(), 4);
+    assert_eq!(page.get(0).unwrap(), alice);
+    assert_eq!(page.get(1).unwrap(), bob);
+    assert_eq!(page.get(2).unwrap(), carol);
+    assert_eq!(page.get(3).unwrap(), dave);
+
+    // Advance past t1 — Alice (id=0), Bob, Carol (id=0), Dave can withdraw
+    advance_time(&env, 3601);
+
+    // Withdraw Alice's first deposit (id=0) — she still has id=1 so stays active
+    vault.withdraw(&alice, &0);
+
+    // Withdraw Carol's first deposit (id=0) — she still has id=1 so stays active
+    vault.withdraw(&carol, &0);
+
+    // Withdraw Bob's only deposit — should remove Bob from list
+    vault.withdraw(&bob, &0);
+    assert_eq!(vault.get_depositor_count(), 3);
+
+    // Withdraw Dave's only deposit — should remove Dave from list
+    vault.withdraw(&dave, &0);
+    assert_eq!(vault.get_depositor_count(), 2);
+
+    // Alice still has deposit id=1 (locked until t2), so she stays
+    // Carol still has deposit id=1 (locked until t2), so she stays
+    let page = vault.get_depositors(&0, &10);
+    assert_eq!(page.len(), 2);
+    assert_eq!(page.get(0).unwrap(), alice);  // still active (has id=1)
+    assert_eq!(page.get(1).unwrap(), carol);  // still active (has id=1)
+
+    // Advance past t2 — Alice's 2nd and Carol's 2nd are now unlocked
+    advance_time(&env, 3601);
+
+    // Withdraw Alice's remaining deposit — now fully drained, removed from list
+    vault.withdraw(&alice, &1);
+    assert_eq!(vault.get_depositor_count(), 1);
+
+    // Withdraw Carol's remaining deposit — now fully drained, removed from list
+    vault.withdraw(&carol, &1);
+    assert_eq!(vault.get_depositor_count(), 0);
+
+    // The list should now be empty
+    let page = vault.get_depositors(&0, &10);
+    assert_eq!(page.len(), 0);
+}
+
+/// Verifies re-deposit after full drain puts the depositor back in the list
+/// exactly once (no duplicate entries).
+#[test]
+fn test_multi_depositor_redeposit_after_drain_no_duplicate() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    let bob: Address = Address::generate(&env);
+    let carol: Address = Address::generate(&env);
+
+    let asset_client = StellarAssetClient::new(&env, &token);
+    asset_client.mint(&alice, &10_000);
+    asset_client.mint(&bob, &10_000);
+    asset_client.mint(&carol, &10_000);
+
+    let t1 = env.ledger().timestamp() + 3600;
+
+    vault.deposit(&alice, &token, &1_000, &t1, &0);
+    vault.deposit(&bob, &token, &2_000, &t1, &0);
+    vault.deposit(&carol, &token, &3_000, &t1, &0);
+
+    assert_eq!(vault.get_depositor_count(), 3);
+
+    advance_time(&env, 3601);
+
+    // Fully withdraw all three
+    vault.withdraw(&alice, &0);
+    vault.withdraw(&bob, &0);
+    vault.withdraw(&carol, &0);
+
+    assert_eq!(vault.get_depositor_count(), 0);
+
+    // Re-deposit for alice and bob only
+    let t2 = env.ledger().timestamp() + 3600;
+    vault.deposit(&alice, &token, &500, &t2, &0);
+    vault.deposit(&bob, &token, &700, &t2, &0);
+
+    assert_eq!(vault.get_depositor_count(), 2);
+    let page = vault.get_depositors(&0, &10);
+    assert_eq!(page.len(), 2);
+    assert_eq!(page.get(0).unwrap(), alice);
+    assert_eq!(page.get(1).unwrap(), bob);
+
+    // Deposit again for alice (while she's already active) — count stays 2
+    vault.deposit(&alice, &token, &300, &t2, &0);
+    assert_eq!(vault.get_depositor_count(), 2);
 }

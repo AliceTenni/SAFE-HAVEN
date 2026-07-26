@@ -606,13 +606,13 @@ impl SafeHaven {
         deposit_ids: Vec<u32>,
     ) -> Vec<(u32, Option<VaultEntry>)> {
         let limit = if deposit_ids.len() > MAX_BATCH_SIZE {
-            MAX_BATCH_SIZE as usize
+            MAX_BATCH_SIZE
         } else {
             deposit_ids.len()
         };
         let mut results = Vec::new(&env);
         for i in 0..limit {
-            if let Some(id) = deposit_ids.get(i as u32) {
+            if let Some(id) = deposit_ids.get(i) {
                 let entry = storage::get_deposit_readonly(&env, &depositor, id);
                 results.push_back((id, entry));
             }
