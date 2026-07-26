@@ -1,4 +1,63 @@
 #![cfg(test)]
+//! # SAFE-HAVEN Contract Test Suite
+//!
+//! This module contains all integration and unit tests for the `SafeHaven` vault
+//! contract.  Tests are organised by category so contributors can quickly find
+//! relevant coverage when debugging regressions or adding features.
+//!
+//! ## Test categories
+//!
+//! | Category | Description | Key contract functions tested |
+//! |---|---|---|
+//! | **Initialization** | Contract deployment, admin setup, double-init guard | [`initialize`], [`is_initialized`] |
+//! | **Deposit – happy path** | Successful deposits, token transfers, event emission | [`deposit`] |
+//! | **Deposit – validation** | Zero / negative / over-max amounts, past unlock, invalid lock duration, penalty bps | [`deposit`], `constants` |
+//! | **Multi-deposit** | Multiple deposits per address, independent unlock times, ID continuity after withdrawal | [`deposit`], [`get_deposit_ids`], [`withdraw`] |
+//! | **deposit_for** | Third-party deposits, beneficiary withdraws, payer access control | [`deposit_for`] |
+//! | **Withdraw** | After-unlock withdrawal, exact-unlock edge case, insufficient-age rejection | [`withdraw`] |
+//! | **Cancel deposit** | Zero / partial / full penalties, post-unlock guard, penalty storage | [`cancel_deposit`] |
+//! | **Time helpers** | Remaining time query (pre/post unlock), ledger timestamp | [`time_remaining`], [`get_time`] |
+//! | **Emergency withdraw** | Admin-enabled early release, non-admin rejection, missing-deposit guard | [`emergency_withdraw`] |
+//! | **Admin transfer (two-step)** | Propose → accept flow, cancel, post-transfer permissions, renounce | [`transfer_admin`], [`accept_admin`], [`cancel_transfer_admin`], [`renounce_admin`] |
+//! | **Re-deposit** | Withdraw then re-deposit with fresh unlock time and ID | [`deposit`], [`withdraw`] |
+//! | **TTL / storage** | BUMP_TARGET covers max lock duration | `storage::BUMP_TARGET` |
+//! | **View functions** | Read-only queries (`get_vault` / `time_remaining`) are idempotent and don't mutate state | [`get_vault`], [`time_remaining`] |
+//! | **Depositor list / pagination** | Count, pagination offsets, limit, edge-case offsets, re-add after withdraw | [`get_depositor_count`], [`get_depositors`] |
+//! | **Configurable limits** | Custom `max_deposit` / `max_lock_secs` on init, fallback to defaults | [`initialize`], [`get_constants`] |
+//! | **XDR serialization** | Round-trip `to_xdr` / `from_xdr` for `VaultEntry` and `VaultKey` variants | [`VaultEntry`], [`VaultKey`] |
+//! | **Auth assertions** | `require_auth` enforcement for deposit, withdraw, admin actions | All auth-gated functions |
+//! | **Boundary & lifecycle** | Exact max lock duration, unlock-time-minus-one, exact-unlock, fee recipient | [`deposit`], [`withdraw`] |
+//! | **Batch queries** | `get_vault_batch` / `get_deposit_batch` clamping at `MAX_BATCH_SIZE` | [`get_vault_batch`], [`get_deposit_batch`] |
+//! | **Pause / unpause** | Deposit gating while paused, admin-only toggle | [`pause`], [`unpause`], [`is_paused`] |
+//!
+//! ## Helpers
+//!
+//! * [`setup`] – creates a default `Env`, deploys the contract, initialises it,
+//!   and returns commonly-needed addresses (admin, alice, fee_recipient, token).
+//! * [`setup_with_limits`] – same as `setup` but accepts optional `max_deposit`
+//!   and `max_lock_secs` override arguments.
+//! * [`advance_time`] – moves the ledger timestamp forward by `seconds`.
+//!
+//! ## Running tests
+//!
+//! Run **all** tests:
+//! ```bash
+//! cargo test -p safe-haven
+//! ```
+//!
+//! Run a **specific category** by test name prefix:
+//! ```bash
+//! cargo test -p safe-haven -- deposit           # deposit + deposit_for
+//! cargo test -p safe-haven -- withdraw          # withdraw* tests
+//! cargo test -p safe-haven -- admin             # admin-transfer + renounce
+//! cargo test -p safe-haven -- pagination        # pagination + depositor list
+//! cargo test -p safe-haven -- batch             # get_vault_batch tests
+//! ```
+//!
+//! Run a **single test**:
+//! ```bash
+//! cargo test -p safe-haven -- test_deposit_success
+//! ```
 
 extern crate std;
 
