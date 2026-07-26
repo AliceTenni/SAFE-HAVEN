@@ -12,6 +12,7 @@ import type { PageTab } from './types'
 // Re-export ContractInfo shape so pages can import it from App
 export interface ContractInfo {
   admin: string | null
+  pendingAdmin: string | null
   paused: boolean
   maxDeposit: bigint
   maxLockSecs: number

@@ -396,3 +396,42 @@ export async function buildEmergencyWithdraw(
     nativeToScVal(depositId, { type: 'u32' }),
   ])
 }
+
+export async function buildTransferAdmin(
+  admin: string,
+  newAdmin: string,
+): Promise<string | null> {
+  return buildTx(admin, 'transfer_admin', [
+    new Address(admin).toScVal(),
+    new Address(newAdmin).toScVal(),
+  ])
+}
+
+export async function buildAcceptAdmin(
+  newAdmin: string,
+): Promise<string | null> {
+  return buildTx(newAdmin, 'accept_admin', [
+    new Address(newAdmin).toScVal(),
+  ])
+}
+
+export async function buildCancelTransferAdmin(
+  admin: string,
+): Promise<string | null> {
+  return buildTx(admin, 'cancel_transfer_admin', [
+    new Address(admin).toScVal(),
+  ])
+}
+
+/** Fetch pending admin address */
+export async function getPendingAdmin(): Promise<string | null> {
+  const result = await simulateReadOnly(
+    'get_pending_admin',
+    [],
+    (v) => {
+      if (v.switch() === xdr.ScValType.scvVoid()) return null
+      return scValToNative(v) as string
+    },
+  )
+  return result ?? null
+}
