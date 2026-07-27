@@ -423,6 +423,14 @@ export async function buildCancelTransferAdmin(
   ])
 }
 
+export async function buildRenounceAdmin(
+  admin: string,
+): Promise<string | null> {
+  return buildTx(admin, 'renounce_admin', [
+    new Address(admin).toScVal(),
+  ])
+}
+
 /** Fetch pending admin address */
 export async function getPendingAdmin(): Promise<string | null> {
   const result = await simulateReadOnly(

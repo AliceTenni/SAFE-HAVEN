@@ -162,7 +162,7 @@ export function WithdrawPage() {
 
             {!isUnlocked && lookedUp.penaltyBps > 0 && (
               <>
-                <span className="text-slate-400">You'd receive</span>
+                <span className="text-slate-400">You'd receive (approx.)</span>
                 <span className="text-slate-200">{stroopsToXlm(refund)} {isXlm ? 'XLM' : 'tokens'}</span>
               </>
             )}

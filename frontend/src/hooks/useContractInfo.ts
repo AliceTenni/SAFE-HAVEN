@@ -2,7 +2,7 @@
 //  Hook: load contract-level info (admin, paused, constants)
 // ============================================================
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useState, useRef } from 'react'
 import { getAdmin, isPaused, getConstants, getDepositorCount, getFeeRecipient, getPendingAdmin } from '../lib/stellar'
 
 interface ContractInfo {
