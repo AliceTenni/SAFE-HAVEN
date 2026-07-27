@@ -7,13 +7,14 @@
 # Prerequisites:
 #   - stellar CLI installed (https://developers.stellar.org/docs/tools/developer-tools/cli/install-cli)
 #   - Contract WASM built: make build
+#   - jq installed (apt-get install jq / brew install jq)
 #
 # The script:
 #   1. Starts a local Soroban node
 #   2. Generates a funded test identity
 #   3. Deploys the contract
-#   4. Calls initialize, deposit, get_vault, time_remaining, withdraw
-#   5. Asserts expected outputs
+#   4. Calls initialize, deposit, get_vault, time_remaining, withdraw, depositor count
+#   5. Asserts expected outputs using jq and string comparison
 #   6. Stops the local node
 
 set -euo pipefail
@@ -33,6 +34,26 @@ assert_contains() {
         pass "$label"
     else
         fail "$label — expected to contain '$expected', got: $actual"
+    fi
+}
+
+# Assert that a numeric value matches expected
+assert_eq() {
+    local label="$1" expected="$2" actual="$3"
+    if [ "$actual" = "$expected" ]; then
+        pass "$label ($expected)"
+    else
+        fail "$label — expected '$expected', got '$actual'"
+    fi
+}
+
+# Assert that a numeric value is greater than a threshold
+assert_gt() {
+    local label="$1" threshold="$2" actual="$3"
+    if [ "$actual" -gt "$threshold" ] 2>/dev/null; then
+        pass "$label ($actual)"
+    else
+        fail "$label — expected > $threshold, got: $actual"
     fi
 }
 
@@ -82,6 +103,16 @@ stellar contract invoke \
     --admin "$ADMIN_ADDR" > /dev/null
 pass "initialize OK"
 
+# ── 5b. Verify depositor count starts at 0 ────────────────────────────────────
+
+echo "==> Verifying initial depositor count..."
+DEPOSITOR_COUNT=$(stellar contract invoke \
+    --id "$CONTRACT_ID" \
+    --source "$IDENTITY" \
+    --network "$NETWORK" \
+    -- get_depositor_count)
+assert_eq "depositor_count == 0" "0" "$DEPOSITOR_COUNT"
+
 # ── 6. Wrap native XLM as a token ────────────────────────────────────────────
 
 echo "==> Wrapping native XLM..."
@@ -107,6 +138,16 @@ stellar contract invoke \
     --unlock_time "$UNLOCK_TIME" > /dev/null
 pass "deposit OK"
 
+# ── 7b. Verify depositor count incremented ────────────────────────────────────
+
+echo "==> Verifying depositor count after deposit..."
+DEPOSITOR_COUNT=$(stellar contract invoke \
+    --id "$CONTRACT_ID" \
+    --source "$IDENTITY" \
+    --network "$NETWORK" \
+    -- get_depositor_count)
+assert_eq "depositor_count == 1" "1" "$DEPOSITOR_COUNT"
+
 # ── 8. get_vault ──────────────────────────────────────────────────────────────
 
 echo "==> Calling get_vault..."
@@ -116,7 +157,16 @@ VAULT_OUT=$(stellar contract invoke \
     --network "$NETWORK" \
     -- get_vault \
     --depositor "$ADMIN_ADDR")
-assert_contains "get_vault returns amount 1000" "1000" "$VAULT_OUT"
+
+# Parse the JSON output to assert individual fields
+VAULT_AMOUNT=$(echo "$VAULT_OUT" | jq -r '.amount // empty')
+VAULT_UNLOCK=$(echo "$VAULT_OUT" | jq -r '.unlock_time // empty')
+VAULT_PENALTY=$(echo "$VAULT_OUT" | jq -r '.penalty_bps // empty')
+
+assert_eq "vault.amount == 1000" "1000" "$VAULT_AMOUNT"
+assert_eq "vault.unlock_time == $UNLOCK_TIME" "$UNLOCK_TIME" "$VAULT_UNLOCK"
+assert_eq "vault.penalty_bps == 0" "0" "$VAULT_PENALTY"
+pass "get_vault returns expected values"
 
 # ── 9. time_remaining ────────────────────────────────────────────────────────
 
@@ -128,10 +178,15 @@ TIME_OUT=$(stellar contract invoke \
     -- time_remaining \
     --depositor "$ADMIN_ADDR")
 # Should be > 0 since we just deposited with a 120s lock
-if [ "$TIME_OUT" -gt 0 ] 2>/dev/null; then
-    pass "time_remaining > 0 ($TIME_OUT)"
+assert_gt "time_remaining > 0" "0" "$TIME_OUT"
+
+# ── 9b. Verify time_remaining is approximately <= 120 ─────────────────────────
+
+echo "==> Verifying time_remaining ≤ 120..."
+if [ "$TIME_OUT" -le 120 ] 2>/dev/null; then
+    pass "time_remaining <= 120 ($TIME_OUT)"
 else
-    fail "time_remaining should be > 0, got: $TIME_OUT"
+    fail "time_remaining should be <= 120, got: $TIME_OUT"
 fi
 
 # ── 10. withdraw (should fail — still locked) ─────────────────────────────────
@@ -144,6 +199,28 @@ WITHDRAW_ERR=$(stellar contract invoke \
     -- withdraw \
     --depositor "$ADMIN_ADDR" 2>&1 || true)
 assert_contains "withdraw fails while locked" "FundsStillLocked" "$WITHDRAW_ERR"
+
+# ── 10b. Verify vault still exists (was NOT removed by failed withdraw) ───────
+
+echo "==> Verifying vault still exists after failed withdraw..."
+VAULT_CHECK=$(stellar contract invoke \
+    --id "$CONTRACT_ID" \
+    --source "$IDENTITY" \
+    --network "$NETWORK" \
+    -- get_vault \
+    --depositor "$ADMIN_ADDR")
+VAULT_CHECK_AMOUNT=$(echo "$VAULT_CHECK" | jq -r '.amount // empty')
+assert_eq "vault still has amount 1000" "1000" "$VAULT_CHECK_AMOUNT"
+
+# ── 10c. Verify depositor count unchanged after failed withdraw ───────────────
+
+echo "==> Verifying depositor count unchanged after failed withdraw..."
+DEPOSITOR_COUNT=$(stellar contract invoke \
+    --id "$CONTRACT_ID" \
+    --source "$IDENTITY" \
+    --network "$NETWORK" \
+    -- get_depositor_count)
+assert_eq "depositor_count still == 1" "1" "$DEPOSITOR_COUNT"
 
 # ── Done ──────────────────────────────────────────────────────────────────────
 
