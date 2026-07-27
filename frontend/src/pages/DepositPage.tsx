@@ -14,7 +14,7 @@ interface DepositPageProps {
 }
 
 export function DepositPage({ contractInfo, onSuccess }: DepositPageProps) {
-  const { wallet, signTransaction } = useWallet()
+  const { wallet, isRestoringSession, signTransaction } = useWallet()
 
   const [tokenAddress, setTokenAddress] = useState(CONFIG.NATIVE_TOKEN)
   const [amount,       setAmount]       = useState('')
@@ -55,24 +55,34 @@ export function DepositPage({ contractInfo, onSuccess }: DepositPageProps) {
       const xdr = await buildDeposit(wallet.address, tokenAddress, amountStroops, unlockTimestamp, penaltyBpsNum)
       if (!xdr) throw new Error('Failed to build transaction')
 
-      const signed = await signTransaction(xdr)
-      if (!signed) { setTxStatus('idle'); return }
-
-      setTxStatus('submitting')
-      const result = await submitTx(signed)
-
-      if (result.success) {
-        setTxStatus('success')
-        setTxHash(result.txHash)
-        toast.success('Deposit successful! Your tokens are locked.')
-        setAmount('')
-        setUnlockDate('')
-        setPenaltyBps('0')
-        setTimeout(onSuccess, 1500)
+      const sigResult = await signTransaction(xdr)
+      
+      // Handle the three signing outcomes
+      if (sigResult.signed) {
+        // Success: proceed with submission
+        setTxStatus('submitting')
+        const result = await submitTx(sigResult.xdr)
+        
+        if (result.success) {
+          setTxStatus('success')
+          setTxHash(result.txHash)
+          toast.success('Deposit successful! Your tokens are locked.')
+          setAmount('')
+          setUnlockDate('')
+          setPenaltyBps('0')
+          setTimeout(onSuccess, 1500)
+        } else {
+          setTxStatus('error')
+          setTxError(result.error)
+          toast.error(result.error ?? 'Deposit failed')
+        }
+      } else if (sigResult.rejected) {
+        // User rejected: silently reset state
+        setTxStatus('idle')
+        return
       } else {
-        setTxStatus('error')
-        setTxError(result.error)
-        toast.error(result.error ?? 'Deposit failed')
+        // Signing error: already toasted, but still reset state
+        setTxStatus('idle')
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Unexpected error'
@@ -84,7 +94,7 @@ export function DepositPage({ contractInfo, onSuccess }: DepositPageProps) {
 
   const isPending = txStatus === 'signing' || txStatus === 'submitting' || txStatus === 'confirming'
 
-  if (!wallet) {
+  if (!wallet && !isRestoringSession) {
     return (
       <div className="card p-10 text-center">
         <p className="text-slate-400">Connect your wallet to deposit tokens.</p>

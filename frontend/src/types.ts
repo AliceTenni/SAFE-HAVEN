@@ -22,6 +22,8 @@ export interface Deposit extends VaultEntry {
 export interface WalletInfo {
   address: string
   displayAddress: string
+  networkMismatch?: boolean  // True if wallet network differs from app network
+  walletNetwork?: string     // Network passphrase from Freighter (for display)
 }
 
 /** Tab pages */
@@ -37,3 +39,9 @@ export interface ContractResult<T> {
   error?: string
   txHash?: string
 }
+
+/** Discriminated union for wallet signing results */
+export type SigningResult = 
+  | { signed: true; xdr: string }           // Successfully signed
+  | { signed: false; rejected: true }       // User rejected the signing request
+  | { signed: false; rejected: false; error: string } // Signing failed with error
