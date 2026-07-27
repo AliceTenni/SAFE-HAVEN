@@ -1422,11 +1422,11 @@ fn test_withdraw_to_ledger_deposit_succeeds() {
     let bob: Address = Address::generate(&env);
     let token_client = TokenClient::new(&env, &token);
 
-    let unlock_ledger = env.ledger().sequence() + 10;
+    let unlock_ledger = env.ledger().sequence() + MIN_LOCK_LEDGERS;
     let id = vault.deposit_by_ledger(&alice, &token, &1_000, &unlock_ledger, &0);
 
     // Advance past the unlock ledger
-    advance_ledger(&env, 10);
+    advance_ledger(&env, MIN_LOCK_LEDGERS);
 
     vault.withdraw_to(&alice, &id, &bob);
 
@@ -1496,10 +1496,10 @@ fn test_cancel_ledger_deposit_with_penalty_splits_correctly() {
 fn test_cancel_ledger_deposit_after_unlock_fails() {
     let (env, vault, token, _admin, alice, _fee) = setup();
 
-    let unlock_ledger = env.ledger().sequence() + 10;
+    let unlock_ledger = env.ledger().sequence() + MIN_LOCK_LEDGERS;
     let id = vault.deposit_by_ledger(&alice, &token, &1_000, &unlock_ledger, &500);
 
-    advance_ledger(&env, 10);
+    advance_ledger(&env, MIN_LOCK_LEDGERS);
 
     assert_eq!(
         vault.try_cancel_deposit(&alice, &id),
@@ -1558,7 +1558,7 @@ fn test_deposit_by_ledger_succeeds_after_unpause() {
 fn test_deposit_by_ledger_event_emitted() {
     let (env, vault, token, _admin, alice, _fee) = setup();
 
-    let unlock_ledger = env.ledger().sequence() + 10;
+    let unlock_ledger = env.ledger().sequence() + MIN_LOCK_LEDGERS;
     vault.deposit_by_ledger(&alice, &token, &1_000, &unlock_ledger, &0);
 
     let events = env.events().all();
@@ -1760,12 +1760,12 @@ fn test_get_deposit_ids_removes_ledger_deposit_on_withdraw() {
     let (env, vault, token, _admin, alice, _fee) = setup();
     StellarAssetClient::new(&env, &token).mint(&alice, &5_000);
 
-    let unlock_ledger = env.ledger().sequence() + 10;
+    let unlock_ledger = env.ledger().sequence() + MIN_LOCK_LEDGERS;
     let id = vault.deposit_by_ledger(&alice, &token, &1_000, &unlock_ledger, &0);
 
     assert_eq!(vault.get_deposit_ids(&alice).len(), 1);
 
-    advance_ledger(&env, 10);
+    advance_ledger(&env, MIN_LOCK_LEDGERS);
     vault.withdraw(&alice, &id);
 
     assert_eq!(vault.get_deposit_ids(&alice).len(), 0);
@@ -1795,10 +1795,10 @@ fn test_time_remaining_ledger_deposit_locked_returns_estimate() {
 fn test_time_remaining_ledger_deposit_unlocked_returns_zero() {
     let (env, vault, token, _admin, alice, _fee) = setup();
 
-    let unlock_ledger = env.ledger().sequence() + 10;
+    let unlock_ledger = env.ledger().sequence() + MIN_LOCK_LEDGERS;
     let id = vault.deposit_by_ledger(&alice, &token, &1_000, &unlock_ledger, &0);
 
-    advance_ledger(&env, 10);
+    advance_ledger(&env, MIN_LOCK_LEDGERS);
 
     assert_eq!(vault.time_remaining(&alice, &id), 0);
 }
@@ -1997,13 +1997,13 @@ fn test_deposit_by_ledger_withdraw_lifecycle() {
     let unlock_ledger = env.ledger().sequence() + 50;
     let id = vault.deposit_by_ledger(&alice, &token, &5_000, &unlock_ledger, &0);
 
-    // Verify the deposit was created
+    // Verify the deposit was created (ledger-based deposit, so get_vault returns None)
     assert_eq!(id, 0);
-    let entry = vault.get_vault(&alice, &id).expect("deposit should exist");
-    assert_eq!(entry.amount, 5_000);
+    assert!(vault.get_vault(&alice, &id).is_none());
     let ledger_entry = vault.get_ledger_vault(&alice, &id).expect("ledger deposit should exist");
+    assert_eq!(ledger_entry.amount, 5_000);
     assert_eq!(ledger_entry.unlock_ledger, unlock_ledger);
-    assert_eq!(entry.depositor, alice);
+    assert_eq!(ledger_entry.depositor, alice);
 
     // Verify tokens were transferred to contract
     assert_eq!(token_client.balance(&alice), 5_000);
@@ -2029,7 +2029,7 @@ fn test_deposit_by_ledger_withdraw_lifecycle() {
     vault.withdraw(&alice, &id);
 
     // Verify deposit was removed and tokens returned
-    assert!(vault.get_vault(&alice, &id).is_none());
+    assert!(vault.get_ledger_vault(&alice, &id).is_none());
     assert_eq!(token_client.balance(&alice), 10_000);
 }
 
@@ -2084,11 +2084,11 @@ fn test_cancel_deposit_ledger_based_with_penalty() {
 fn test_cancel_deposit_ledger_based_after_unlock_fails() {
     let (env, vault, token, _admin, alice, _fee) = setup();
 
-    let unlock_ledger = env.ledger().sequence() + 10;
+    let unlock_ledger = env.ledger().sequence() + MIN_LOCK_LEDGERS;
     let id = vault.deposit_by_ledger(&alice, &token, &2_000, &unlock_ledger, &500);
 
     // Advance past the unlock ledger
-    advance_ledger(&env, 11);
+    advance_ledger(&env, MIN_LOCK_LEDGERS);
 
     // Attempt cancel should fail because vault is now unlocked
     assert_eq!(
