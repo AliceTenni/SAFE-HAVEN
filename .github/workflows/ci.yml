@@ -291,6 +291,31 @@ jobs:
           SOROBAN_SECRET_KEY: ${{ secrets.SOROBAN_SECRET_KEY }}
         run: bash scripts/deploy_testnet.sh
 
+      - name: Verify deployed contract responds (is_initialized)
+        env:
+          SOROBAN_SECRET_KEY: ${{ secrets.SOROBAN_SECRET_KEY }}
+        run: |
+          CONTRACT_ID=$(grep "^Contract ID:" deploy_testnet.log | cut -d' ' -f3)
+          if [[ -z "$CONTRACT_ID" ]]; then
+            echo "ERROR: Could not read CONTRACT_ID from deploy_testnet.log"
+            exit 1
+          fi
+          echo "Verifying contract ${CONTRACT_ID} is live and initialized..."
+          RESULT=$(stellar contract invoke \
+            --id "$CONTRACT_ID" \
+            --source "$SOROBAN_SECRET_KEY" \
+            --network testnet \
+            --rpc-url "https://soroban-testnet.stellar.org" \
+            --network-passphrase "Test SDF Network ; September 2015" \
+            -- is_initialized)
+          echo "is_initialized returned: ${RESULT}"
+          if [[ "$RESULT" != "true" ]]; then
+            echo "ERROR: is_initialized returned '${RESULT}', expected 'true'."
+            echo "The contract was uploaded but initialize() may not have completed."
+            exit 1
+          fi
+          echo "✅ Post-deploy verification passed: contract is live and initialized."
+
       - name: Post contract ID to job summary
         run: |
           CONTRACT_ID=$(grep "^Contract ID:" deploy_testnet.log | cut -d' ' -f3)

@@ -21,7 +21,7 @@ SAFE-HAVEN/
 │       ├── lib.rs              Crate root
 │       ├── contract.rs         All public entry points
 │       ├── types.rs            VaultKey, VaultEntry, constants
-│       ├── errors.rs           VaultError enum (12 codes)
+│       ├── errors.rs           VaultError enum (14 codes)
 │       ├── events.rs           Event emission helpers
 │       ├── storage.rs          Persistent storage + TTL helpers
 │       └── test.rs             48+ unit tests
@@ -124,7 +124,38 @@ Locks tokens. Returns the deposit ID.
 Payer funds a vault for a different beneficiary.
 
 #### `deposit_by_ledger(depositor, token, amount, unlock_ledger, penalty_bps) -> u32`
-Locks tokens until a specific ledger sequence number.
+Locks tokens until a specific Stellar ledger sequence number is reached, instead of a wall-clock timestamp.
+
+Use this when you need to express a lock period in terms of on-chain ledger progression — for example, "release after the network has produced exactly N more ledgers" — rather than relying on the ledger's timestamp field.
+
+**Parameters**
+
+| Parameter | Type | Description |
+|---|---|---|
+| `depositor` | `Address` | Account locking the tokens. Must sign the transaction. |
+| `token` | `Address` | SAC-compatible token contract address. |
+| `amount` | `i128` | Amount to lock (> 0, ≤ `max_deposit`). |
+| `unlock_ledger` | `u32` | Ledger sequence number at or after which withdrawal is permitted. Must be > `current_ledger + 12` (minimum gap of 12 ledgers ≈ 60 seconds at 5 s/ledger). |
+| `penalty_bps` | `u32` | Early-exit penalty in basis points (0–10000). Requires a `fee_recipient` to be configured if > 0. |
+
+**Returns** the deposit ID (`u32`), shared with the same per-depositor counter as timestamp-based deposits.
+
+**Withdrawal** — `withdraw()` and `withdraw_to()` both accept ledger-based deposits. On withdrawal the contract checks `env.ledger().sequence() >= unlock_ledger`; if the ledger sequence has not yet reached the target the call fails with `FundsStillLocked`.
+
+**Estimating wall-clock time from a ledger number** — Stellar produces a new ledger roughly every 5 seconds. To approximate the unlock time in seconds from the current ledger:
+
+```
+estimated_seconds = (unlock_ledger - current_ledger) × 5
+```
+
+This is an estimate only. Actual ledger close times vary and cannot be predicted exactly. `time_remaining(depositor, id)` performs this same calculation internally.
+
+> **Known Limitations**
+>
+> - **No frontend support.** The React UI exposes `deposit` and `deposit_for` only. `deposit_by_ledger` must be called directly via the Stellar CLI or an SDK.
+> - **Minimum lock is 12 ledgers (≈ 60 s), not the full timestamp minimum validation path.** The check exists (`MIN_LOCK_LEDGERS = 12`) but uses ledger count rather than seconds, so the two minimums are equivalent in practice but not enforced by the same code.
+> - **`time_remaining` returns an estimate.** For ledger-based deposits the return value is `remaining_ledgers × 5` seconds — an approximation, not a guaranteed timestamp.
+> - **`get_vault` returns `None` for ledger-based deposits.** Use `get_ledger_vault(depositor, id)` instead to retrieve a `LedgerVaultEntry`.
 
 #### `withdraw(depositor, deposit_id)`
 Withdraws if `now >= unlock_time`.
@@ -180,17 +211,19 @@ Permanently removes admin. Contract becomes fully trustless.
 | Code | Name | Meaning |
 |---|---|---|
 | 1 | `InvalidAmount` | Amount <= 0 |
-| 2 | `UnlockTimeNotInFuture` | unlock_time <= now |
-| 3 | `NoDepositFound` | No active deposit |
+| 2 | `UnlockTimeNotInFuture` | unlock_time (or unlock_ledger) <= current value |
+| 3 | `NoDepositFound` | No active deposit at the given (depositor, deposit_id) |
 | 4 | `FundsStillLocked` | Lock not yet expired |
-| 5 | `DepositAlreadyExists` | (reserved) |
+| 5 | `DepositAlreadyExists` | Reserved — defined in the enum to hold the slot and prevent future code-number collisions, but never emitted by any current code path |
 | 6 | `LockDurationTooLong` | Exceeds 5 years |
-| 7 | `Unauthorized` | Not the admin |
+| 7 | `Unauthorized` | Caller is not the admin (or contract is not initialized) |
 | 8 | `AmountTooLarge` | Exceeds 10^15 |
 | 9 | `InvalidPenaltyBps` | penalty_bps > 10000 |
-| 10 | `InvalidAdmin` | Same as current admin |
-| 11 | `LockDurationTooShort` | Less than 60 seconds |
-| 12 | `ContractPaused` | Deposits paused |
+| 10 | `InvalidAdmin` | Proposed new admin is same as current admin |
+| 11 | `LockDurationTooShort` | Lock duration < 60 seconds (or < 12 ledgers for `deposit_by_ledger`) |
+| 12 | `ContractPaused` | Deposits are paused |
+| 13 | `VaultAlreadyUnlocked` | `cancel_deposit` called after the lock has already expired |
+| 14 | `MissingFeeRecipient` | penalty_bps > 0 but no fee_recipient is configured |
 
 ---
 
@@ -208,7 +241,21 @@ Permanently removes admin. Contract becomes fully trustless.
 
 ---
 
-## Makefile Commands
+## Known Limitations
+
+The following gaps apply specifically to `deposit_by_ledger` deposits. All other deposit types (`deposit`, `deposit_for`) are unaffected.
+
+| Limitation | Detail |
+|---|---|
+| **No frontend support** | The React UI only exposes `deposit` and `deposit_for`. Ledger-based deposits must be made via the Stellar CLI or a custom SDK integration. |
+| **No maximum lock duration** | `deposit` and `deposit_for` reject lock durations longer than `max_lock_secs` (default 5 years). `deposit_by_ledger` only enforces a *minimum* gap of 12 ledgers (`MIN_LOCK_LEDGERS`). There is no equivalent upper-bound check on `unlock_ledger`, so arbitrarily far-future ledger numbers are accepted. |
+| **`get_vault` returns `None`** | The `get_vault(depositor, id)` query only searches timestamp-based entries. To retrieve a ledger-based deposit, use `get_ledger_vault(depositor, id)` which returns `Option<LedgerVaultEntry>`. |
+| **`time_remaining` is an estimate** | For ledger-based deposits, `time_remaining` returns `remaining_ledgers × 5` seconds. This is an approximation because actual ledger close times are not exactly 5 seconds. Do not rely on this value for precise scheduling. |
+| **`get_deposits_page` excludes ledger-based deposits** | The paginated flat deposits view only iterates over timestamp-based `VaultEntry` records. To enumerate ledger-based deposits, use `get_depositors` + `get_deposit_ids` + `get_ledger_vault`. |
+
+These limitations are tracked as open issues and will be addressed in future releases.
+
+---
 
 ```bash
 make build            # Compile to WASM
