@@ -206,6 +206,16 @@ export async function getLedgerTime(): Promise<number> {
   return result ?? Math.floor(Date.now() / 1000)
 }
 
+/** Fetch contract version */
+export async function getContractVersion(): Promise<string> {
+  const result = await simulateReadOnly(
+    'version',
+    [],
+    (v) => scValToNative(v) as string,
+  )
+  return result ?? 'unknown'
+}
+
 /** Fetch admin address */
 export async function getAdmin(): Promise<string | null> {
   const result = await simulateReadOnly(
