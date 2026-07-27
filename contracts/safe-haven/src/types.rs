@@ -56,3 +56,13 @@ pub struct LedgerVaultEntry {
     pub depositor: Address,
     pub penalty_bps: u32,
 }
+
+/// Paginated query result containing a page of items and the total count.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Page<T> {
+    /// The items in this page
+    pub items: soroban_sdk::Vec<T>,
+    /// Total number of active items across all pages
+    pub total_count: u32,
+}

@@ -375,11 +375,27 @@ pub fn depositor_is_active(env: &Env, depositor: &Address) -> bool {
         .unwrap_or(false)
 }
 
-pub fn get_depositors_page(env: &Env, offset: u32, limit: u32) -> Vec<Address> {
+pub fn get_depositors_page(env: &Env, offset: u32, limit: u32) -> (Vec<Address>, u32) {
     let list = get_depositor_list(env);
     let mut page: Vec<Address> = Vec::new(env);
     let mut active_seen: u32 = 0;
     let end_at = offset.saturating_add(limit);
+    
+    // Count total active depositors
+    let mut total_count: u32 = 0;
+    for addr in list.iter() {
+        let flag_key = VaultKey::DepositorFlag(addr.clone());
+        if env
+            .storage()
+            .persistent()
+            .get::<VaultKey, bool>(&flag_key)
+            .unwrap_or(false)
+        {
+            total_count = total_count.saturating_add(1);
+        }
+    }
+    
+    // Collect page items
     for addr in list.iter() {
         let flag_key = VaultKey::DepositorFlag(addr.clone());
         if !env
@@ -398,7 +414,7 @@ pub fn get_depositors_page(env: &Env, offset: u32, limit: u32) -> Vec<Address> {
             break;
         }
     }
-    page
+    (page, total_count)
 }
 
 // ----------------------------------------------------------------
