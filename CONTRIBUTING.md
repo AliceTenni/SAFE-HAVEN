@@ -75,6 +75,23 @@ This convention applies to any repeated host accessor (`env.ledger().sequence()`
 
 - [ ] CHANGELOG.md updated under [Unreleased] with a summary of the change
 
+## Required Status Checks
+
+All PRs must pass the following CI jobs before they can be merged:
+
+| Job | Description |
+|---|---|
+| **security-audit** | Scans dependencies for known vulnerabilities (`cargo audit`) |
+| **lint** | Ensures code formatting (`cargo fmt`) and passes Clippy lints |
+| **test** | Runs all unit tests and doc tests |
+| **deny** | Verifies license compliance and ban policy (`cargo deny`) |
+| **build** | Compiles and optimizes the WASM binary for both stable and MSRV toolchains |
+| **geiger** | Scans for unsafe Rust code |
+
+> **Note:** These checks are enforced via branch protection rules in the GitHub repository settings.
+> Make sure `main` and `develop` branches have these status checks configured as required.
+> A PR that fails any of these jobs should not be merged until the failures are resolved.
+
 ## Submitting a PR
 
 1. Push your branch and open a PR against `main`.
