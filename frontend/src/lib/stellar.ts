@@ -443,3 +443,63 @@ export async function getPendingAdmin(): Promise<string | null> {
   )
   return result ?? null
 }
+
+// ----------------------------------------------------------------
+//  Token metadata helpers
+// ----------------------------------------------------------------
+
+/**
+ * Module-level cache: token contract address -> symbol string.
+ * Persists for the lifetime of the page load; symbols never change on-chain
+ * so we never need to invalidate this cache.
+ */
+const _tokenSymbolCache = new Map<string, string>()
+
+/**
+ * Fetch the symbol of any SAC-compatible token contract.
+ *
+ * Calls `symbol()` on the *token* contract (not the vault), using the same
+ * read-only simulation path as all other queries. Returns null when the call
+ * fails (e.g. the token does not implement the SAC interface).
+ *
+ * Results are cached by contract address for the lifetime of the page load.
+ */
+export async function getTokenSymbol(tokenAddress: string): Promise<string | null> {
+  const cached = _tokenSymbolCache.get(tokenAddress)
+  if (cached !== undefined) return cached
+
+  try {
+    const rpc = getRpc()
+    const contract = new Contract(tokenAddress)
+    const sourceAddress = getSimulationAccount()
+
+    let account: Awaited<ReturnType<typeof rpc.getAccount>>
+    try {
+      account = await rpc.getAccount(sourceAddress)
+    } catch {
+      const { Account } = await import('@stellar/stellar-sdk')
+      account = new Account(sourceAddress, '0') as unknown as Awaited<ReturnType<typeof rpc.getAccount>>
+    }
+
+    const tx = new TransactionBuilder(account, {
+      fee: BASE_FEE,
+      networkPassphrase: CONFIG.NETWORK_PASSPHRASE,
+    })
+      .addOperation(contract.call('symbol'))
+      .setTimeout(30)
+      .build()
+
+    const result = await rpc.simulateTransaction(tx)
+    if (StellarRpc.Api.isSimulationError(result) || !result.result) return null
+
+    const symbol = scValToNative(result.result.retval) as string
+    if (typeof symbol === 'string' && symbol.length > 0) {
+      _tokenSymbolCache.set(tokenAddress, symbol)
+      return symbol
+    }
+    return null
+  } catch (e) {
+    console.error(`getTokenSymbol(${tokenAddress}) failed:`, e)
+    return null
+  }
+}
