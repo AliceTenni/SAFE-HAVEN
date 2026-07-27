@@ -585,11 +585,20 @@ impl SafeHaven {
         storage::get_deposit_by_ledger_readonly(&env, &depositor, deposit_id)
     }
 
-    pub fn get_vault_batch(env: Env, depositors: Vec<Address>, deposit_id: u32) -> Vec<Option<VaultEntry>> {
-        let limit = if depositors.len() > MAX_BATCH_SIZE { MAX_BATCH_SIZE } else { depositors.len() as u32 };
+    /// Batch-fetch multiple timestamp-based vault entries in a single RPC call.
+    ///
+    /// Accepts a `Vec` of `(depositor, deposit_id)` pairs so callers can query
+    /// arbitrary combinations of depositor + deposit ID, rather than being forced
+    /// to use the same deposit ID for every depositor (closes #45).
+    ///
+    /// Returns a `Vec<Option<VaultEntry>>` of the same length as `pairs`; each
+    /// element is `Some(entry)` if a timestamp-based deposit exists at that pair,
+    /// or `None` otherwise.  Capped at `MAX_BATCH_SIZE` pairs.
+    pub fn get_vault_batch(env: Env, pairs: Vec<(Address, u32)>) -> Vec<Option<VaultEntry>> {
+        let limit = if pairs.len() > MAX_BATCH_SIZE { MAX_BATCH_SIZE } else { pairs.len() as u32 };
         let mut results = Vec::new(&env);
         for i in 0..limit {
-            if let Some(depositor) = depositors.get(i) {
+            if let Some((depositor, deposit_id)) = pairs.get(i) {
                 let entry = storage::get_deposit_readonly(&env, &depositor, deposit_id);
                 results.push_back(entry);
             }
