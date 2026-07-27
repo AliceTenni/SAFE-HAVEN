@@ -67,6 +67,31 @@ pub fn some_fn(env: Env, depositor: Address) -> Result<(), VaultError> {
 
 This convention applies to any repeated host accessor (`env.ledger().sequence()`, `env.current_contract_address()`, etc.) â€” read once, store locally, reuse the binding.
 
+## Reporting Issues
+
+Before opening a new issue, please search existing issues to avoid duplicates.
+
+Use the appropriate GitHub issue template:
+
+- **[Bug Report](https://github.com/kenedybok3/SAFE-HAVEN/issues/new?template=bug_report.md)** — for unexpected behaviour, crashes, or incorrect output. Include steps to reproduce, the actual result, and the expected result.
+- **[Feature Request](https://github.com/kenedybok3/SAFE-HAVEN/issues/new?template=feature_request.md)** — for new functionality or improvements. Describe the problem you are trying to solve and why the existing behaviour is insufficient.
+
+Filling in the template fully helps maintainers triage and reproduce issues faster.
+
+> **Security vulnerabilities must not be filed as public GitHub issues.** See [Security Vulnerabilities](#security-vulnerabilities) below.
+
+## Security Vulnerabilities
+
+If you discover a security vulnerability — including smart contract logic bugs that could result in fund loss, auth bypasses, or storage manipulation — **do not open a public GitHub issue**.
+
+Public disclosure before a fix is available puts all users at risk.
+
+Instead, follow the responsible disclosure process described in [SECURITY.md](./SECURITY.md):
+
+- Email **security@example.com** with a description of the vulnerability, steps to reproduce, and the potential impact.
+- You will receive an acknowledgement within 72 hours and a fix target within 14 days for critical issues.
+- We follow coordinated disclosure — please allow reasonable time to patch before any public disclosure.
+
 ## Before Opening a PR
 
 - [ ] `make check` passes locally
