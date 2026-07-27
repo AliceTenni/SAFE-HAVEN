@@ -9,6 +9,7 @@ import {
   buildTransferAdmin,
   buildAcceptAdmin,
   buildCancelTransferAdmin,
+  buildRenounceAdmin,
   submitTx,
 } from '../lib/stellar'
 import { shortAddr, explorerAddrUrl, isValidStellarAddress } from '../lib/format'
@@ -52,12 +53,19 @@ export function AdminPage({ contractInfo, onContractInfoRefresh }: AdminPageProp
   const [cancelTxHash,   setCancelTxHash]   = useState<string | undefined>()
   const [cancelTxError,  setCancelTxError]  = useState<string | undefined>()
 
+  // Renounce admin
+  const [renounceConfirmText, setRenounceConfirmText] = useState('')
+  const [renounceTxStatus,    setRenounceTxStatus]    = useState<TxStatus>('idle')
+  const [renounceTxHash,      setRenounceTxHash]      = useState<string | undefined>()
+  const [renounceTxError,     setRenounceTxError]     = useState<string | undefined>()
+
   const isAdmin = wallet?.address === contractInfo.admin
   const pausePending = pauseTxStatus === 'signing' || pauseTxStatus === 'submitting' || pauseTxStatus === 'confirming'
   const emrgPending  = emrgTxStatus  === 'signing' || emrgTxStatus  === 'submitting' || emrgTxStatus  === 'confirming'
   const transferPending = transferTxStatus === 'signing' || transferTxStatus === 'submitting' || transferTxStatus === 'confirming'
   const acceptPending = acceptTxStatus === 'signing' || acceptTxStatus === 'submitting' || acceptTxStatus === 'confirming'
   const cancelPending = cancelTxStatus === 'signing' || cancelTxStatus === 'submitting' || cancelTxStatus === 'confirming'
+  const renouncePending = renounceTxStatus === 'signing' || renounceTxStatus === 'submitting' || renounceTxStatus === 'confirming'
 
   // Validate emergency withdraw depositor address
   const emrgDepositorIsValid = emrgDepositor === '' || isValidStellarAddress(emrgDepositor)
@@ -256,10 +264,62 @@ export function AdminPage({ contractInfo, onContractInfoRefresh }: AdminPageProp
     }
   }
 
+  async function handleRenounceAdmin() {
+    if (!wallet) return
+
+    setRenounceTxStatus('signing')
+    setRenounceTxError(undefined)
+    setRenounceTxHash(undefined)
+
+    try {
+      const xdr = await buildRenounceAdmin(wallet.address)
+      if (!xdr) throw new Error('Failed to build transaction')
+
+      const signed = await signTransaction(xdr)
+      if (!signed) { setRenounceTxStatus('idle'); return }
+
+      setRenounceTxStatus('submitting')
+      const result = await submitTx(signed)
+      if (result.success) {
+        setRenounceTxStatus('success')
+        setRenounceTxHash(result.txHash)
+        toast.success('Admin renounced. Contract is now fully trustless.')
+        setRenounceConfirmText('')
+        setTimeout(onContractInfoRefresh, 1500)
+      } else {
+        setRenounceTxStatus('error')
+        setRenounceTxError(result.error)
+        toast.error(result.error ?? 'Failed to renounce admin')
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Unexpected error'
+      setRenounceTxStatus('error')
+      setRenounceTxError(msg)
+      toast.error(msg)
+    }
+  }
+
   if (!wallet) {
     return (
       <div className="card p-10 text-center max-w-lg">
         <p className="text-slate-400">Connect your wallet to access admin controls.</p>
+      </div>
+    )
+  }
+
+  // Check if admin has been renounced (fully trustless)
+  if (contractInfo.admin === null) {
+    return (
+      <div className="card p-10 text-center max-w-lg">
+        <div className="w-12 h-12 rounded-xl bg-green-900/30 border border-green-700/40 flex items-center justify-center mx-auto mb-4">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} className="w-6 h-6 text-green-400">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+          </svg>
+        </div>
+        <p className="font-medium text-green-400">Fully Trustless</p>
+        <p className="text-sm text-slate-400 mt-1">
+          This contract is fully trustless — admin has been permanently renounced.
+        </p>
       </div>
     )
   }
@@ -333,7 +393,36 @@ export function AdminPage({ contractInfo, onContractInfoRefresh }: AdminPageProp
               </a>
             </>
           )}
+
+          {contractInfo.pendingAdmin && (
+            <>
+              <span className="text-slate-400">Pending admin</span>
+              <a
+                href={explorerAddrUrl(contractInfo.pendingAdmin)}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="font-mono text-blue-400 hover:text-blue-300 truncate"
+              >
+                {shortAddr(contractInfo.pendingAdmin)}
+              </a>
+            </>
+          )}
         </div>
+
+        {contractInfo.pendingAdmin && (
+          <div className="mt-4 mb-4">
+            <button
+              onClick={handleCancelTransfer}
+              className="btn-secondary w-full text-sm"
+              disabled={cancelPending}
+            >
+              {cancelPending
+                ? <span className="w-4 h-4 border-2 border-current/30 border-t-current rounded-full animate-spin" />
+                : 'Cancel pending transfer'
+              }
+            </button>
+          </div>
+        )}
 
         <TxStatusBadge status={pauseTxStatus} txHash={pauseTxHash} error={pauseTxError} />
 
@@ -485,6 +574,63 @@ export function AdminPage({ contractInfo, onContractInfoRefresh }: AdminPageProp
             </button>
           </div>
         )}
+      </div>
+
+      {/* Renounce admin */}
+      <div className="card p-6">
+        <div className="rounded-lg bg-red-900/20 border border-red-700/40 p-4 mb-5">
+          <div className="flex items-center gap-3">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} className="w-5 h-5 text-red-400 flex-shrink-0">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
+            </svg>
+            <div>
+              <p className="font-semibold text-red-400">Renounce Admin</p>
+              <p className="text-xs text-red-300 mt-1">This action is permanent and cannot be undone.</p>
+            </div>
+          </div>
+        </div>
+
+        <p className="text-sm text-slate-400 mb-5">
+          Permanently remove admin rights and make the contract fully trustless. Once renounced, no one can pause deposits, perform emergency withdrawals, or change the contract configuration.
+        </p>
+
+        <form
+          onSubmit={(e) => {
+            e.preventDefault()
+            if (renounceConfirmText === 'RENOUNCE') {
+              handleRenounceAdmin()
+            }
+          }}
+          className="space-y-4"
+        >
+          <div>
+            <label className="label">Type "RENOUNCE" to confirm</label>
+            <input
+              className="input"
+              type="text"
+              value={renounceConfirmText}
+              onChange={(e) => setRenounceConfirmText(e.target.value)}
+              placeholder="RENOUNCE"
+              disabled={renouncePending}
+            />
+            <p className="text-xs text-slate-500 mt-2">
+              This confirms you understand the irreversible nature of this action.
+            </p>
+          </div>
+
+          <TxStatusBadge status={renounceTxStatus} txHash={renounceTxHash} error={renounceTxError} />
+
+          <button
+            type="submit"
+            className="btn-danger w-full"
+            disabled={renounceConfirmText !== 'RENOUNCE' || renouncePending}
+          >
+            {renouncePending
+              ? <span className="w-4 h-4 border-2 border-current/30 border-t-current rounded-full animate-spin" />
+              : 'Renounce admin'
+            }
+          </button>
+        </form>
       </div>
     </div>
   )
