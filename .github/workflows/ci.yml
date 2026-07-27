@@ -106,6 +106,33 @@ jobs:
         run: cargo test --doc --features testutils
 
   # ----------------------------------------------------------------
+  #  Frontend (TypeScript + Vite build)
+  # ----------------------------------------------------------------
+  frontend:
+    name: Frontend (TypeScript + build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Type check
+        run: npx tsc --noEmit
+
+  # ----------------------------------------------------------------
   #  Unsafe Code Scanner (cargo-geiger)
   # ----------------------------------------------------------------
   geiger:
@@ -129,8 +156,15 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
           restore-keys: ${{ runner.os }}-cargo-
 
+      - name: Cache cargo-geiger binary
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ~/.cargo/bin/cargo-geiger
+          key: ${{ runner.os }}-cargo-geiger-0.11.7
+          restore-keys: ${{ runner.os }}-cargo-geiger-
+
       - name: Install cargo-geiger
-        run: cargo install cargo-geiger
+        run: cargo install cargo-geiger --version =0.11.7 --locked
 
       - name: Scan for unsafe code
         run: cargo geiger --all-features
@@ -248,7 +282,7 @@ jobs:
           targets: wasm32-unknown-unknown
 
       - name: Cache cargo registry
-        uses: actions/cache@v4
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: |
             ~/.cargo/registry
@@ -259,7 +293,7 @@ jobs:
 
       - name: Cache stellar-cli
         id: cache-stellar
-        uses: actions/cache@v4
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: /usr/local/bin/stellar
           key: stellar-cli-${{ env.STELLAR_CLI_VERSION }}
