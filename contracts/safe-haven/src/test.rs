@@ -542,8 +542,9 @@ fn test_deposit_for_adds_beneficiary_to_depositor_list() {
     vault.deposit_for(&alice, &bob, &token, &1_000, &unlock_time, &0);
 
     assert_eq!(vault.get_depositor_count(), 1);
-    let depositors = vault.get_depositors(&0, &10);
-    assert_eq!(depositors.get(0).unwrap(), bob);
+    let page = vault.get_depositors(&0, &10);
+    assert_eq!(page.total_count, 1);
+    assert_eq!(page.items.get(0).unwrap(), bob);
 }
 
 #[test]
@@ -995,7 +996,8 @@ fn test_depositor_count_empty() {
 fn test_depositors_empty_returns_empty_vec() {
     let (_env, vault, _token, _admin, _alice, _fee) = setup();
     let page = vault.get_depositors(&0, &10);
-    assert_eq!(page.len(), 0);
+    assert_eq!(page.items.len(), 0);
+    assert_eq!(page.total_count, 0);
 }
 
 #[test]
@@ -1013,8 +1015,9 @@ fn test_depositors_single_entry() {
     vault.deposit(&alice, &token, &1_000, &unlock_time, &0);
 
     let page = vault.get_depositors(&0, &10);
-    assert_eq!(page.len(), 1);
-    assert_eq!(page.get(0).unwrap(), alice);
+    assert_eq!(page.items.len(), 1);
+    assert_eq!(page.total_count, 1);
+    assert_eq!(page.items.get(0).unwrap(), alice);
 }
 
 #[test]
@@ -1051,7 +1054,8 @@ fn test_depositors_multiple_entries_full_page() {
     vault.deposit(&carol, &token, &3_000, &unlock_time, &0);
 
     let page = vault.get_depositors(&0, &10);
-    assert_eq!(page.len(), 3);
+    assert_eq!(page.items.len(), 3);
+    assert_eq!(page.total_count, 3);
 }
 
 #[test]
@@ -1066,7 +1070,8 @@ fn test_depositor_removed_on_withdraw() {
 
     assert_eq!(vault.get_depositor_count(), 0);
     let page = vault.get_depositors(&0, &10);
-    assert_eq!(page.len(), 0);
+    assert_eq!(page.items.len(), 0);
+    assert_eq!(page.total_count, 0);
 }
 
 #[test]
@@ -2435,4 +2440,17 @@ fn test_get_deposit_batch_clamps_at_max_batch_size() {
 
     let results = vault.get_deposit_batch(&alice, &deposit_ids);
     assert_eq!(results.len(), MAX_BATCH_SIZE as usize);
+}
+
+#[test]
+fn test_version_returns_cargo_pkg_version() {
+    let (env, vault, _token, _admin, _alice, _fee) = setup();
+
+    let version = vault.version(&env);
+    // Should be a valid version string from Cargo.toml (e.g., "0.1.0")
+    assert!(!version.is_empty());
+    // Expect format like "0.1.0" — semantic versioning
+    let version_str = String::from_utf8(version.to_bytes()).unwrap();
+    let parts: Vec<&str> = version_str.split('.').collect();
+    assert_eq!(parts.len(), 3, "Version should be in semantic format (major.minor.patch)");
 }
