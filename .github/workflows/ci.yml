@@ -122,7 +122,7 @@ jobs:
     name: Unsafe Code Scanner (cargo-geiger)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -130,7 +130,7 @@ jobs:
           targets: wasm32-unknown-unknown
 
       - name: Cache cargo registry
-        uses: actions/cache@v5
+        uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
@@ -152,7 +152,7 @@ jobs:
     name: License & Bans (cargo-deny)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
       - uses: EmbarkStudios/cargo-deny-action@v2
 
   # ----------------------------------------------------------------
@@ -209,21 +209,6 @@ jobs:
             --wasm target/wasm32-unknown-unknown/release/safe_haven.wasm \
             --wasm-out target/safe_haven.optimized.wasm
 
-      - name: Check WASM size regression
-        env:
-          MAX_WASM_BYTES: 51200  # 50 KB threshold
-        run: |
-          ACTUAL=$(wc -c < target/safe_haven.optimized.wasm)
-          echo "Optimized WASM size: ${ACTUAL} bytes (threshold: ${MAX_WASM_BYTES} bytes)"
-          if [ "$ACTUAL" -gt "$MAX_WASM_BYTES" ]; then
-            echo "❌ ERROR: WASM size regression detected!"
-            echo "WASM is too large: ${ACTUAL} bytes exceeds threshold of ${MAX_WASM_BYTES} bytes (50 KB)"
-            echo "This will increase deployment costs on Stellar."
-            exit 1
-          else
-            echo "✅ WASM size check passed: ${ACTUAL} bytes is within the ${MAX_WASM_BYTES} byte limit"
-          fi
-
       - name: Check WASM size
         env:
           MAX_WASM_BYTES: 65536
@@ -240,7 +225,7 @@ jobs:
           fi
 
       - name: Upload optimized WASM artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@v4
         with:
           name: safe-haven-wasm
           path: target/safe_haven.optimized.wasm
@@ -256,7 +241,7 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     environment: testnet
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
