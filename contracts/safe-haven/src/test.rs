@@ -1477,7 +1477,7 @@ fn test_full_lifecycle_deposit_withdraw_redeposit() {
 
 // ================================================================
 //  deposit_by_ledger / withdraw_to / cancel_deposit — ledger path
-//  (fixes #10 and #11)
+//  (fixes https://github.com/kenedybok3/SAFE-HAVEN/issues/10 and https://github.com/kenedybok3/SAFE-HAVEN/issues/11)
 // ================================================================
 
 fn advance_ledger(env: &Env, ledgers: u32) {
@@ -1728,7 +1728,7 @@ fn test_emergency_withdraw_nonexistent_deposit_fails() {
 }
 
 // ================================================================
-//  Regression tests for fixes #18, #19, #20, #21
+//  Regression tests for fixes https://github.com/kenedybok3/SAFE-HAVEN/issues/18, https://github.com/kenedybok3/SAFE-HAVEN/issues/19, https://github.com/kenedybok3/SAFE-HAVEN/issues/20, https://github.com/kenedybok3/SAFE-HAVEN/issues/21
 // ================================================================
 
 // ----------------------------------------------------------------
