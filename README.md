@@ -241,6 +241,58 @@ Permanently removes admin. Contract becomes fully trustless.
 
 ---
 
+## Soroban Developer Notes
+
+### Ledger TTL and Storage Expiry
+
+Soroban uses a **time-to-live (TTL)** system for all persistent storage entries. Every entry written to the ledger has a limited lifespan — measured in ledgers, not wall-clock time — after which it **expires and is pruned**. If a storage entry expires, reading it returns `None` as if it were never written.
+
+SAFE-HAVEN mitigates this by bumping TTL on every storage write and read that matters:
+
+- **On write**: every `set_*` helper calls `extend_ttl` with a `BUMP_TARGET` that covers the maximum lock duration (~5 years) plus a `BUMP_THRESHOLD` buffer.
+- **On read**: the `get_deposit` (mutable) helper also extends TTL. The `*_readonly` variants do *not* extend TTL — they are used by queries that should not incur a write-cost.
+- **Edge case**: a deposit that sits untouched for longer than `BUMP_TARGET` ledgers (~31.5M ledgers) could theoretically expire. In practice this exceeds the maximum lock duration, and any withdrawal attempt would need to re-create the entry via a migration or re-deposit.
+
+**Takeaway**: always use the write-path `get_deposit` (not `get_deposit_readonly`) for operations that will later mutate the entry. Read-only queries (like `get_vault`) use the readonly variant to avoid unnecessary ledger writes.
+
+### Instruction Budget Limits
+
+Every Soroban transaction has a **CPU instruction budget** (default ~100M instructions for testnet, ~50M for mainnet). Functions that iterate over unbounded collections can exhaust this budget and fail mid-execution.
+
+SAFE-HAVEN's paginated views respect this limit:
+
+- `get_depositors(offset, limit)` and `get_deposits_page(offset, limit)` use a `limit` parameter and stop early. Keep `limit` ≤ 50 in production.
+- `get_vault_batch(depositors, deposit_id)` and `get_deposit_batch(depositor, deposit_ids)` clamp input size to `MAX_BATCH_SIZE` (25).
+- The `DepositorList` can grow large over time, but `remove_depositor` is O(1) — it clears only a flag. The list is append-only and stale entries are skipped during enumeration.
+
+**Takeaway**: always paginate with reasonable limits. Don't attempt to fetch all deposits or all depositors in a single RPC call.
+
+### Simulation vs. Submission
+
+Soroban distinguishes between two phases of a transaction:
+
+1. **Simulation** — the RPC dry-runs your transaction against the current ledger state to compute the exact footprint, resource fees, and result. Simulation is read-only and free.
+2. **Submission** — the signed transaction is broadcast to the network. This consumes real resources and costs fees.
+
+Key implications:
+
+- A simulation that succeeds does **not** guarantee submission will succeed. Ledger state can change between simulation and submission (e.g., another transaction withdraws the funds you were about to claim).
+- Always simulate before submitting to catch errors early and estimate fees.
+- The frontend's `stellar.ts` helpers simulate first, then submit, and surface any discrepancy as an error.
+
+### `require_auth()` Must Be First
+
+In Soroban, **`require_auth()` must be the very first call in every mutating (non-readonly) contract function**. Calling it after storage reads, transfers, or other operations is an anti-pattern that can lead to:
+
+- **Wasted compute**: if auth fails, all preceding work is discarded but still counted against the instruction budget.
+- **Re-entrancy risk**: performing state changes before auth verification opens a window for re-entrant calls.
+
+SAFE-HAVEN enforces this convention: every mutating function calls `caller.require_auth()` as its first meaningful statement (after the function signature). The `Security Properties` table above documents this as "Auth-first".
+
+**Takeaway**: when adding new mutating functions, always put `require_auth()` first. The contract's security model depends on it.
+
+---
+
 ## Known Limitations
 
 The following gaps apply specifically to `deposit_by_ledger` deposits. All other deposit types (`deposit`, `deposit_for`) are unaffected.
