@@ -12,7 +12,7 @@ use crate::{
     },
     errors::VaultError,
     events, storage,
-    types::{DepositType, LedgerVaultEntry, VaultEntry, STORAGE_VERSION},
+    types::{VaultEntry, LedgerVaultEntry, Page, STORAGE_VERSION},
 };
 
 #[contract]
@@ -696,12 +696,31 @@ impl SafeHaven {
         storage::get_depositor_count(&env)
     }
 
-    pub fn get_depositors(env: Env, offset: u32, limit: u32) -> Vec<Address> {
-        storage::get_depositors_page(&env, offset, limit)
+    /// Returns a page of depositor addresses and the total count of all active depositors.
+    /// This allows callers to implement pagination without a separate RPC call.
+    ///
+    /// # Parameters
+    /// - `offset`: Number of active depositors to skip (0-indexed)
+    /// - `limit`: Maximum number of addresses to return in this page
+    ///
+    /// # Returns
+    /// A `Page<Address>` containing:
+    /// - `items`: The paginated list of addresses
+    /// - `total_count`: Total number of active depositors across all pages
+    pub fn get_depositors(env: Env, offset: u32, limit: u32) -> Page<Address> {
+        let (items, total_count) = storage::get_depositors_page(&env, offset, limit);
+        Page { items, total_count }
     }
 
     pub fn is_initialized(env: Env) -> bool {
         storage::is_initialized(&env)
+    }
+
+    /// Returns the contract version from Cargo.toml at compile time.
+    /// Allows clients and monitoring tools to confirm which version is deployed
+    /// without inspecting bytecode directly.
+    pub fn version(_env: Env) -> soroban_sdk::String {
+        soroban_sdk::String::from_slice(&_env, env!("CARGO_PKG_VERSION"))
     }
 
     // ----------------------------------------------------------------

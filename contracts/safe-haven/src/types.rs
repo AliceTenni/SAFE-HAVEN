@@ -57,15 +57,12 @@ pub struct LedgerVaultEntry {
     pub penalty_bps: u32,
 }
 
-/// Indicates whether a deposit was created via `deposit`/`deposit_for`
-/// (timestamp-based) or via `deposit_by_ledger` (ledger-sequence-based).
-/// Returned by `get_deposit_type` so callers can avoid a double RPC
-/// round-trip (trying both `get_vault` and `get_ledger_vault`).
+/// Paginated query result containing a page of items and the total count.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum DepositType {
-    /// Deposit unlocks at a wall-clock timestamp (`VaultEntry.unlock_time`).
-    TimeBased,
-    /// Deposit unlocks when the ledger sequence reaches a target (`LedgerVaultEntry.unlock_ledger`).
-    LedgerBased,
+pub struct Page<T> {
+    /// The items in this page
+    pub items: soroban_sdk::Vec<T>,
+    /// Total number of active items across all pages
+    pub total_count: u32,
 }

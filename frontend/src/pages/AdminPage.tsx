@@ -22,7 +22,7 @@ interface AdminPageProps {
 }
 
 export function AdminPage({ contractInfo, onContractInfoRefresh }: AdminPageProps) {
-  const { wallet, signTransaction } = useWallet()
+  const { wallet, isRestoringSession, signTransaction } = useWallet()
 
   // Pause/unpause
   const [pauseTxStatus, setPauseTxStatus] = useState<TxStatus>('idle')
@@ -93,28 +93,38 @@ export function AdminPage({ contractInfo, onContractInfoRefresh }: AdminPageProp
         : await buildPause(wallet.address)
 
       if (!xdr) throw new Error('Failed to build transaction')
-      const signed = await signTransaction(xdr)
-      if (!signed) { setPauseTxStatus('idle'); return }
-
-      setPauseTxStatus('submitting')
-      const result = await submitTx(signed)
-      if (result.success) {
-        setPauseTxStatus('success')
-        setPauseTxHash(result.txHash)
-        toast.success(contractInfo.paused ? 'Contract unpaused.' : 'Contract paused.')
-        // Refresh contract info to get latest pause state
-        setTimeout(onContractInfoRefresh, 1500)
-        // Reset state after success
-        setTimeout(() => {
-          setPauseTxStatus('idle')
-          setPauseTxHash(undefined)
-          setPauseTxError(undefined)
-        }, 3000)
+      const sigResult = await signTransaction(xdr)
+      
+      // Handle the three signing outcomes
+      if (sigResult.signed) {
+        // Success: proceed with submission
+        setPauseTxStatus('submitting')
+        const result = await submitTx(sigResult.xdr)
+        if (result.success) {
+          setPauseTxStatus('success')
+          setPauseTxHash(result.txHash)
+          toast.success(contractInfo.paused ? 'Contract unpaused.' : 'Contract paused.')
+          // Refresh contract info to get latest pause state
+          setTimeout(onContractInfoRefresh, 1500)
+          // Reset state after success
+          setTimeout(() => {
+            setPauseTxStatus('idle')
+            setPauseTxHash(undefined)
+            setPauseTxError(undefined)
+          }, 3000)
+        } else {
+          setPauseTxStatus('error')
+          setPauseTxError(result.error)
+          toast.error(result.error ?? 'Transaction failed')
+        }
+      } else if (sigResult.rejected) {
+        // User rejected: silently reset state
+        setPauseTxStatus('idle')
       } else {
-        setPauseTxStatus('error')
-        setPauseTxError(result.error)
-        toast.error(result.error ?? 'Transaction failed')
+        // Signing error: already toasted, but still reset state
+        setPauseTxStatus('idle')
       }
+      return
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Unexpected error'
       setPauseTxStatus('error')
@@ -135,23 +145,33 @@ export function AdminPage({ contractInfo, onContractInfoRefresh }: AdminPageProp
       const xdr = await buildEmergencyWithdraw(wallet.address, emrgDepositor, parseInt(emrgDepositId, 10))
       if (!xdr) throw new Error('Failed to build transaction')
 
-      const signed = await signTransaction(xdr)
-      if (!signed) { setEmrgTxStatus('idle'); return }
-
-      setEmrgTxStatus('submitting')
-      const result = await submitTx(signed)
-      if (result.success) {
-        setEmrgTxStatus('success')
-        setEmrgTxHash(result.txHash)
-        toast.success('Emergency withdrawal successful. Funds returned to depositor.')
-        setEmrgDepositor('')
-        setEmrgDepositId('')
-        setEmrgDepositorError('')
+      const sigResult = await signTransaction(xdr)
+      
+      // Handle the three signing outcomes
+      if (sigResult.signed) {
+        // Success: proceed with submission
+        setEmrgTxStatus('submitting')
+        const result = await submitTx(sigResult.xdr)
+        if (result.success) {
+          setEmrgTxStatus('success')
+          setEmrgTxHash(result.txHash)
+          toast.success('Emergency withdrawal successful. Funds returned to depositor.')
+          setEmrgDepositor('')
+          setEmrgDepositId('')
+          setEmrgDepositorError('')
+        } else {
+          setEmrgTxStatus('error')
+          setEmrgTxError(result.error)
+          toast.error(result.error ?? 'Emergency withdrawal failed')
+        }
+      } else if (sigResult.rejected) {
+        // User rejected: silently reset state
+        setEmrgTxStatus('idle')
       } else {
-        setEmrgTxStatus('error')
-        setEmrgTxError(result.error)
-        toast.error(result.error ?? 'Emergency withdrawal failed')
+        // Signing error: already toasted, but still reset state
+        setEmrgTxStatus('idle')
       }
+      return
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Unexpected error'
       setEmrgTxStatus('error')
@@ -172,22 +192,32 @@ export function AdminPage({ contractInfo, onContractInfoRefresh }: AdminPageProp
       const xdr = await buildTransferAdmin(wallet.address, transferNewAdmin)
       if (!xdr) throw new Error('Failed to build transaction')
 
-      const signed = await signTransaction(xdr)
-      if (!signed) { setTransferTxStatus('idle'); return }
-
-      setTransferTxStatus('submitting')
-      const result = await submitTx(signed)
-      if (result.success) {
-        setTransferTxStatus('success')
-        setTransferTxHash(result.txHash)
-        toast.success('Admin transfer initiated. Awaiting acceptance from new admin.')
-        setTransferNewAdmin('')
-        setTimeout(onContractInfoRefresh, 1500)
+      const sigResult = await signTransaction(xdr)
+      
+      // Handle the three signing outcomes
+      if (sigResult.signed) {
+        // Success: proceed with submission
+        setTransferTxStatus('submitting')
+        const result = await submitTx(sigResult.xdr)
+        if (result.success) {
+          setTransferTxStatus('success')
+          setTransferTxHash(result.txHash)
+          toast.success('Admin transfer initiated. Awaiting acceptance from new admin.')
+          setTransferNewAdmin('')
+          setTimeout(onContractInfoRefresh, 1500)
+        } else {
+          setTransferTxStatus('error')
+          setTransferTxError(result.error)
+          toast.error(result.error ?? 'Transfer admin failed')
+        }
+      } else if (sigResult.rejected) {
+        // User rejected: silently reset state
+        setTransferTxStatus('idle')
       } else {
-        setTransferTxStatus('error')
-        setTransferTxError(result.error)
-        toast.error(result.error ?? 'Transfer admin failed')
+        // Signing error: already toasted, but still reset state
+        setTransferTxStatus('idle')
       }
+      return
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Unexpected error'
       setTransferTxStatus('error')
@@ -207,21 +237,31 @@ export function AdminPage({ contractInfo, onContractInfoRefresh }: AdminPageProp
       const xdr = await buildAcceptAdmin(wallet.address)
       if (!xdr) throw new Error('Failed to build transaction')
 
-      const signed = await signTransaction(xdr)
-      if (!signed) { setAcceptTxStatus('idle'); return }
-
-      setAcceptTxStatus('submitting')
-      const result = await submitTx(signed)
-      if (result.success) {
-        setAcceptTxStatus('success')
-        setAcceptTxHash(result.txHash)
-        toast.success('Admin transfer accepted!')
-        setTimeout(onContractInfoRefresh, 1500)
+      const sigResult = await signTransaction(xdr)
+      
+      // Handle the three signing outcomes
+      if (sigResult.signed) {
+        // Success: proceed with submission
+        setAcceptTxStatus('submitting')
+        const result = await submitTx(sigResult.xdr)
+        if (result.success) {
+          setAcceptTxStatus('success')
+          setAcceptTxHash(result.txHash)
+          toast.success('Admin transfer accepted!')
+          setTimeout(onContractInfoRefresh, 1500)
+        } else {
+          setAcceptTxStatus('error')
+          setAcceptTxError(result.error)
+          toast.error(result.error ?? 'Failed to accept admin')
+        }
+      } else if (sigResult.rejected) {
+        // User rejected: silently reset state
+        setAcceptTxStatus('idle')
       } else {
-        setAcceptTxStatus('error')
-        setAcceptTxError(result.error)
-        toast.error(result.error ?? 'Failed to accept admin')
+        // Signing error: already toasted, but still reset state
+        setAcceptTxStatus('idle')
       }
+      return
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Unexpected error'
       setAcceptTxStatus('error')
@@ -241,21 +281,31 @@ export function AdminPage({ contractInfo, onContractInfoRefresh }: AdminPageProp
       const xdr = await buildCancelTransferAdmin(wallet.address)
       if (!xdr) throw new Error('Failed to build transaction')
 
-      const signed = await signTransaction(xdr)
-      if (!signed) { setCancelTxStatus('idle'); return }
-
-      setCancelTxStatus('submitting')
-      const result = await submitTx(signed)
-      if (result.success) {
-        setCancelTxStatus('success')
-        setCancelTxHash(result.txHash)
-        toast.success('Admin transfer cancelled.')
-        setTimeout(onContractInfoRefresh, 1500)
+      const sigResult = await signTransaction(xdr)
+      
+      // Handle the three signing outcomes
+      if (sigResult.signed) {
+        // Success: proceed with submission
+        setCancelTxStatus('submitting')
+        const result = await submitTx(sigResult.xdr)
+        if (result.success) {
+          setCancelTxStatus('success')
+          setCancelTxHash(result.txHash)
+          toast.success('Admin transfer cancelled.')
+          setTimeout(onContractInfoRefresh, 1500)
+        } else {
+          setCancelTxStatus('error')
+          setCancelTxError(result.error)
+          toast.error(result.error ?? 'Failed to cancel transfer')
+        }
+      } else if (sigResult.rejected) {
+        // User rejected: silently reset state
+        setCancelTxStatus('idle')
       } else {
-        setCancelTxStatus('error')
-        setCancelTxError(result.error)
-        toast.error(result.error ?? 'Failed to cancel transfer')
+        // Signing error: already toasted, but still reset state
+        setCancelTxStatus('idle')
       }
+      return
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Unexpected error'
       setCancelTxStatus('error')
@@ -275,22 +325,32 @@ export function AdminPage({ contractInfo, onContractInfoRefresh }: AdminPageProp
       const xdr = await buildRenounceAdmin(wallet.address)
       if (!xdr) throw new Error('Failed to build transaction')
 
-      const signed = await signTransaction(xdr)
-      if (!signed) { setRenounceTxStatus('idle'); return }
-
-      setRenounceTxStatus('submitting')
-      const result = await submitTx(signed)
-      if (result.success) {
-        setRenounceTxStatus('success')
-        setRenounceTxHash(result.txHash)
-        toast.success('Admin renounced. Contract is now fully trustless.')
-        setRenounceConfirmText('')
-        setTimeout(onContractInfoRefresh, 1500)
+      const sigResult = await signTransaction(xdr)
+      
+      // Handle the three signing outcomes
+      if (sigResult.signed) {
+        // Success: proceed with submission
+        setRenounceTxStatus('submitting')
+        const result = await submitTx(sigResult.xdr)
+        if (result.success) {
+          setRenounceTxStatus('success')
+          setRenounceTxHash(result.txHash)
+          toast.success('Admin renounced. Contract is now fully trustless.')
+          setRenounceConfirmText('')
+          setTimeout(onContractInfoRefresh, 1500)
+        } else {
+          setRenounceTxStatus('error')
+          setRenounceTxError(result.error)
+          toast.error(result.error ?? 'Failed to renounce admin')
+        }
+      } else if (sigResult.rejected) {
+        // User rejected: silently reset state
+        setRenounceTxStatus('idle')
       } else {
-        setRenounceTxStatus('error')
-        setRenounceTxError(result.error)
-        toast.error(result.error ?? 'Failed to renounce admin')
+        // Signing error: already toasted, but still reset state
+        setRenounceTxStatus('idle')
       }
+      return
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Unexpected error'
       setRenounceTxStatus('error')
@@ -299,7 +359,7 @@ export function AdminPage({ contractInfo, onContractInfoRefresh }: AdminPageProp
     }
   }
 
-  if (!wallet) {
+  if (!wallet && !isRestoringSession) {
     return (
       <div className="card p-10 text-center max-w-lg">
         <p className="text-slate-400">Connect your wallet to access admin controls.</p>
