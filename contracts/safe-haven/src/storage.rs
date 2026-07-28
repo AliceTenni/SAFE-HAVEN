@@ -37,7 +37,7 @@ pub fn next_deposit_id(env: &Env, depositor: &Address) -> u32 {
 }
 
 // ----------------------------------------------------------------
-//  Active deposit ID list helpers (fixes #18 and #20)
+//  Active deposit ID list helpers (fixes https://github.com/kenedybok3/SAFE-HAVEN/issues/18 and https://github.com/kenedybok3/SAFE-HAVEN/issues/20)
 //
 //  A `Vec<u32>` stored under `ActiveDepositIds(depositor)` is the
 //  authoritative list of IDs that currently have either a timestamp-
@@ -85,7 +85,7 @@ pub fn remove_active_deposit_id(env: &Env, depositor: &Address, deposit_id: u32)
 
 /// O(1) single storage read — returns all active deposit IDs for
 /// `depositor`, regardless of whether they are timestamp- or
-/// ledger-based (fixes #18 and #20).
+/// ledger-based (fixes https://github.com/kenedybok3/SAFE-HAVEN/issues/18 and https://github.com/kenedybok3/SAFE-HAVEN/issues/20).
 pub fn get_deposit_ids(env: &Env, depositor: &Address) -> Vec<u32> {
     get_active_ids(env, depositor)
 }

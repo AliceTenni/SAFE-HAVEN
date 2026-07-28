@@ -28,6 +28,19 @@ React + TypeScript + Vite frontend for the [SAFE-HAVEN](../contracts/) Soroban s
 
 ---
 
+## Environment Variables
+
+| Variable | Purpose | Required | Example |
+|---|---|---|---|
+| `VITE_CONTRACT_ID` | Deployed Soroban contract ID (from `stellar contract deploy`) | **Yes** | `CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4` |
+| `VITE_NETWORK_PASSPHRASE` | Stellar network passphrase | **Yes** | `Test SDF Network ; September 2015` |
+| `VITE_RPC_URL` | Soroban RPC endpoint | **Yes** | `https://soroban-testnet.stellar.org` |
+| `VITE_HORIZON_URL` | Horizon endpoint for account queries | **Yes** | `https://horizon-testnet.stellar.org` |
+| `VITE_EXPLORER_URL` | Stellar Expert explorer base URL | **Yes** | `https://stellar.expert/explorer/testnet` |
+| `VITE_SIMULATION_ACCOUNT` | Source account used for read-only simulations when no wallet is connected. Defaults to the contract ID if unset. Set to a funded account on your target network to avoid synthetic-account fallback. | No | `G...` (any funded Stellar account) |
+
+---
+
 ## Getting Started
 
 ### 1. Prerequisites

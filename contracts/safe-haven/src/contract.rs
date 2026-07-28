@@ -203,7 +203,7 @@ impl SafeHaven {
     }
 
     // ----------------------------------------------------------------
-    //  Core: Deposit by Ledger Sequence (Issue #88)
+    //  Core: Deposit by Ledger Sequence (https://github.com/kenedybok3/SAFE-HAVEN/issues/88)
     // ----------------------------------------------------------------
 
     pub fn deposit_by_ledger(
@@ -579,13 +579,13 @@ impl SafeHaven {
     //  Read-only Queries
     // ----------------------------------------------------------------
 
-    /// No auth required — this is a public read-only query (closes #81)
+    /// No auth required — this is a public read-only query (closes https://github.com/kenedybok3/SAFE-HAVEN/issues/81)
     pub fn get_vault(env: Env, depositor: Address, deposit_id: u32) -> Option<VaultEntry> {
         storage::get_deposit_readonly(&env, &depositor, deposit_id)
     }
 
     /// Returns the `LedgerVaultEntry` for a ledger-sequence-based deposit, or `None` if not found.
-    /// No auth required — public read-only query (closes #44).
+    /// No auth required — public read-only query (closes https://github.com/kenedybok3/SAFE-HAVEN/issues/44).
     pub fn get_ledger_vault(env: Env, depositor: Address, deposit_id: u32) -> Option<LedgerVaultEntry> {
         storage::get_deposit_by_ledger_readonly(&env, &depositor, deposit_id)
     }
@@ -654,11 +654,11 @@ impl SafeHaven {
         env.ledger().timestamp()
     }
 
-    /// No auth required — this is a public read-only query (closes #81)
+    /// No auth required — this is a public read-only query (closes https://github.com/kenedybok3/SAFE-HAVEN/issues/81)
     ///
     /// For timestamp-based deposits: returns exact seconds remaining.
     /// For ledger-based deposits: returns an estimate in seconds using
-    /// `LEDGER_SECONDS` (fixes #21). Returns 0 when unlocked or not found.
+    /// `LEDGER_SECONDS` (fixes https://github.com/kenedybok3/SAFE-HAVEN/issues/21). Returns 0 when unlocked or not found.
     pub fn time_remaining(env: Env, depositor: Address, deposit_id: u32) -> u64 {
         // Timestamp-based path
         if let Some(entry) = storage::get_deposit_readonly(&env, &depositor, deposit_id) {
@@ -666,7 +666,7 @@ impl SafeHaven {
             return entry.unlock_time.saturating_sub(now);
         }
 
-        // Ledger-based path: convert remaining ledgers → estimated seconds (fixes #21)
+        // Ledger-based path: convert remaining ledgers → estimated seconds (fixes https://github.com/kenedybok3/SAFE-HAVEN/issues/21)
         if let Some(entry) = storage::get_deposit_by_ledger_readonly(&env, &depositor, deposit_id) {
             let current = env.ledger().sequence();
             if current >= entry.unlock_ledger {
