@@ -179,8 +179,8 @@ export function Dashboard({ contractInfo }: DashboardProps) {
         ) : (
           <>
             <StatCard label="Your Deposits" value={String(deposits.length)} />
-            <StatCard label="Unlocked" value={String(deposits.filter(d => d.timeRemaining !== null && d.timeRemaining === 0).length)} accent="green" />
-            <StatCard label="Locked" value={String(deposits.filter(d => d.timeRemaining !== null && d.timeRemaining > 0).length)} accent="yellow" />
+            <StatCard label="Unlocked" value={String(deposits.filter(d => d.timeRemaining === 0 && d.unlockVerified).length)} accent="green" />
+            <StatCard label="Locked" value={String(deposits.filter(d => d.timeRemaining === null || d.timeRemaining > 0 || !d.unlockVerified).length)} accent="yellow" />
             <StatCard label="Total Depositors" value={contractInfo.depositorCount > 0 ? String(contractInfo.depositorCount) : '–'} />
           </>
         )}

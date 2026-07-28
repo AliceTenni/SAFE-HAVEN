@@ -1,9 +1,9 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import toast from 'react-hot-toast'
 import { useWallet } from '../context/WalletContext'
 import { TxStatusBadge } from '../components/TxStatusBadge'
-import { buildDeposit, submitTx } from '../lib/stellar'
-import { xlmToStroops, stroopsToXlm, formatBps } from '../lib/format'
+import { buildDeposit, submitTx, getTokenDecimals, getTokenMetadata } from '../lib/stellar'
+import { xlmToStroops, stroopsToXlm, formatBps, formatDuration, dateTimeLocalToUnixSeconds, getMinDateTimeLocal, formatUnlockTimestampWithTimezone, getTimezoneOffsetString, amountToBaseUnits, baseUnitsToAmount, isValidContractAddress, validateTokenAddress } from '../lib/format'
 import type { TxStatus } from '../types'
 import type { ContractInfo } from '../App'
 import { CONFIG } from '../config'
@@ -25,22 +25,76 @@ export function DepositPage({ contractInfo, onSuccess }: DepositPageProps) {
   const [txHash,   setTxHash]   = useState<string | undefined>()
   const [txError,  setTxError]  = useState<string | undefined>()
 
+  // Token decimals state — defaults to 7 (XLM) but updates when token changes
+  const [tokenDecimals, setTokenDecimals] = useState<number>(7)
+  const [decimalsLoading, setDecimalsLoading] = useState(false)
+
+  // Token metadata state for verification
+  const [tokenMetadata, setTokenMetadata] = useState<{ name: string; symbol: string } | null>(null)
+  const [tokenAddressError, setTokenAddressError] = useState<string>('')
+
+  // Fetch token decimals when token address changes
+  useEffect(() => {
+    if (!tokenAddress || tokenAddress === CONFIG.NATIVE_TOKEN) {
+      setTokenDecimals(7)
+      setDecimalsLoading(false)
+      setTokenMetadata(null)
+      setTokenAddressError('')
+      return
+    }
+
+    // Validate format first
+    const validation = validateTokenAddress(tokenAddress)
+    if (!validation.valid) {
+      setTokenAddressError(validation.message)
+      setTokenDecimals(7)
+      setTokenMetadata(null)
+      setDecimalsLoading(false)
+      return
+    }
+
+    setTokenAddressError('')
+    setDecimalsLoading(true)
+
+    // Fetch both decimals and metadata in parallel
+    Promise.all([getTokenDecimals(tokenAddress), getTokenMetadata(tokenAddress)]).then(
+      ([decimals, metadata]) => {
+        if (decimals !== null) {
+          setTokenDecimals(decimals)
+        } else {
+          setTokenDecimals(7)
+        }
+        if (metadata) {
+          setTokenMetadata(metadata)
+        }
+        setDecimalsLoading(false)
+      },
+    ).catch(() => {
+      setTokenDecimals(7)
+      setTokenMetadata(null)
+      setDecimalsLoading(false)
+    })
+  }, [tokenAddress])
+
   // Derived validation
   const amountNum       = parseFloat(amount)
   const penaltyBpsNum   = parseInt(penaltyBps, 10)
-  const unlockTimestamp = unlockDate ? Math.floor(new Date(unlockDate).getTime() / 1000) : 0
+  const unlockTimestamp = unlockDate ? dateTimeLocalToUnixSeconds(unlockDate) : 0
   const nowSecs         = Math.floor(Date.now() / 1000)
   const lockDuration    = unlockTimestamp - nowSecs
 
+  // Convert amount to base units using the token's decimal precision
+  const amountInBaseUnits = amount ? amountToBaseUnits(amount, tokenDecimals) : 0n
+
   const errors = {
     amount:    !amount ? '' : isNaN(amountNum) || amountNum <= 0 ? 'Amount must be > 0' :
-               xlmToStroops(amount) > contractInfo.maxDeposit ? `Max: ${stroopsToXlm(contractInfo.maxDeposit)} XLM` : '',
+               amountInBaseUnits > contractInfo.maxDeposit ? `Max: ${baseUnitsToAmount(contractInfo.maxDeposit, tokenDecimals)} tokens` : '',
     unlock:    !unlockDate ? '' : unlockTimestamp <= nowSecs ? 'Must be in the future' :
-               lockDuration < CONFIG.MIN_LOCK_DURATION_SECS ? `Minimum lock: ${CONFIG.MIN_LOCK_DURATION_SECS}s` :
-               lockDuration > contractInfo.maxLockSecs ? `Max lock: ${contractInfo.maxLockSecs}s` : '',
+               lockDuration < CONFIG.MIN_LOCK_DURATION_SECS ? `Minimum lock: ${formatDuration(CONFIG.MIN_LOCK_DURATION_SECS)}` :
+               lockDuration > contractInfo.maxLockSecs ? `Max lock: ${formatDuration(contractInfo.maxLockSecs)}` : '',
     penalty:   isNaN(penaltyBpsNum) || penaltyBpsNum < 0 || penaltyBpsNum > 10_000 ? '0–10000 only' : '',
   }
-  const isValid = amount && unlockDate && !errors.amount && !errors.unlock && !errors.penalty && !contractInfo.paused
+  const isValid = amount && unlockDate && !errors.amount && !errors.unlock && !errors.penalty && !contractInfo.paused && !decimalsLoading
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -51,8 +105,8 @@ export function DepositPage({ contractInfo, onSuccess }: DepositPageProps) {
     setTxHash(undefined)
 
     try {
-      const amountStroops = xlmToStroops(amount)
-      const xdr = await buildDeposit(wallet.address, tokenAddress, amountStroops, unlockTimestamp, penaltyBpsNum)
+      const amountBaseUnits = amountToBaseUnits(amount, tokenDecimals)
+      const xdr = await buildDeposit(wallet.address, tokenAddress, amountBaseUnits, unlockTimestamp, penaltyBpsNum)
       if (!xdr) throw new Error('Failed to build transaction')
 
       const sigResult = await signTransaction(xdr)
@@ -120,45 +174,78 @@ export function DepositPage({ contractInfo, onSuccess }: DepositPageProps) {
           {/* Token */}
           <div>
             <label className="label">Token contract address</label>
-            <input
-              className="input"
-              type="text"
-              value={tokenAddress}
-              onChange={(e) => setTokenAddress(e.target.value.trim())}
-              placeholder="CDLZFC3…"
-              disabled={isPending}
-            />
-            <p className="text-xs text-slate-500 mt-1">Default: native XLM token</p>
+            <div className="relative">
+              <input
+                className={`input ${
+                  tokenAddressError
+                    ? 'border-red-500 focus:ring-red-500/50 focus:border-red-500'
+                    : tokenAddress && isValidContractAddress(tokenAddress) && !decimalsLoading
+                      ? 'border-green-500/50 focus:ring-green-500/30 focus:border-green-500'
+                      : ''
+                }`}
+                type="text"
+                value={tokenAddress}
+                onChange={(e) => setTokenAddress(e.target.value.trim())}
+                placeholder="CDLZFC3…"
+                disabled={isPending}
+              />
+              {decimalsLoading && (
+                <span className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 text-xs">
+                  Verifying…
+                </span>
+              )}
+              {!decimalsLoading && tokenAddress && isValidContractAddress(tokenAddress) && !tokenAddressError && (
+                <span className="absolute right-4 top-1/2 -translate-y-1/2 text-green-400 text-xs">
+                  ✓
+                </span>
+              )}
+            </div>
+            {tokenAddressError ? (
+              <p className="text-xs text-red-400 mt-1">{tokenAddressError}</p>
+            ) : (
+              <p className="text-xs text-slate-500 mt-1">
+                {tokenAddress === CONFIG.NATIVE_TOKEN
+                  ? 'Native XLM token (7 decimals)'
+                  : tokenMetadata
+                    ? `${tokenMetadata.symbol} - ${tokenMetadata.name} (${tokenDecimals} decimals)`
+                    : `Custom token (${tokenDecimals} decimals${decimalsLoading ? ', verifying…' : ''})`}
+              </p>
+            )}
           </div>
 
           {/* Amount */}
           <div>
-            <label className="label">Amount (XLM)</label>
+            <label className="label">Amount</label>
             <div className="relative">
               <input
                 className={`input pr-14 ${errors.amount ? 'border-red-500 focus:ring-red-500/50 focus:border-red-500' : ''}`}
                 type="number"
                 min="0"
-                step="0.0000001"
+                step={`0.${'0'.repeat(Math.max(0, tokenDecimals - 1))}1`}
                 value={amount}
                 onChange={(e) => setAmount(e.target.value)}
-                placeholder="0.0000000"
-                disabled={isPending}
+                placeholder="0"
+                disabled={isPending || decimalsLoading}
               />
-              <span className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-500 text-sm font-medium pointer-events-none">XLM</span>
+              <span className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-500 text-sm font-medium pointer-events-none">
+                {tokenAddress === CONFIG.NATIVE_TOKEN ? 'XLM' : 'tokens'}
+              </span>
             </div>
             {errors.amount && <p className="text-xs text-red-400 mt-1">{errors.amount}</p>}
           </div>
 
           {/* Unlock date */}
           <div>
-            <label className="label">Unlock date & time</label>
+            <label className="label">
+              Unlock date & time
+              <span className="ml-1 text-slate-500 normal-case">— {getTimezoneOffsetString()}</span>
+            </label>
             <input
               className={`input ${errors.unlock ? 'border-red-500 focus:ring-red-500/50 focus:border-red-500' : ''}`}
               type="datetime-local"
               value={unlockDate}
               onChange={(e) => setUnlockDate(e.target.value)}
-              min={new Date(Date.now() + 60_000).toISOString().slice(0, 16)}
+              min={getMinDateTimeLocal()}
               disabled={isPending}
             />
             {errors.unlock && <p className="text-xs text-red-400 mt-1">{errors.unlock}</p>}
@@ -193,7 +280,15 @@ export function DepositPage({ contractInfo, onSuccess }: DepositPageProps) {
             <div className="bg-slate-800/60 rounded-xl p-4 text-sm space-y-1.5">
               <p className="text-slate-400 text-xs uppercase tracking-wide font-medium mb-2">Summary</p>
               <Row label="Locking" value={`${amount} XLM`} />
-              <Row label="Until" value={new Date(unlockDate).toLocaleString()} />
+              {(() => {
+                const ts = formatUnlockTimestampWithTimezone(unlockTimestamp)
+                return (
+                  <>
+                    <Row label="Unlock (local)" value={ts.local} />
+                    <Row label="Unlock (UTC)" value={ts.utc} />
+                  </>
+                )
+              })()}
               {penaltyBpsNum > 0 && <Row label="Early exit penalty" value={formatBps(penaltyBpsNum)} accent="orange" />}
             </div>
           )}

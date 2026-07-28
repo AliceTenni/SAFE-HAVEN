@@ -1,5 +1,5 @@
 // ============================================================
-//  Wallet Context — manages Freighter / wallet-kit connection
+//  Wallet Context — manages multi-wallet connection via stellar-wallets-kit
 // ============================================================
 
 import React, {
@@ -7,10 +7,21 @@ import React, {
   useCallback,
   useContext,
   useEffect,
+  useRef,
   useState,
 } from 'react'
 import toast from 'react-hot-toast'
-import type { WalletInfo, SigningResult } from '../types'
+import { StellarWalletsKit } from '@creit.tech/stellar-wallets-kit'
+import {
+  FREIGHTER_ID,
+  WalletNetwork,
+  FreighterModule,
+  xBullModule,
+  AlbedoModule,
+  LobstrModule,
+  HanaModule,
+} from '@creit.tech/stellar-wallets-kit'
+import type { WalletInfo } from '../types'
 import { shortAddr } from '../lib/format'
 import { CONFIG } from '../config'
 
@@ -48,132 +59,92 @@ function initializeWalletFromStorage(): [WalletInfo | null, boolean] {
 }
 
 export function WalletProvider({ children }: { children: React.ReactNode }) {
-  const [wallet, setWallet]                   = useState<WalletInfo | null>(null)
-  const [isRestoringSession, setIsRestoring]  = useState(false)
-  const [isConnecting, setConnecting]         = useState(false)
-  const [networkMismatch, setNetworkMismatch] = useState(false)
+  const [wallet, setWallet]           = useState<WalletInfo | null>(null)
+  const [isConnecting, setConnecting] = useState(false)
+  const walletKitRef = useRef<StellarWalletsKit | null>(null)
 
-  // Initialize synchronously from localStorage on first render
+  // Determine network
+  const isMainnet = CONFIG.NETWORK_PASSPHRASE === 'Public Global Stellar Network ; September 2015'
+  const network = isMainnet ? WalletNetwork.PUBLIC : WalletNetwork.TESTNET
+
+  // Initialize wallet kit on mount
   useEffect(() => {
-    const [initialWallet, isRestoring] = initializeWalletFromStorage()
-    setWallet(initialWallet)
-    setIsRestoring(isRestoring)
-  }, [])
+    try {
+      walletKitRef.current = new StellarWalletsKit({
+        network,
+        selectedWalletId: FREIGHTER_ID,
+        modules: [
+          new FreighterModule(),
+          new xBullModule(),
+          new AlbedoModule(),
+          new LobstrModule(),
+          new HanaModule(),
+        ],
+      })
+    } catch (e) {
+      console.error('Failed to initialize StellarWalletsKit:', e)
+    }
+  }, [network])
 
-  // Validate restored session against Freighter, or clear it if invalid
+  // Restore session on mount — re-validate against the live wallet address
+  // to guard against stale sessions after an account or network switch (#12).
   useEffect(() => {
-    if (!isRestoringSession || !wallet) return
+    if (!walletKitRef.current) return
 
-    const validateSession = async () => {
-      const freighter = (window as any).freighter // eslint-disable-line @typescript-eslint/no-explicit-any
-      if (!freighter) {
-        // Freighter not available — clear the stale session silently.
-        localStorage.removeItem('tlv_wallet_address')
-        setWallet(null)
-        setNetworkMismatch(false)
-        setIsRestoring(false)
-        return
-      }
+    const saved = localStorage.getItem('tlv_wallet_address')
+    if (!saved) return
 
+    const restore = async () => {
       try {
-        const { isConnected } = await freighter.isConnected()
-        if (!isConnected) {
-          // Wallet is locked — clear the stale session and ask the user to reconnect.
-          localStorage.removeItem('tlv_wallet_address')
-          setWallet(null)
-          setNetworkMismatch(false)
-          setIsRestoring(false)
-          toast('Wallet locked — please reconnect.', { icon: '🔒' })
-          return
-        }
-
-        const { address } = await freighter.getAddress()
-        if (!address || address !== wallet.address) {
-          // Active account changed — clear the stale session.
-          localStorage.removeItem('tlv_wallet_address')
-          setWallet(null)
-          setNetworkMismatch(false)
-          setIsRestoring(false)
-          if (address) {
-            toast('Wallet account changed — please reconnect.', { icon: '🔄' })
-          }
-          return
-        }
-
-        // Check network mismatch during restoration
-        let walletNetworkPassphrase: string | undefined
+        // Try to get the current address from the wallet kit
         try {
-          const networkDetails = await freighter.getNetworkDetails()
-          walletNetworkPassphrase = networkDetails?.networkPassphrase
-        } catch (e) {
-          console.warn('Could not get network details from Freighter:', e)
+          const result = await walletKitRef.current!.getAddress()
+          if (!result || !result.address) {
+            localStorage.removeItem('tlv_wallet_address')
+            return
+          }
+
+          const { address } = result
+          if (address !== saved) {
+            // Active account changed — clear the stale session.
+            localStorage.removeItem('tlv_wallet_address')
+            toast('Wallet account changed — please reconnect.', { icon: '🔄' })
+            return
+          }
+
+          // Address is still valid; restore the session.
+          setWallet({ address: saved, displayAddress: shortAddr(saved) })
+        } catch {
+          // Not connected — clear the stale session.
+          localStorage.removeItem('tlv_wallet_address')
         }
-
-        const hasNetworkMismatch = walletNetworkPassphrase && walletNetworkPassphrase !== CONFIG.NETWORK_PASSPHRASE
-
-        // Address is still valid; keep the wallet and mark restoration as complete
-        setWallet({
-          ...wallet,
-          networkMismatch: !!hasNetworkMismatch,
-          walletNetwork: walletNetworkPassphrase,
-        })
-        setNetworkMismatch(!!hasNetworkMismatch)
-        setIsRestoring(false)
-      } catch {
-        // Error during validation — clear the stale session
+      } catch (e) {
+        console.error('Session restore failed:', e)
         localStorage.removeItem('tlv_wallet_address')
-        setWallet(null)
-        setNetworkMismatch(false)
-        setIsRestoring(false)
       }
     }
 
-    validateSession()
-  }, [isRestoringSession, wallet])
+    restore()
+  }, [walletKitRef])
 
   const connect = useCallback(async () => {
     setConnecting(true)
     setNetworkMismatch(false)
     try {
-      // Try Freighter first (most common Stellar wallet)
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const freighter = (window as any).freighter
-      if (!freighter) {
-        toast.error('Freighter wallet not found. Install it from freighter.app', { duration: 8000 })
+      if (!walletKitRef.current) {
+        toast.error('Wallet initialization failed. Please refresh the page.')
         return
       }
 
-      const { isConnected } = await freighter.isConnected()
-      if (!isConnected) {
-        toast.error('Please unlock your Freighter wallet first')
+      // Get the address from the wallet kit (this will prompt the user)
+      const result = await walletKitRef.current.getAddress()
+      if (!result || !result.address) {
+        toast.error('Could not get address from wallet')
         return
       }
 
-      const { address } = await freighter.getAddress()
-      if (!address) {
-        toast.error('Could not get address from Freighter')
-        return
-      }
-
-      // Check network mismatch
-      let walletNetworkPassphrase: string | undefined
-      try {
-        const networkDetails = await freighter.getNetworkDetails()
-        walletNetworkPassphrase = networkDetails?.networkPassphrase
-      } catch (e) {
-        // If getNetworkDetails fails, we can't verify the network
-        // but we shouldn't block the connection
-        console.warn('Could not get network details from Freighter:', e)
-      }
-
-      const hasNetworkMismatch = walletNetworkPassphrase && walletNetworkPassphrase !== CONFIG.NETWORK_PASSPHRASE
-
-      const info: WalletInfo = {
-        address,
-        displayAddress: shortAddr(address),
-        networkMismatch: !!hasNetworkMismatch,
-        walletNetwork: walletNetworkPassphrase,
-      }
+      const { address } = result
+      const info: WalletInfo = { address, displayAddress: shortAddr(address) }
       setWallet(info)
       setNetworkMismatch(!!hasNetworkMismatch)
       localStorage.setItem('tlv_wallet_address', address)
@@ -189,7 +160,10 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Failed to connect wallet'
-      toast.error(msg)
+      // Suppress rejection/cancellation messages from user-initiated cancellations
+      if (!msg.toLowerCase().includes('reject') && !msg.toLowerCase().includes('cancel')) {
+        toast.error(msg, { duration: 8000 })
+      }
     } finally {
       setConnecting(false)
     }
@@ -211,20 +185,21 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     }
 
     try {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const freighter = (window as any).freighter
-      if (!freighter) {
-        toast.error('Freighter not available')
-        return { signed: false, rejected: false, error: 'Freighter not available' }
+      if (!walletKitRef.current) {
+        toast.error('Wallet not initialized')
+        return null
       }
-      const { signedTxXdr, error } = await freighter.signTransaction(txXdr, {
-        networkPassphrase: import.meta.env.VITE_NETWORK_PASSPHRASE,
+
+      const result = await walletKitRef.current.signTransaction(txXdr, {
+        networkPassphrase: CONFIG.NETWORK_PASSPHRASE,
       })
-      if (error) {
-        toast.error(`Signing failed: ${error}`)
-        return { signed: false, rejected: false, error }
+
+      if (!result || !result.signedTxXdr) {
+        toast.error('Failed to sign transaction')
+        return null
       }
-      return { signed: true, xdr: signedTxXdr as string }
+
+      return result.signedTxXdr
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Signing rejected'
       const isUserReject = msg.toLowerCase().includes('reject') || msg.toLowerCase().includes('cancel')
