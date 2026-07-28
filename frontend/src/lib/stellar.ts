@@ -453,3 +453,114 @@ export async function getPendingAdmin(): Promise<string | null> {
   )
   return result ?? null
 }
+
+// ----------------------------------------------------------------
+//  Token utilities
+// ----------------------------------------------------------------
+
+/**
+ * Fetch the decimal precision of a Stellar token.
+ *
+ * For native XLM, returns 7 (hardcoded, as native.decimals() is not callable).
+ * For other tokens (SAC tokens), calls the contract's decimals() method.
+ *
+ * @param tokenAddress - Stellar token contract address
+ * @returns Number of decimal places, or null if fetch fails
+ */
+export async function getTokenDecimals(tokenAddress: string): Promise<number | null> {
+  // XLM always has 7 decimals (Stellar standard for native token)
+  if (tokenAddress === CONFIG.NATIVE_TOKEN) {
+    return 7
+  }
+
+  try {
+    const rpc = getRpc()
+    const contract = new Contract(tokenAddress)
+
+    // Create a minimal synthetic account for read-only simulation
+    const sourceAddress = CONFIG.CONTRACT_ID
+    const { Account } = await import('@stellar/stellar-sdk')
+    const account = new Account(sourceAddress, '0') as unknown as Awaited<ReturnType<typeof rpc.getAccount>>
+
+    const tx = new TransactionBuilder(account, {
+      fee: BASE_FEE,
+      networkPassphrase: CONFIG.NETWORK_PASSPHRASE,
+    })
+      .addOperation(contract.call('decimals'))
+      .setTimeout(30)
+      .build()
+
+    const result = await rpc.simulateTransaction(tx)
+    if (StellarRpc.Api.isSimulationError(result)) {
+      console.warn(`Failed to fetch decimals for ${tokenAddress}: simulation error`)
+      return null
+    }
+    if (!result.result) return null
+
+    const decimals = Number(scValToNative(result.result.retval))
+    return decimals
+  } catch (e) {
+    console.warn(`Failed to fetch decimals for ${tokenAddress}:`, e)
+    return null
+  }
+}
+
+/**
+ * Fetch token metadata: name and symbol.
+ * Works for SAC tokens that implement SEP-41 metadata.
+ *
+ * @param tokenAddress - Stellar token contract address
+ * @returns object with name and symbol, or null if fetch fails
+ */
+export async function getTokenMetadata(
+  tokenAddress: string,
+): Promise<{ name: string; symbol: string } | null> {
+  // Native XLM metadata is well-known
+  if (tokenAddress === CONFIG.NATIVE_TOKEN) {
+    return { name: 'Stellar Lumens', symbol: 'XLM' }
+  }
+
+  try {
+    const rpc = getRpc()
+    const contract = new Contract(tokenAddress)
+
+    const sourceAddress = CONFIG.CONTRACT_ID
+    const { Account } = await import('@stellar/stellar-sdk')
+    const account = new Account(sourceAddress, '0') as unknown as Awaited<ReturnType<typeof rpc.getAccount>>
+
+    // Try to fetch name
+    const nameTx = new TransactionBuilder(account, {
+      fee: BASE_FEE,
+      networkPassphrase: CONFIG.NETWORK_PASSPHRASE,
+    })
+      .addOperation(contract.call('name'))
+      .setTimeout(30)
+      .build()
+
+    const nameResult = await rpc.simulateTransaction(nameTx)
+    const name =
+      !StellarRpc.Api.isSimulationError(nameResult) && nameResult.result
+        ? String(scValToNative(nameResult.result.retval))
+        : 'Unknown Token'
+
+    // Try to fetch symbol
+    const symbolTx = new TransactionBuilder(account, {
+      fee: BASE_FEE,
+      networkPassphrase: CONFIG.NETWORK_PASSPHRASE,
+    })
+      .addOperation(contract.call('symbol'))
+      .setTimeout(30)
+      .build()
+
+    const symbolResult = await rpc.simulateTransaction(symbolTx)
+    const symbol =
+      !StellarRpc.Api.isSimulationError(symbolResult) && symbolResult.result
+        ? String(scValToNative(symbolResult.result.retval))
+        : 'UNKNOWN'
+
+    return { name, symbol }
+  } catch (e) {
+    console.warn(`Failed to fetch token metadata for ${tokenAddress}:`, e)
+    return null
+  }
+}
