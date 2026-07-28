@@ -151,3 +151,32 @@ All PRs must pass the following CI jobs before they can be merged:
 ## Test Snapshots
 
 Running `cargo test` may generate a `contracts/safe-haven/test_snapshots/` directory containing XDR snapshots of contract state produced by the Soroban test environment. These are transient build artefacts, not committed regression fixtures, and are listed in `.gitignore`. Do not commit them.
+
+## Smart Contract Security Review
+
+Any PR that modifies files under `contracts/` **must** be reviewed by a smart contract security reviewer before merging. This requirement is enforced via `.github/CODEOWNERS`. If you are adding or updating a contract file, ensure at least one listed CODEOWNER approves your PR.
+
+> **Note:** CODEOWNERS entries are only active when the listed GitHub usernames correspond to real users with write access to the repository. If maintainers change, update `.github/CODEOWNERS` accordingly or the review requirement will silently be skipped.
+
+## Utility Scripts
+
+| Script | Purpose |
+|---|---|
+| `scripts/final_merge.sh` | Batch-merges a predefined list of PRs into `main`, auto-resolving conflicts by favouring the PR branch. |
+| `scripts/smart_merge.sh` | Merges simple and complex PRs in two passes; fair-weather PRs merge without conflict resolution, complex PRs get automatic conflict handling. |
+| `scripts/deploy_testnet.sh` | Deploys the optimized WASM contract to Stellar Testnet. Requires `SOROBAN_SECRET_KEY`. |
+| `scripts/smoke_test_local.sh` | Runs smoke tests against a local Soroban standalone node. |
+
+## Pre-Commit Hooks
+
+This repo ships a `.githooks/` directory with a pre-commit hook that runs formatting and lint checks locally so you catch issues before CI. Activate it with:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+The hook runs:
+- `cargo fmt --all -- --check`
+- `cargo clippy --all-targets -- -D warnings`
+
+If the hook fails, fix the reported issues and try committing again.
