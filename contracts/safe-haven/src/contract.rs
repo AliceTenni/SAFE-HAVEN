@@ -33,8 +33,13 @@ impl SafeHaven {
     ) -> Result<(), VaultError> {
         admin.require_auth();
 
+        // Use is_initialized as the sole re-initialization guard (closes #46).
+        // Previously the contract checked admin presence, which became inconsistent
+        // after renounce_admin(): the Initialized flag stayed true but there was no
+        // admin, so a re-initialization call might pass the admin-presence check.
+        // Using the dedicated Initialized flag is unambiguous in all states.
         if storage::is_initialized(&env) {
-            return Err(VaultError::Unauthorized);
+            return Err(VaultError::AlreadyInitialized);
         }
 
         storage::set_admin(&env, &admin);
