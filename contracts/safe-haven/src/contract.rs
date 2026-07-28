@@ -585,6 +585,25 @@ impl SafeHaven {
         storage::get_deposit_by_ledger_readonly(&env, &depositor, deposit_id)
     }
 
+    /// Returns whether a deposit is timestamp-based (`DepositType::TimeBased`) or
+    /// ledger-sequence-based (`DepositType::LedgerBased`), or `None` if no deposit
+    /// exists at the given `(depositor, deposit_id)` pair.
+    ///
+    /// This eliminates the need for callers to speculatively call both `get_vault`
+    /// and `get_ledger_vault` just to determine the deposit type, saving a full RPC
+    /// round-trip on every lookup (closes #47).
+    ///
+    /// No auth required — public read-only query.
+    pub fn get_deposit_type(env: Env, depositor: Address, deposit_id: u32) -> Option<DepositType> {
+        if storage::get_deposit_readonly(&env, &depositor, deposit_id).is_some() {
+            return Some(DepositType::TimeBased);
+        }
+        if storage::get_deposit_by_ledger_readonly(&env, &depositor, deposit_id).is_some() {
+            return Some(DepositType::LedgerBased);
+        }
+        None
+    }
+
     pub fn get_vault_batch(env: Env, depositors: Vec<Address>, deposit_id: u32) -> Vec<Option<VaultEntry>> {
         let limit = if depositors.len() > MAX_BATCH_SIZE { MAX_BATCH_SIZE } else { depositors.len() as u32 };
         let mut results = Vec::new(&env);
