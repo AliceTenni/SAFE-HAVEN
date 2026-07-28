@@ -195,12 +195,13 @@ Permanently removes admin. Contract becomes fully trustless.
 | `get_deposit_ids(depositor)` | `Vec<u32>` |
 | `time_remaining(depositor, id)` | `u64` seconds |
 | `get_time()` | Current ledger timestamp |
+| `version()` | `String` — contract version from Cargo.toml |
 | `get_admin()` | `Option<Address>` |
 | `get_pending_admin()` | `Option<Address>` |
 | `get_fee_recipient()` | `Option<Address>` |
 | `get_constants()` | `(max_deposit, max_lock_secs)` |
 | `get_depositor_count()` | `u32` |
-| `get_depositors(offset, limit)` | `Vec<Address>` |
+| `get_depositors(offset, limit)` | `Page<Address>` — items + total_count |
 | `is_paused()` | `bool` |
 | `is_initialized()` | `bool` |
 

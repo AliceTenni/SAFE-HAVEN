@@ -12,7 +12,7 @@ use crate::{
     },
     errors::VaultError,
     events, storage,
-    types::{VaultEntry, LedgerVaultEntry, STORAGE_VERSION},
+    types::{VaultEntry, LedgerVaultEntry, Page, STORAGE_VERSION},
 };
 
 #[contract]
@@ -33,8 +33,13 @@ impl SafeHaven {
     ) -> Result<(), VaultError> {
         admin.require_auth();
 
+        // Use is_initialized as the sole re-initialization guard (closes #46).
+        // Previously the contract checked admin presence, which became inconsistent
+        // after renounce_admin(): the Initialized flag stayed true but there was no
+        // admin, so a re-initialization call might pass the admin-presence check.
+        // Using the dedicated Initialized flag is unambiguous in all states.
         if storage::is_initialized(&env) {
-            return Err(VaultError::Unauthorized);
+            return Err(VaultError::AlreadyInitialized);
         }
 
         storage::set_admin(&env, &admin);
@@ -585,11 +590,30 @@ impl SafeHaven {
         storage::get_deposit_by_ledger_readonly(&env, &depositor, deposit_id)
     }
 
+    /// Returns whether a deposit is timestamp-based (`DepositType::TimeBased`) or
+    /// ledger-sequence-based (`DepositType::LedgerBased`), or `None` if no deposit
+    /// exists at the given `(depositor, deposit_id)` pair.
+    ///
+    /// This eliminates the need for callers to speculatively call both `get_vault`
+    /// and `get_ledger_vault` just to determine the deposit type, saving a full RPC
+    /// round-trip on every lookup (closes #47).
+    ///
+    /// No auth required — public read-only query.
+    pub fn get_deposit_type(env: Env, depositor: Address, deposit_id: u32) -> Option<DepositType> {
+        if storage::get_deposit_readonly(&env, &depositor, deposit_id).is_some() {
+            return Some(DepositType::TimeBased);
+        }
+        if storage::get_deposit_by_ledger_readonly(&env, &depositor, deposit_id).is_some() {
+            return Some(DepositType::LedgerBased);
+        }
+        None
+    }
+
     pub fn get_vault_batch(env: Env, depositors: Vec<Address>, deposit_id: u32) -> Vec<Option<VaultEntry>> {
         let limit = if depositors.len() > MAX_BATCH_SIZE { MAX_BATCH_SIZE } else { depositors.len() as u32 };
         let mut results = Vec::new(&env);
         for i in 0..limit {
-            if let Some(depositor) = depositors.get(i) {
+            if let Some((depositor, deposit_id)) = pairs.get(i) {
                 let entry = storage::get_deposit_readonly(&env, &depositor, deposit_id);
                 results.push_back(entry);
             }
@@ -677,12 +701,31 @@ impl SafeHaven {
         storage::get_depositor_count(&env)
     }
 
-    pub fn get_depositors(env: Env, offset: u32, limit: u32) -> Vec<Address> {
-        storage::get_depositors_page(&env, offset, limit)
+    /// Returns a page of depositor addresses and the total count of all active depositors.
+    /// This allows callers to implement pagination without a separate RPC call.
+    ///
+    /// # Parameters
+    /// - `offset`: Number of active depositors to skip (0-indexed)
+    /// - `limit`: Maximum number of addresses to return in this page
+    ///
+    /// # Returns
+    /// A `Page<Address>` containing:
+    /// - `items`: The paginated list of addresses
+    /// - `total_count`: Total number of active depositors across all pages
+    pub fn get_depositors(env: Env, offset: u32, limit: u32) -> Page<Address> {
+        let (items, total_count) = storage::get_depositors_page(&env, offset, limit);
+        Page { items, total_count }
     }
 
     pub fn is_initialized(env: Env) -> bool {
         storage::is_initialized(&env)
+    }
+
+    /// Returns the contract version from Cargo.toml at compile time.
+    /// Allows clients and monitoring tools to confirm which version is deployed
+    /// without inspecting bytecode directly.
+    pub fn version(_env: Env) -> soroban_sdk::String {
+        soroban_sdk::String::from_slice(&_env, env!("CARGO_PKG_VERSION"))
     }
 
     // ----------------------------------------------------------------
