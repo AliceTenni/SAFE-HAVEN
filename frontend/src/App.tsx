@@ -3,6 +3,7 @@ import { WalletProvider, useWallet } from './context/WalletContext'
 import { useContractInfo } from './hooks/useContractInfo'
 import { Header } from './components/Header'
 import { TabNav } from './components/TabNav'
+import { WalletInfoModal } from './components/WalletInfoModal'
 import { Dashboard } from './pages/Dashboard'
 import { DepositPage } from './pages/DepositPage'
 import { WithdrawPage } from './pages/WithdrawPage'
@@ -100,6 +101,9 @@ function AppInner() {
           </div>
         </div>
       </footer>
+
+      {/* Wallet info modal */}
+      <WalletInfoModal />
     </div>
   )
 }

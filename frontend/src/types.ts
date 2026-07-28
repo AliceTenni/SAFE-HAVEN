@@ -16,12 +16,26 @@ export interface Deposit extends VaultEntry {
   depositId: number
   /** Seconds remaining until unlock (0 if unlocked, null during initial load) */
   timeRemaining: number | null
+  /**
+   * Whether the chain has confirmed this deposit is truly unlocked.
+   *
+   * - `true`  for all freshly-loaded deposits (timeRemaining was computed from
+   *           a live getLedgerTime() call, so the value is chain-authoritative).
+   * - `true`  after a getTimeRemaining() call confirms the value is 0.
+   * - `false` while the local ticker has just ticked down to 0 but a chain
+   *           re-verification is still in-flight. The Withdraw button must be
+   *           hidden while this is false to prevent premature FundsStillLocked
+   *           errors due to clock drift or tab-throttling.
+   */
+  unlockVerified: boolean
 }
 
 /** Result of wallet connection */
 export interface WalletInfo {
   address: string
   displayAddress: string
+  networkMismatch?: boolean  // True if wallet network differs from app network
+  walletNetwork?: string     // Network passphrase from Freighter (for display)
 }
 
 /** Tab pages */
@@ -37,3 +51,9 @@ export interface ContractResult<T> {
   error?: string
   txHash?: string
 }
+
+/** Discriminated union for wallet signing results */
+export type SigningResult = 
+  | { signed: true; xdr: string }           // Successfully signed
+  | { signed: false; rejected: true }       // User rejected the signing request
+  | { signed: false; rejected: false; error: string } // Signing failed with error
