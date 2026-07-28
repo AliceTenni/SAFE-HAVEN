@@ -55,11 +55,22 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 rustup target add wasm32-unknown-unknown
 cargo install --locked soroban-cli
 
+# Optional: jq for JSON parsing in smoke tests (apt-get install jq / brew install jq)
+
+# One-shot: install all recommended dev tools
+make install-tools
+
 # Build
 make build
 
 # Test
 make test
+
+# Run all tests on file change (requires cargo-watch, installed by make install-tools)
+make watch
+
+# Full local dev environment (build + deploy + frontend)
+make dev
 
 # Deploy to testnet
 export SOROBAN_SECRET_KEY=S...
@@ -260,13 +271,16 @@ These limitations are tracked as open issues and will be addressed in future rel
 ```bash
 make build            # Compile to WASM
 make test             # Run all tests
+make watch            # Auto-run tests on file change
 make lint             # Clippy
 make fmt              # Format
 make check            # fmt + lint + test + audit + deny
 make optimize         # Optimize WASM with soroban CLI
 make check-wasm-size  # Fail if WASM > 64 KB
+make dev              # Build + deploy locally + start frontend
 make deploy-testnet   # Deploy to Stellar testnet
 make smoke-test-local # End-to-end test against local node
+make install-tools    # Install all recommended dev tools
 make audit            # cargo audit (security)
 make deny             # cargo deny (licenses)
 ```

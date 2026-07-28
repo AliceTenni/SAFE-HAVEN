@@ -30,6 +30,25 @@ fix(storage): correct TTL bump on emergency withdraw
 docs: add CONTRIBUTING.md
 ```
 
+## Prerequisites
+
+Install all recommended dev tools in one command:
+
+```bash
+make install-tools
+```
+
+This installs `cargo-watch`, `soroban-cli`, `cargo-audit`, and `cargo-deny`.
+
+Alternatively, install individual tools manually:
+
+```bash
+cargo install cargo-watch      # for make watch
+cargo install --locked soroban-cli
+cargo install cargo-audit
+cargo install cargo-deny
+```
+
 ## Local Development
 
 ```bash
@@ -38,6 +57,12 @@ make check
 
 # Build optimized WASM and report size
 make build && make optimize
+
+# Full local dev environment (build + deploy + frontend)
+make dev
+
+# Auto-run tests on file change
+make watch
 ```
 
 ## Performance Conventions
