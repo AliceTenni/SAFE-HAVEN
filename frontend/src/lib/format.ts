@@ -68,6 +68,11 @@ export function explorerAddrUrl(addr: string): string {
   return `${CONFIG.EXPLORER_URL}/account/${addr}`
 }
 
+/** Explorer URL for a contract */
+export function explorerContractUrl(contractId: string): string {
+  return `${CONFIG.EXPLORER_URL}/contract/${contractId}`
+}
+
 /** Validate if a string is a valid Stellar address (G-address or C-address) */
 export function isValidStellarAddress(addr: string): boolean {
   if (!addr) return false

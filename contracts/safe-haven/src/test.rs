@@ -1632,6 +1632,40 @@ fn test_deposit_by_ledger_succeeds_after_unpause() {
     assert!(id == 0);
 }
 
+/// Regression test for #86: deposit_by_ledger must return ContractPaused when the
+/// contract is paused, preventing any bypass of the pause mechanism for ledger-based
+/// deposits. This test documents the required behaviour so a future refactor cannot
+/// silently remove the pause check from deposit_by_ledger.
+#[test]
+fn test_deposit_by_ledger_respects_pause() {
+    let (env, vault, token, admin, alice, _fee) = setup();
+
+    // Verify unpaused state allows deposits
+    let unlock_ledger = env.ledger().sequence() + 100;
+    assert!(!vault.is_paused());
+    let id = vault.deposit_by_ledger(&alice, &token, &500, &unlock_ledger, &0);
+    assert_eq!(id, 0);
+
+    // Pause the contract
+    vault.pause(&admin);
+    assert!(vault.is_paused());
+
+    // deposit_by_ledger must fail with ContractPaused — not silently succeed
+    let unlock_ledger2 = env.ledger().sequence() + 100;
+    assert_eq!(
+        vault.try_deposit_by_ledger(&alice, &token, &1_000, &unlock_ledger2, &0),
+        Err(Ok(VaultError::ContractPaused))
+    );
+
+    // Unpause and verify deposits work again
+    vault.unpause(&admin);
+    assert!(!vault.is_paused());
+
+    let unlock_ledger3 = env.ledger().sequence() + 100;
+    let id2 = vault.deposit_by_ledger(&alice, &token, &500, &unlock_ledger3, &0);
+    assert_eq!(id2, 1);
+}
+
 #[test]
 fn test_deposit_by_ledger_event_emitted() {
     let (env, vault, token, _admin, alice, _fee) = setup();
