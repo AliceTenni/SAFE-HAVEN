@@ -14,7 +14,7 @@ type LookedUpEntry = VaultEntry & {
 }
 
 export function WithdrawPage() {
-  const { wallet, signTransaction } = useWallet()
+  const { wallet, isRestoringSession, signTransaction } = useWallet()
 
   const [depositId, setDepositId] = useState('')
   const [lookedUp,  setLookedUp]  = useState<LookedUpEntry | null>(null)
@@ -156,9 +156,8 @@ export function WithdrawPage() {
         setLookedUp(null)
         setDepositId('')
       } else {
-        setTxStatus('error')
-        setTxError(result.error)
-        toast.error(result.error ?? 'Transaction failed')
+        // Signing error: already toasted, but still reset state
+        setTxStatus('idle')
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Unexpected error'
@@ -170,7 +169,7 @@ export function WithdrawPage() {
     }
   }
 
-  if (!wallet) {
+  if (!wallet && !isRestoringSession) {
     return (
       <div className="card p-10 text-center max-w-lg">
         <p className="text-slate-400">Connect your wallet to withdraw tokens.</p>

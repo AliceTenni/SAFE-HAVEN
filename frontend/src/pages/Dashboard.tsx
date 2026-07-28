@@ -14,7 +14,7 @@ interface DashboardProps {
 }
 
 export function Dashboard({ contractInfo }: DashboardProps) {
-  const { wallet, signTransaction } = useWallet()
+  const { wallet, isRestoringSession, signTransaction } = useWallet()
   const { deposits, loading, error, refresh, pollRemoveDeposit } = useDeposits(wallet?.address ?? null)
   const [txStatus, setTxStatus] = useState<TxStatus>('idle')
   const [txHash,   setTxHash]   = useState<string | undefined>()
@@ -32,23 +32,33 @@ export function Dashboard({ contractInfo }: DashboardProps) {
       const xdr = await buildWithdraw(wallet.address, depositId)
       if (!xdr) throw new Error('Failed to build transaction')
 
-      const signed = await signTransaction(xdr)
-      if (!signed) { setTxStatus('idle'); return }
+      const sigResult = await signTransaction(xdr)
+      
+      // Handle the three signing outcomes
+      if (sigResult.signed) {
+        // Success: proceed with submission
+        setTxStatus('submitting')
+        const result = await submitTx(sigResult.xdr)
 
-      setTxStatus('submitting')
-      const result = await submitTx(signed)
-
-      if (result.success) {
-        setTxStatus('success')
-        setTxHash(result.txHash)
-        toast.success('Withdrawal successful!')
-        // Poll for individual deposit removal instead of full refresh
-        await pollRemoveDeposit(depositId)
+        if (result.success) {
+          setTxStatus('success')
+          setTxHash(result.txHash)
+          toast.success('Withdrawal successful!')
+          // Poll for individual deposit removal instead of full refresh
+          await pollRemoveDeposit(depositId)
+        } else {
+          setTxStatus('error')
+          setTxError(result.error)
+          toast.error(result.error ?? 'Withdrawal failed')
+        }
+      } else if (sigResult.rejected) {
+        // User rejected: silently reset state
+        setTxStatus('idle')
       } else {
-        setTxStatus('error')
-        setTxError(result.error)
-        toast.error(result.error ?? 'Withdrawal failed')
+        // Signing error: already toasted, but still reset state
+        setTxStatus('idle')
       }
+      return
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Unexpected error'
       setTxStatus('error')
@@ -70,23 +80,33 @@ export function Dashboard({ contractInfo }: DashboardProps) {
       const xdr = await buildCancelDeposit(wallet.address, depositId)
       if (!xdr) throw new Error('Failed to build transaction')
 
-      const signed = await signTransaction(xdr)
-      if (!signed) { setTxStatus('idle'); return }
+      const sigResult = await signTransaction(xdr)
+      
+      // Handle the three signing outcomes
+      if (sigResult.signed) {
+        // Success: proceed with submission
+        setTxStatus('submitting')
+        const result = await submitTx(sigResult.xdr)
 
-      setTxStatus('submitting')
-      const result = await submitTx(signed)
-
-      if (result.success) {
-        setTxStatus('success')
-        setTxHash(result.txHash)
-        toast.success('Deposit cancelled.')
-        // Poll for individual deposit removal instead of full refresh
-        await pollRemoveDeposit(depositId)
+        if (result.success) {
+          setTxStatus('success')
+          setTxHash(result.txHash)
+          toast.success('Deposit cancelled.')
+          // Poll for individual deposit removal instead of full refresh
+          await pollRemoveDeposit(depositId)
+        } else {
+          setTxStatus('error')
+          setTxError(result.error)
+          toast.error(result.error ?? 'Cancel failed')
+        }
+      } else if (sigResult.rejected) {
+        // User rejected: silently reset state
+        setTxStatus('idle')
       } else {
-        setTxStatus('error')
-        setTxError(result.error)
-        toast.error(result.error ?? 'Cancel failed')
+        // Signing error: already toasted, but still reset state
+        setTxStatus('idle')
       }
+      return
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Unexpected error'
       setTxStatus('error')
@@ -97,7 +117,7 @@ export function Dashboard({ contractInfo }: DashboardProps) {
     }
   }
 
-  if (!wallet) {
+  if (!wallet && !isRestoringSession) {
     return (
       <div className="flex flex-col items-center justify-center py-24 text-center">
         <div className="w-16 h-16 rounded-2xl bg-stellar-900/40 border border-stellar-700/40 flex items-center justify-center mb-4">
@@ -107,6 +127,39 @@ export function Dashboard({ contractInfo }: DashboardProps) {
         </div>
         <h2 className="text-xl font-semibold mb-2">Connect your wallet</h2>
         <p className="text-slate-400 text-sm max-w-xs">Connect your Freighter wallet to view and manage your vault deposits.</p>
+      </div>
+    )
+  }
+
+  // Show loading skeleton while restoring session
+  if (isRestoringSession) {
+    return (
+      <div className="space-y-6">
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <StatCardSkeleton />
+          <StatCardSkeleton />
+          <StatCardSkeleton />
+          <StatCardSkeleton />
+        </div>
+        <div>
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="font-semibold text-lg">Your Vaults</h2>
+            <div className="w-16 h-9 bg-slate-700/40 rounded-lg animate-pulse" />
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            {[1, 2].map((i) => (
+              <div key={i} className="card p-5 h-36 animate-pulse">
+                <div className="flex gap-3">
+                  <div className="w-10 h-10 rounded-full bg-slate-700/60" />
+                  <div className="flex-1 space-y-2">
+                    <div className="h-4 bg-slate-700/60 rounded w-1/2" />
+                    <div className="h-3 bg-slate-700/40 rounded w-1/3" />
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
       </div>
     )
   }
@@ -174,7 +227,7 @@ export function Dashboard({ contractInfo }: DashboardProps) {
         ) : deposits.length === 0 ? (
           <div className="card p-10 text-center">
             <p className="text-slate-400">No active vaults for</p>
-            <p className="font-mono text-xs text-stellar-400 mt-1">{shortAddr(wallet.address)}</p>
+            {wallet && <p className="font-mono text-xs text-stellar-400 mt-1">{shortAddr(wallet.address)}</p>}
             <p className="text-slate-500 text-sm mt-3">Use the Deposit tab to lock your first tokens.</p>
           </div>
         ) : (

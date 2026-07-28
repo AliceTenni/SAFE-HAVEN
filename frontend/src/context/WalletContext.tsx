@@ -28,12 +28,35 @@ import { CONFIG } from '../config'
 interface WalletContextValue {
   wallet: WalletInfo | null
   isConnecting: boolean
+  isRestoringSession: boolean
+  networkMismatch: boolean
   connect: () => Promise<void>
   disconnect: () => void
-  signTransaction: (xdr: string) => Promise<string | null>
+  signTransaction: (xdr: string) => Promise<SigningResult>
 }
 
 const WalletContext = createContext<WalletContextValue | null>(null)
+
+/**
+ * Initialize wallet state synchronously from localStorage
+ * Returns [wallet, isRestoringSession] where isRestoringSession is true if we found
+ * a saved wallet that needs async validation
+ */
+function initializeWalletFromStorage(): [WalletInfo | null, boolean] {
+  // Only run on client side
+  if (typeof window === 'undefined' || typeof localStorage === 'undefined') {
+    return [null, false]
+  }
+
+  const saved = localStorage.getItem('tlv_wallet_address')
+  if (!saved) {
+    return [null, false]
+  }
+
+  // We found a saved address — restore it immediately, but mark as restoring
+  // so the UI knows it's pending async validation
+  return [{ address: saved, displayAddress: shortAddr(saved) }, true]
+}
 
 export function WalletProvider({ children }: { children: React.ReactNode }) {
   const [wallet, setWallet]           = useState<WalletInfo | null>(null)
@@ -106,6 +129,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
 
   const connect = useCallback(async () => {
     setConnecting(true)
+    setNetworkMismatch(false)
     try {
       if (!walletKitRef.current) {
         toast.error('Wallet initialization failed. Please refresh the page.')
@@ -122,8 +146,18 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
       const { address } = result
       const info: WalletInfo = { address, displayAddress: shortAddr(address) }
       setWallet(info)
+      setNetworkMismatch(!!hasNetworkMismatch)
       localStorage.setItem('tlv_wallet_address', address)
-      toast.success(`Connected: ${shortAddr(address)}`)
+      
+      if (hasNetworkMismatch) {
+        // Show a warning instead of success
+        toast.error(
+          `Network mismatch! Wallet: ${walletNetworkPassphrase}, App: ${CONFIG.NETWORK_PASSPHRASE}`,
+          { duration: 0 }
+        )
+      } else {
+        toast.success(`Connected: ${shortAddr(address)}`)
+      }
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Failed to connect wallet'
       // Suppress rejection/cancellation messages from user-initiated cancellations
@@ -137,11 +171,19 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
 
   const disconnect = useCallback(() => {
     setWallet(null)
+    setNetworkMismatch(false)
     localStorage.removeItem('tlv_wallet_address')
     toast.success('Wallet disconnected')
   }, [])
 
-  const signTransaction = useCallback(async (txXdr: string): Promise<string | null> => {
+  const signTransaction = useCallback(async (txXdr: string): Promise<SigningResult> => {
+    // Check for network mismatch before attempting to sign
+    if (networkMismatch) {
+      const msg = `Network mismatch: Wallet is on ${wallet?.walletNetwork}, but app is on ${CONFIG.NETWORK_PASSPHRASE}`
+      toast.error(msg, { duration: 0 })
+      return { signed: false, rejected: false, error: msg }
+    }
+
     try {
       if (!walletKitRef.current) {
         toast.error('Wallet not initialized')
@@ -160,15 +202,20 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
       return result.signedTxXdr
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Signing rejected'
-      if (!msg.toLowerCase().includes('reject') && !msg.toLowerCase().includes('cancel')) {
-        toast.error(msg)
+      const isUserReject = msg.toLowerCase().includes('reject') || msg.toLowerCase().includes('cancel')
+      
+      if (!isUserReject) {
+        toast.error(`Signing error: ${msg}`)
+        return { signed: false, rejected: false, error: msg }
       }
-      return null
+      
+      // User rejection — silent, just return rejected flag
+      return { signed: false, rejected: true }
     }
-  }, [])
+  }, [networkMismatch, wallet?.walletNetwork])
 
   return (
-    <WalletContext.Provider value={{ wallet, isConnecting, connect, disconnect, signTransaction }}>
+    <WalletContext.Provider value={{ wallet, isConnecting, isRestoringSession, networkMismatch, connect, disconnect, signTransaction }}>
       {children}
     </WalletContext.Provider>
   )
