@@ -2745,7 +2745,7 @@ fn test_staker_rewards_claimed_emits_event() {
 #[test]
 fn test_penalty_split_percentages() {
     // Verify that STAKER_PENALTY_BPS (7000) and FEE_RECIPIENT_PENALTY_BPS (3000) sum to 10000
-    assert_eq!(crate::types::STAKER_PENALTY_BPS + crate::types::FEE_RECIPIENT_PENALTY_BPS, 10_000);
+    assert_eq!(crate::constants::STAKER_PENALTY_BPS + crate::constants::FEE_RECIPIENT_PENALTY_BPS, 10_000);
 }
 
 #[test]
