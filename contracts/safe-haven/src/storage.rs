@@ -451,3 +451,118 @@ pub fn get_storage_version(env: &Env) -> Option<u32> {
         .persistent()
         .get(&VaultKey::StorageVersion)
 }
+
+
+// ----------------------------------------------------------------
+//  Staker registry helpers
+// ----------------------------------------------------------------
+
+use crate::types::StakerEntry;
+
+/// Set a staker's stake amount. Creates or updates the entry.
+pub fn set_staker(env: &Env, staker: &Address, stake_amount: i128) {
+    let key = VaultKey::Staker(staker.clone());
+    env.storage().persistent().set(&key, &stake_amount);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
+}
+
+/// Get a staker's stake amount. Returns `None` if not registered.
+pub fn get_staker(env: &Env, staker: &Address) -> Option<i128> {
+    let key = VaultKey::Staker(staker.clone());
+    env.storage().persistent().get(&key)
+}
+
+/// Get staker list (append-only, may contain stale entries after removes).
+fn get_staker_list(env: &Env) -> Vec<Address> {
+    let key = VaultKey::StakerList;
+    env.storage()
+        .persistent()
+        .get(&key)
+        .unwrap_or_else(|| Vec::new(env))
+}
+
+/// Save the staker list.
+fn save_staker_list(env: &Env, stakers: &Vec<Address>) {
+    let key = VaultKey::StakerList;
+    env.storage().persistent().set(&key, stakers);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
+}
+
+/// Add a staker to the staker list (O(1) if not already in list).
+pub fn add_staker_to_list(env: &Env, staker: &Address) {
+    // Check if already in list using StakerInList flag
+    let in_list_key = VaultKey::StakerInList(staker.clone());
+    if env
+        .storage()
+        .persistent()
+        .get::<VaultKey, bool>(&in_list_key)
+        .unwrap_or(false)
+    {
+        return; // Already in list, skip
+    }
+
+    // Add to list
+    let mut list = get_staker_list(env);
+    list.push_back(staker.clone());
+    save_staker_list(env, &list);
+
+    // Mark as in list
+    env.storage().persistent().set(&in_list_key, &true);
+    env.storage()
+        .persistent()
+        .extend_ttl(&in_list_key, BUMP_THRESHOLD, BUMP_TARGET);
+}
+
+/// Get the total amount staked by all stakers.
+pub fn get_total_staked(env: &Env) -> i128 {
+    let key = VaultKey::TotalStaked;
+    env.storage().persistent().get(&key).unwrap_or(0)
+}
+
+/// Update the total staked amount.
+pub fn set_total_staked(env: &Env, total: i128) {
+    let key = VaultKey::TotalStaked;
+    env.storage().persistent().set(&key, &total);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
+}
+
+/// Get the rewards pool (accumulated penalties for stakers).
+pub fn get_rewards_pool(env: &Env) -> i128 {
+    let key = VaultKey::RewardsPool;
+    env.storage().persistent().get(&key).unwrap_or(0)
+}
+
+/// Update the rewards pool.
+pub fn set_rewards_pool(env: &Env, amount: i128) {
+    let key = VaultKey::RewardsPool;
+    env.storage().persistent().set(&key, &amount);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
+}
+
+/// Get the rewards claimed by a staker (cumulative).
+pub fn get_staker_rewards_claimed(env: &Env, staker: &Address) -> i128 {
+    let key = VaultKey::StakerRewardsClaimed(staker.clone());
+    env.storage().persistent().get(&key).unwrap_or(0)
+}
+
+/// Update the rewards claimed by a staker.
+pub fn set_staker_rewards_claimed(env: &Env, staker: &Address, amount: i128) {
+    let key = VaultKey::StakerRewardsClaimed(staker.clone());
+    env.storage().persistent().set(&key, &amount);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
+}
+
+/// Get the staker list (may contain stale entries). Active check via `get_staker`.
+pub fn get_stakers_list(env: &Env) -> Vec<Address> {
+    get_staker_list(env)
+}

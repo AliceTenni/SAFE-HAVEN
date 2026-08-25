@@ -8,11 +8,11 @@ use soroban_sdk::{contract, contractimpl, token, Address, Env, Vec};
 use crate::{
     constants::{
         MAX_BATCH_SIZE, MAX_DEPOSIT_AMOUNT, MAX_LOCK_DURATION_SECS, MIN_LOCK_DURATION_SECS,
-        MIN_LOCK_LEDGERS,
+        MIN_LOCK_LEDGERS, STAKER_PENALTY_BPS, FEE_RECIPIENT_PENALTY_BPS,
     },
     errors::VaultError,
     events, storage,
-    types::{VaultEntry, LedgerVaultEntry, Page, STORAGE_VERSION},
+    types::{VaultEntry, LedgerVaultEntry, Page, STORAGE_VERSION, DepositType},
 };
 
 #[contract]
@@ -292,15 +292,27 @@ impl SafeHaven {
             let penalty: i128 = (entry.amount * entry.penalty_bps as i128) / 10_000;
             let refund = entry.amount - penalty;
 
+            // Split penalty: fee_recipient gets FEE_RECIPIENT_PENALTY_BPS, stakers get STAKER_PENALTY_BPS
+            let fee_recipient_share: i128 = (penalty * FEE_RECIPIENT_PENALTY_BPS as i128) / 10_000;
+            let stakers_share: i128 = penalty - fee_recipient_share;
+
             if penalty > 0 {
                 let fee_recipient =
                     storage::get_fee_recipient(&env).ok_or(VaultError::MissingFeeRecipient)?;
-                token_client.transfer(&contract, &fee_recipient, &penalty);
+                if fee_recipient_share > 0 {
+                    token_client.transfer(&contract, &fee_recipient, &fee_recipient_share);
+                }
+                // Add stakers_share to rewards pool
+                if stakers_share > 0 {
+                    let current_pool = storage::get_rewards_pool(&env);
+                    storage::set_rewards_pool(&env, current_pool + stakers_share);
+                }
             }
             if refund > 0 {
                 token_client.transfer(&contract, &depositor, &refund);
             }
 
+            events::penalty_split(&env, &depositor, penalty, fee_recipient_share, stakers_share, deposit_id);
             events::deposit_cancelled(&env, &depositor, &entry.token, entry.amount, penalty, deposit_id);
             return Ok(());
         }
@@ -323,20 +335,109 @@ impl SafeHaven {
             let penalty: i128 = (entry.amount * entry.penalty_bps as i128) / 10_000;
             let refund = entry.amount - penalty;
 
+            // Split penalty: fee_recipient gets FEE_RECIPIENT_PENALTY_BPS, stakers get STAKER_PENALTY_BPS
+            let fee_recipient_share: i128 = (penalty * FEE_RECIPIENT_PENALTY_BPS as i128) / 10_000;
+            let stakers_share: i128 = penalty - fee_recipient_share;
+
             if penalty > 0 {
                 let fee_recipient =
                     storage::get_fee_recipient(&env).ok_or(VaultError::MissingFeeRecipient)?;
-                token_client.transfer(&contract, &fee_recipient, &penalty);
+                if fee_recipient_share > 0 {
+                    token_client.transfer(&contract, &fee_recipient, &fee_recipient_share);
+                }
+                // Add stakers_share to rewards pool
+                if stakers_share > 0 {
+                    let current_pool = storage::get_rewards_pool(&env);
+                    storage::set_rewards_pool(&env, current_pool + stakers_share);
+                }
             }
             if refund > 0 {
                 token_client.transfer(&contract, &depositor, &refund);
             }
 
+            events::penalty_split(&env, &depositor, penalty, fee_recipient_share, stakers_share, deposit_id);
             events::deposit_cancelled(&env, &depositor, &entry.token, entry.amount, penalty, deposit_id);
             return Ok(());
         }
 
         Err(VaultError::NoDepositFound)
+    }
+
+    // ----------------------------------------------------------------
+    //  Staker Registry Functions
+    // ----------------------------------------------------------------
+
+    /// Register a staker with a stake amount. Updates their stake if already registered.
+    pub fn register_staker(env: Env, staker: Address, amount: i128) -> Result<(), VaultError> {
+        staker.require_auth();
+
+        if amount <= 0 {
+            return Err(VaultError::InvalidStakeAmount);
+        }
+
+        // Get the current total staked
+        let current_total = storage::get_total_staked(&env);
+        let old_stake = storage::get_staker(&env, &staker).unwrap_or(0);
+
+        // Update staker's stake amount
+        storage::set_staker(&env, &staker, amount);
+
+        // Update total staked
+        let new_total = current_total - old_stake + amount;
+        storage::set_total_staked(&env, new_total);
+
+        // Add to staker list if first-time registration
+        if old_stake == 0 {
+            storage::add_staker_to_list(&env, &staker);
+        }
+
+        events::staker_registered(&env, &staker, amount);
+        Ok(())
+    }
+
+    /// Claim rewards for the caller. Calculates their share based on stake proportion.
+    pub fn claim_staker_rewards(env: Env, staker: Address) -> Result<(), VaultError> {
+        staker.require_auth();
+
+        // Get staker's stake amount
+        let stake_amount = storage::get_staker(&env, &staker)
+            .ok_or(VaultError::StakerNotFound)?;
+
+        if stake_amount <= 0 {
+            return Err(VaultError::InvalidStakeAmount);
+        }
+
+        // Get current rewards pool and total staked
+        let rewards_pool = storage::get_rewards_pool(&env);
+        let total_staked = storage::get_total_staked(&env);
+
+        if rewards_pool <= 0 {
+            return Err(VaultError::NoRewardsToClaim);
+        }
+
+        if total_staked <= 0 {
+            return Err(VaultError::NoRewardsToClaim);
+        }
+
+        // Calculate staker's proportional share
+        // reward = (stake_amount / total_staked) * rewards_pool
+        let reward = (stake_amount * rewards_pool) / total_staked;
+
+        if reward <= 0 {
+            return Err(VaultError::NoRewardsToClaim);
+        }
+
+        // Track total claimed
+        let already_claimed = storage::get_staker_rewards_claimed(&env, &staker);
+        let new_claimed = already_claimed + reward;
+        storage::set_staker_rewards_claimed(&env, &staker, new_claimed);
+
+        // Reduce rewards pool
+        let new_pool = rewards_pool - reward;
+        storage::set_rewards_pool(&env, new_pool);
+
+        events::rewards_claimed(&env, &staker, reward);
+        Ok(())
     }
 
     // ----------------------------------------------------------------

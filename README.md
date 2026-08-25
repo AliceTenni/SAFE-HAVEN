@@ -175,7 +175,89 @@ Withdraws if `now >= unlock_time`.
 Withdraws to a different address.
 
 #### `cancel_deposit(depositor, deposit_id)`
-Early exit with penalty. Penalty goes to fee_recipient; remainder returned to depositor.
+Early exit with penalty. Penalty is split: 30% goes to fee_recipient, 70% accumulates in the staker rewards pool; remainder returned to depositor.
+
+---
+
+### Staker Registry Functions
+
+The staker registry allows users to register as stakers and earn a portion of penalties accrued from early deposit exits. This creates an incentive mechanism where stakers share in the penalties paid by users who exit early.
+
+#### `register_staker(staker, amount) -> Result<(), VaultError>`
+Register or update a staker's stake amount.
+
+**Parameters**
+
+| Parameter | Type | Description |
+|---|---|---|
+| `staker` | `Address` | The staker's address. Must sign the transaction. |
+| `amount` | `i128` | Stake amount in contract tokens (> 0). |
+
+**Returns** `Ok(())` on success, or an error code if validation fails.
+
+**Behavior**
+- Validates that `amount > 0` — zero or negative amounts are rejected with `InvalidStakeAmount`.
+- Updates the staker's entry if already registered, or creates a new entry.
+- Maintains `total_staked` (sum of all registered stakes) for proportional reward calculation.
+- Adds the staker to the staker list on first registration.
+- Emits a `StakerRegistered` event.
+- Requires authentication from the staker.
+
+**Example**
+```rust
+// Alice registers with 1000 tokens as stake
+vault.register_staker(&alice, &1000)?;
+
+// Later, Alice increases her stake to 2000
+vault.register_staker(&alice, &2000)?;
+```
+
+#### `claim_staker_rewards(staker) -> Result<(), VaultError>`
+Claim accumulated rewards from the staker rewards pool.
+
+**Parameters**
+
+| Parameter | Type | Description |
+|---|---|---|
+| `staker` | `Address` | The staker claiming rewards. Must sign the transaction. |
+
+**Returns** `Ok(())` on success, or an error code if no rewards are available or staker is not registered.
+
+**Behavior**
+- Validates that the staker is registered — returns `StakerNotFound` if not.
+- Calculates the staker's proportional share: `(stake_amount / total_staked) × rewards_pool`.
+- Validates that the calculated reward is > 0 — returns `NoRewardsToClaim` if the pool is empty or the proportion rounds to zero.
+- Deducts the reward from the rewards pool.
+- Tracks cumulative rewards claimed per staker for auditing.
+- Emits a `RewardsClaimed` event.
+- Requires authentication from the staker.
+
+**Example**
+```rust
+// Alice claims her proportional share of the rewards pool
+vault.claim_staker_rewards(&alice)?;
+
+// If Alice has stake 1000 and total_staked is 4000, and rewards_pool is 700:
+// Alice's reward = (1000 / 4000) × 700 = 175 tokens
+```
+
+---
+
+### Penalty Splitting & Rewards Pool
+
+When a user calls `cancel_deposit()` to exit early, the penalty is split as follows:
+
+| Recipient | Percentage | Basis Points |
+|---|---|---|
+| Fee Recipient | 30% | 3000 bps |
+| Staker Rewards Pool | 70% | 7000 bps |
+
+**Example**
+If a user cancels a deposit with 100 tokens penalty (10% of 1000):
+- Fee Recipient receives 30 tokens (100 × 0.30)
+- Staker Rewards Pool receives 70 tokens (100 × 0.70)
+
+Registered stakers can then claim their proportional share of the rewards pool based on their stake amount relative to total staked.
 
 ---
 
@@ -236,6 +318,11 @@ Permanently removes admin. Contract becomes fully trustless.
 | 12 | `ContractPaused` | Deposits are paused |
 | 13 | `VaultAlreadyUnlocked` | `cancel_deposit` called after the lock has already expired |
 | 14 | `MissingFeeRecipient` | penalty_bps > 0 but no fee_recipient is configured |
+| 15 | `AlreadyInitialized` | `initialize` was called on an already-initialized contract |
+| 16 | `InvalidStakeAmount` | Staker registration with amount <= 0 |
+| 17 | `StakerNotFound` | Staker not registered in the staker registry |
+| 18 | `NoRewardsToClaim` | Rewards pool is empty or staker's share rounds to zero |
+| 19 | `InsufficientStakeAmount` | Insufficient staked amount for operation |
 
 ---
 

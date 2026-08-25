@@ -108,3 +108,25 @@ pub fn withdraw_to(
     let topics = (Symbol::new(env, "withdraw_to"), depositor.clone(), token.clone());
     env.events().publish(topics, (recipient.clone(), amount));
 }
+
+pub fn staker_registered(env: &Env, staker: &Address, stake_amount: i128) {
+    let topics = (Symbol::new(env, "staker_reg"), staker.clone());
+    env.events().publish(topics, stake_amount);
+}
+
+pub fn penalty_split(
+    env: &Env,
+    depositor: &Address,
+    total_penalty: i128,
+    fee_recipient_share: i128,
+    stakers_share: i128,
+    deposit_id: u32,
+) {
+    let topics = (Symbol::new(env, "penalty_split"), depositor.clone());
+    env.events().publish(topics, (total_penalty, fee_recipient_share, stakers_share, deposit_id));
+}
+
+pub fn rewards_claimed(env: &Env, staker: &Address, amount: i128) {
+    let topics = (Symbol::new(env, "rewards_claimed"), staker.clone());
+    env.events().publish(topics, amount);
+}
