@@ -2485,7 +2485,7 @@ fn test_version_returns_cargo_pkg_version() {
     assert!(!version.is_empty());
     // Expect format like "0.1.0" — semantic versioning
     let version_str = String::from_utf8(version.to_bytes()).unwrap();
-    let parts: Vec<&str> = version_str.split('.').collect();
+    let parts: std::vec::Vec<&str> = version_str.split('.').collect();
     assert_eq!(parts.len(), 3, "Version should be in semantic format (major.minor.patch)");
 }
 
@@ -2535,7 +2535,7 @@ fn test_register_staker_updates_existing_stake() {
 
     // Verify event was emitted for second registration
     let events = env.events().all();
-    let staker_reg_events: Vec<_> = events
+    let staker_reg_events: std::vec::Vec<_> = events
         .iter()
         .filter(|(_, event)| {
             if let Some(data) = &event.data {

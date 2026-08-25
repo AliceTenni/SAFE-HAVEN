@@ -4,12 +4,6 @@ pub const MAX_DEPOSIT_AMOUNT: i128 = 1_000_000_000_000_000;
 pub const MAX_LOCK_DURATION_SECS: u64 = 157_788_000;
 pub const MIN_LOCK_DURATION_SECS: u64 = 60;
 
-/// Staker penalty split: percentage of penalties allocated to stakers (70% = 7000 basis points)
-pub const STAKER_PENALTY_BPS: u32 = 7_000;
-
-/// Fee recipient penalty split: percentage of penalties allocated to fee recipient (30% = 3000 basis points)
-pub const FEE_RECIPIENT_PENALTY_BPS: u32 = 3_000;
-
 /// Current storage schema version. Bump this constant when the on-chain
 /// layout of a `contracttype` struct changes so `migrate()` can detect
 /// and upgrade stale entries.
