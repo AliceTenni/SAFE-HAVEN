@@ -2,7 +2,23 @@ use soroban_sdk::{Address, Env, Vec};
 
 use crate::types::{VaultEntry, VaultKey, LedgerVaultEntry, MAX_LOCK_DURATION_SECS};
 
-// Number of seconds per ledger — Soroban ledgers are ~5 seconds apart.
+// ================================================================
+// LEDGER_SECONDS: Average time between Stellar ledger closes
+// ================================================================
+// Stellar's consensus protocol produces a new ledger approximately every 5 seconds.
+// This constant is used to estimate wall-clock time remaining for ledger-based deposits
+// via the formula: estimated_seconds = remaining_ledgers × LEDGER_SECONDS
+//
+// Important: This is an APPROXIMATION, not a guarantee.
+// - Actual ledger close times vary by ±1-2 seconds due to network conditions
+// - The 5-second value is a Stellar network consensus target, not a hard limit
+// - Use this for UI display and rough estimates only, not for precise scheduling
+// - For exact time limits, prefer timestamp-based deposits instead
+//
+// Used by:
+// - contract.rs::time_remaining() — converts ledger count to estimated seconds for ledger-based deposits
+// - constants.rs::MIN_LOCK_LEDGERS — computes minimum lock duration in ledgers (60 seconds ÷ 5)
+// - storage.rs::BUMP_TARGET — ensures TTL coverage extends past maximum lock duration
 pub const LEDGER_SECONDS: u64 = 5;
 
 // How many ledgers to extend TTL to cover the maximum allowed lock duration.

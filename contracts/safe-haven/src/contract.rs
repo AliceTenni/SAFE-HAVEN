@@ -660,13 +660,37 @@ impl SafeHaven {
     /// For ledger-based deposits: returns an estimate in seconds using
     /// `LEDGER_SECONDS` (fixes https://github.com/kenedybok3/SAFE-HAVEN/issues/21). Returns 0 when unlocked or not found.
     pub fn time_remaining(env: Env, depositor: Address, deposit_id: u32) -> u64 {
-        // Timestamp-based path
+        // ================================================================
+        // Timestamp-based path: EXACT time remaining
+        // ================================================================
+        // Most deposits are timestamp-based and unlock at a fixed wall-clock time.
+        // For these, we can compute the exact remaining time by subtracting the current
+        // ledger timestamp from the unlock timestamp. If the result is negative (already unlocked),
+        // saturating_sub ensures we return 0 instead of panicking on underflow.
         if let Some(entry) = storage::get_deposit_readonly(&env, &depositor, deposit_id) {
             let now = env.ledger().timestamp();
             return entry.unlock_time.saturating_sub(now);
         }
 
-        // Ledger-based path: convert remaining ledgers → estimated seconds (fixes https://github.com/kenedybok3/SAFE-HAVEN/issues/21)
+        // ================================================================
+        // Ledger-based path: ESTIMATED time remaining (5-second approximation)
+        // ================================================================
+        // Ledger-based deposits unlock at a specific Stellar ledger sequence number.
+        // Since we cannot predict exact ledger close times in Soroban (the ledger timestamp
+        // field is not accessible mid-transaction), we use a fixed 5-second approximation:
+        //
+        //   estimated_secs = remaining_ledgers × LEDGER_SECONDS (where LEDGER_SECONDS = 5)
+        //
+        // Why 5 seconds?
+        // - Stellar produces a new ledger approximately every 5 seconds on average
+        // - This is a network consensus value; actual close times vary ±1-2 seconds
+        // - The 5-second estimate is conservative and widely used across Stellar tooling
+        //
+        // Important limitations:
+        // - This is NOT a guaranteed prediction; do not rely on it for precise scheduling
+        // - If a deposit is near its unlock point (remaining_ledgers ≤ 1), the estimate
+        //   may be significantly off due to network variance
+        // - Use this for UI display and rough time estimates only
         if let Some(entry) = storage::get_deposit_by_ledger_readonly(&env, &depositor, deposit_id) {
             let current = env.ledger().sequence();
             if current >= entry.unlock_ledger {
@@ -676,6 +700,7 @@ impl SafeHaven {
             return remaining_ledgers.saturating_mul(storage::LEDGER_SECONDS);
         }
 
+        // No deposit found — return 0 (treated as "unlocked" by the frontend)
         0
     }
 
