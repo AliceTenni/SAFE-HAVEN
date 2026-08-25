@@ -8,18 +8,45 @@ pub fn contract_initialized(
     max_lock_secs: u64,
 ) {
     let topics = (Symbol::new(env, "initialized"),);
-    env.events()
-        .publish(topics, (admin.clone(), fee_recipient.clone(), max_deposit, max_lock_secs));
+    env.events().publish(
+        topics,
+        (
+            admin.clone(),
+            fee_recipient.clone(),
+            max_deposit,
+            max_lock_secs,
+        ),
+    );
 }
 
-pub fn deposit(env: &Env, depositor: &Address, token: &Address, amount: i128, unlock_time: u64, deposit_id: u32) {
+pub fn deposit(
+    env: &Env,
+    depositor: &Address,
+    token: &Address,
+    amount: i128,
+    unlock_time: u64,
+    deposit_id: u32,
+) {
     let topics = (symbol_short!("deposit"), depositor.clone(), token.clone());
-    env.events().publish(topics, (amount, unlock_time, deposit_id));
+    env.events()
+        .publish(topics, (amount, unlock_time, deposit_id));
 }
 
-pub fn deposit_by_ledger(env: &Env, depositor: &Address, token: &Address, amount: i128, unlock_ledger: u32, deposit_id: u32) {
-    let topics = (Symbol::new(env, "dep_by_ledger"), depositor.clone(), token.clone());
-    env.events().publish(topics, (amount, unlock_ledger, deposit_id));
+pub fn deposit_by_ledger(
+    env: &Env,
+    depositor: &Address,
+    token: &Address,
+    amount: i128,
+    unlock_ledger: u32,
+    deposit_id: u32,
+) {
+    let topics = (
+        Symbol::new(env, "dep_by_ledger"),
+        depositor.clone(),
+        token.clone(),
+    );
+    env.events()
+        .publish(topics, (amount, unlock_ledger, deposit_id));
 }
 
 pub fn withdraw(env: &Env, depositor: &Address, token: &Address, amount: i128, deposit_id: u32) {
@@ -62,14 +89,10 @@ pub fn admin_renounced(env: &Env, former_admin: &Address) {
     env.events().publish(topics, ());
 }
 
-pub fn lock_extended(
-    env: &Env,
-    depositor: &Address,
-    old_unlock_time: u64,
-    new_unlock_time: u64,
-) {
+pub fn lock_extended(env: &Env, depositor: &Address, old_unlock_time: u64, new_unlock_time: u64) {
     let topics = (Symbol::new(env, "lock_extended"), depositor.clone());
-    env.events().publish(topics, (old_unlock_time, new_unlock_time));
+    env.events()
+        .publish(topics, (old_unlock_time, new_unlock_time));
 }
 
 pub fn deposit_cancelled(
@@ -105,6 +128,10 @@ pub fn withdraw_to(
     token: &Address,
     amount: i128,
 ) {
-    let topics = (Symbol::new(env, "withdraw_to"), depositor.clone(), token.clone());
+    let topics = (
+        Symbol::new(env, "withdraw_to"),
+        depositor.clone(),
+        token.clone(),
+    );
     env.events().publish(topics, (recipient.clone(), amount));
 }

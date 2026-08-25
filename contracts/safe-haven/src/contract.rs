@@ -12,7 +12,7 @@ use crate::{
     },
     errors::VaultError,
     events, storage,
-    types::{VaultEntry, LedgerVaultEntry, Page, STORAGE_VERSION},
+    types::{LedgerVaultEntry, Page, VaultEntry, STORAGE_VERSION},
 };
 
 #[contract]
@@ -62,7 +62,13 @@ impl SafeHaven {
 
         let effective_max_deposit = storage::get_max_deposit(&env).unwrap_or(MAX_DEPOSIT_AMOUNT);
         let effective_max_lock = storage::get_max_lock_secs(&env).unwrap_or(MAX_LOCK_DURATION_SECS);
-        events::contract_initialized(&env, &admin, &fee_recipient, effective_max_deposit, effective_max_lock);
+        events::contract_initialized(
+            &env,
+            &admin,
+            &fee_recipient,
+            effective_max_deposit,
+            effective_max_lock,
+        );
 
         Ok(())
     }
@@ -301,7 +307,14 @@ impl SafeHaven {
                 token_client.transfer(&contract, &depositor, &refund);
             }
 
-            events::deposit_cancelled(&env, &depositor, &entry.token, entry.amount, penalty, deposit_id);
+            events::deposit_cancelled(
+                &env,
+                &depositor,
+                &entry.token,
+                entry.amount,
+                penalty,
+                deposit_id,
+            );
             return Ok(());
         }
 
@@ -332,7 +345,14 @@ impl SafeHaven {
                 token_client.transfer(&contract, &depositor, &refund);
             }
 
-            events::deposit_cancelled(&env, &depositor, &entry.token, entry.amount, penalty, deposit_id);
+            events::deposit_cancelled(
+                &env,
+                &depositor,
+                &entry.token,
+                entry.amount,
+                penalty,
+                deposit_id,
+            );
             return Ok(());
         }
 
@@ -345,6 +365,9 @@ impl SafeHaven {
 
     pub fn withdraw(env: Env, depositor: Address, deposit_id: u32) -> Result<(), VaultError> {
         depositor.require_auth();
+
+        // Check withdrawal limit before processing
+        storage::check_withdrawal_limit(&env, &depositor)?;
 
         // Try timestamp-based deposit first
         if let Some(entry) = storage::get_deposit_readonly(&env, &depositor, deposit_id) {
@@ -360,6 +383,11 @@ impl SafeHaven {
 
             let token_client = token::Client::new(&env, &entry.token);
             token_client.transfer(&env.current_contract_address(), &depositor, &entry.amount);
+
+            // Increment withdrawal count and clean up old epochs
+            let current_epoch = storage::get_current_epoch(&env);
+            storage::increment_withdrawal_count(&env, &depositor, current_epoch);
+            storage::cleanup_old_epochs(&env, &depositor, current_epoch);
 
             events::withdraw(&env, &depositor, &entry.token, entry.amount, deposit_id);
             return Ok(());
@@ -380,6 +408,11 @@ impl SafeHaven {
             let token_client = token::Client::new(&env, &entry.token);
             token_client.transfer(&env.current_contract_address(), &depositor, &entry.amount);
 
+            // Increment withdrawal count and clean up old epochs
+            let current_epoch = storage::get_current_epoch(&env);
+            storage::increment_withdrawal_count(&env, &depositor, current_epoch);
+            storage::cleanup_old_epochs(&env, &depositor, current_epoch);
+
             events::withdraw(&env, &depositor, &entry.token, entry.amount, deposit_id);
             return Ok(());
         }
@@ -395,6 +428,9 @@ impl SafeHaven {
     ) -> Result<(), VaultError> {
         depositor.require_auth();
 
+        // Check withdrawal limit before processing
+        storage::check_withdrawal_limit(&env, &depositor)?;
+
         // Try timestamp-based deposit first
         if let Some(entry) = storage::get_deposit_readonly(&env, &depositor, deposit_id) {
             let now = env.ledger().timestamp();
@@ -409,6 +445,11 @@ impl SafeHaven {
 
             let token_client = token::Client::new(&env, &entry.token);
             token_client.transfer(&env.current_contract_address(), &recipient, &entry.amount);
+
+            // Increment withdrawal count and clean up old epochs
+            let current_epoch = storage::get_current_epoch(&env);
+            storage::increment_withdrawal_count(&env, &depositor, current_epoch);
+            storage::cleanup_old_epochs(&env, &depositor, current_epoch);
 
             events::withdraw_to(&env, &depositor, &recipient, &entry.token, entry.amount);
             return Ok(());
@@ -428,6 +469,11 @@ impl SafeHaven {
 
             let token_client = token::Client::new(&env, &entry.token);
             token_client.transfer(&env.current_contract_address(), &recipient, &entry.amount);
+
+            // Increment withdrawal count and clean up old epochs
+            let current_epoch = storage::get_current_epoch(&env);
+            storage::increment_withdrawal_count(&env, &depositor, current_epoch);
+            storage::cleanup_old_epochs(&env, &depositor, current_epoch);
 
             events::withdraw_to(&env, &depositor, &recipient, &entry.token, entry.amount);
             return Ok(());
@@ -459,7 +505,14 @@ impl SafeHaven {
             let token_client = token::Client::new(&env, &entry.token);
             token_client.transfer(&env.current_contract_address(), &depositor, &entry.amount);
 
-            events::emergency_withdraw(&env, &admin, &depositor, &entry.token, entry.amount, deposit_id);
+            events::emergency_withdraw(
+                &env,
+                &admin,
+                &depositor,
+                &entry.token,
+                entry.amount,
+                deposit_id,
+            );
             return Ok(());
         }
 
@@ -473,7 +526,14 @@ impl SafeHaven {
             let token_client = token::Client::new(&env, &entry.token);
             token_client.transfer(&env.current_contract_address(), &depositor, &entry.amount);
 
-            events::emergency_withdraw(&env, &admin, &depositor, &entry.token, entry.amount, deposit_id);
+            events::emergency_withdraw(
+                &env,
+                &admin,
+                &depositor,
+                &entry.token,
+                entry.amount,
+                deposit_id,
+            );
             return Ok(());
         }
 
@@ -586,7 +646,11 @@ impl SafeHaven {
 
     /// Returns the `LedgerVaultEntry` for a ledger-sequence-based deposit, or `None` if not found.
     /// No auth required — public read-only query (closes https://github.com/kenedybok3/SAFE-HAVEN/issues/44).
-    pub fn get_ledger_vault(env: Env, depositor: Address, deposit_id: u32) -> Option<LedgerVaultEntry> {
+    pub fn get_ledger_vault(
+        env: Env,
+        depositor: Address,
+        deposit_id: u32,
+    ) -> Option<LedgerVaultEntry> {
         storage::get_deposit_by_ledger_readonly(&env, &depositor, deposit_id)
     }
 
@@ -609,8 +673,16 @@ impl SafeHaven {
         None
     }
 
-    pub fn get_vault_batch(env: Env, depositors: Vec<Address>, deposit_id: u32) -> Vec<Option<VaultEntry>> {
-        let limit = if depositors.len() > MAX_BATCH_SIZE { MAX_BATCH_SIZE } else { depositors.len() as u32 };
+    pub fn get_vault_batch(
+        env: Env,
+        depositors: Vec<Address>,
+        deposit_id: u32,
+    ) -> Vec<Option<VaultEntry>> {
+        let limit = if depositors.len() > MAX_BATCH_SIZE {
+            MAX_BATCH_SIZE
+        } else {
+            depositors.len() as u32
+        };
         let mut results = Vec::new(&env);
         for i in 0..limit {
             if let Some((depositor, deposit_id)) = pairs.get(i) {
@@ -743,11 +815,7 @@ impl SafeHaven {
     /// Gas note: this function reads every depositor's ID list up to `offset + limit`
     /// deposits.  Keep `limit` reasonable (≤ 50) in production to stay within the
     /// Soroban instruction budget.
-    pub fn get_deposits_page(
-        env: Env,
-        offset: u32,
-        limit: u32,
-    ) -> Vec<(Address, u32, VaultEntry)> {
+    pub fn get_deposits_page(env: Env, offset: u32, limit: u32) -> Vec<(Address, u32, VaultEntry)> {
         let mut results: Vec<(Address, u32, VaultEntry)> = Vec::new(&env);
         let mut global_index: u32 = 0;
         let end_at = offset.saturating_add(limit);

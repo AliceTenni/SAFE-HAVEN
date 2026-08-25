@@ -4,6 +4,13 @@ pub const MAX_DEPOSIT_AMOUNT: i128 = 1_000_000_000_000_000;
 pub const MAX_LOCK_DURATION_SECS: u64 = 157_788_000;
 pub const MIN_LOCK_DURATION_SECS: u64 = 60;
 
+/// Withdrawal limit per epoch: maximum number of withdrawals allowed per depositor per epoch.
+/// An epoch is defined as 5 ledgers (~25 seconds at 5 seconds per ledger).
+pub const WITHDRAWAL_LIMIT_PER_EPOCH: u32 = 10;
+
+/// Epoch size in ledgers: each epoch spans 5 ledgers.
+pub const EPOCH_SIZE_LEDGERS: u32 = 5;
+
 /// Current storage schema version. Bump this constant when the on-chain
 /// layout of a `contracttype` struct changes so `migrate()` can detect
 /// and upgrade stale entries.
@@ -35,6 +42,9 @@ pub enum VaultKey {
     /// Persists the schema version written by the last `migrate()` call (or 1
     /// for contracts that were initialized before versioning was introduced).
     StorageVersion,
+    /// Stores the withdrawal count for a depositor in a given epoch.
+    /// Key: (depositor, epoch_number) -> withdrawal_count (u32)
+    WithdrawalCountPerEpoch(Address, u32),
 }
 
 #[contracttype]

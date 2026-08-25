@@ -21,4 +21,6 @@ pub enum VaultError {
     /// `initialize` was called on an already-initialized contract.
     /// The `is_initialized` flag is the sole re-initialization guard (closes #46).
     AlreadyInitialized = 15,
+    /// Exceeds the maximum number of withdrawals allowed per epoch.
+    WithdrawalLimitExceeded = 16,
 }
