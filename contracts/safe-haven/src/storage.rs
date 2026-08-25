@@ -1,6 +1,6 @@
 use soroban_sdk::{Address, Env, Vec};
 
-use crate::types::{VaultEntry, VaultKey, LedgerVaultEntry, MAX_LOCK_DURATION_SECS};
+use crate::types::{VaultEntry, VaultKey, LedgerVaultEntry, MAX_LOCK_DURATION_SECS, RecurringDeposit, InsuranceClaim};
 
 // Number of seconds per ledger — Soroban ledgers are ~5 seconds apart.
 pub const LEDGER_SECONDS: u64 = 5;
@@ -450,4 +450,161 @@ pub fn get_storage_version(env: &Env) -> Option<u32> {
     env.storage()
         .persistent()
         .get(&VaultKey::StorageVersion)
+}
+
+// ----------------------------------------------------------------
+//  Issue #333: Recurring deposit subscription helpers
+// ----------------------------------------------------------------
+
+/// Allocates and returns the next subscription ID for `depositor` (monotonic).
+pub fn next_subscription_id(env: &Env, depositor: &Address) -> u32 {
+    let key = VaultKey::SubscriptionCounter(depositor.clone());
+    let id: u32 = env.storage().persistent().get(&key).unwrap_or(0);
+    env.storage().persistent().set(&key, &(id + 1));
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
+    id
+}
+
+/// Writes a `RecurringDeposit` and registers it in the active list.
+pub fn set_subscription(env: &Env, depositor: &Address, sub_id: u32, sub: &RecurringDeposit) {
+    let key = VaultKey::Subscription(depositor.clone(), sub_id);
+    env.storage().persistent().set(&key, sub);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
+    add_active_subscription_id(env, depositor, sub_id);
+}
+
+/// Reads a `RecurringDeposit` (bumps TTL — use on mutation paths).
+pub fn get_subscription(env: &Env, depositor: &Address, sub_id: u32) -> Option<RecurringDeposit> {
+    let key = VaultKey::Subscription(depositor.clone(), sub_id);
+    let sub: Option<RecurringDeposit> = env.storage().persistent().get(&key);
+    if sub.is_some() {
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
+    }
+    sub
+}
+
+/// Reads a `RecurringDeposit` without bumping TTL (use on read-only paths).
+pub fn get_subscription_readonly(
+    env: &Env,
+    depositor: &Address,
+    sub_id: u32,
+) -> Option<RecurringDeposit> {
+    let key = VaultKey::Subscription(depositor.clone(), sub_id);
+    env.storage().persistent().get(&key)
+}
+
+fn get_active_subscription_ids(env: &Env, depositor: &Address) -> Vec<u32> {
+    let key = VaultKey::ActiveSubscriptionIds(depositor.clone());
+    env.storage()
+        .persistent()
+        .get(&key)
+        .unwrap_or_else(|| Vec::new(env))
+}
+
+fn save_active_subscription_ids(env: &Env, depositor: &Address, ids: &Vec<u32>) {
+    let key = VaultKey::ActiveSubscriptionIds(depositor.clone());
+    env.storage().persistent().set(&key, ids);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
+}
+
+fn add_active_subscription_id(env: &Env, depositor: &Address, sub_id: u32) {
+    let mut ids = get_active_subscription_ids(env, depositor);
+    ids.push_back(sub_id);
+    save_active_subscription_ids(env, depositor, &ids);
+}
+
+/// Returns all active (non-cancelled, not fully-executed) subscription IDs for
+/// a depositor.  The list is append-only; cancelled / completed subscriptions
+/// remain in storage so their history is preserved.
+pub fn get_subscription_ids(env: &Env, depositor: &Address) -> Vec<u32> {
+    get_active_subscription_ids(env, depositor)
+}
+
+// ----------------------------------------------------------------
+//  Issue #334: Insurance pool helpers
+// ----------------------------------------------------------------
+
+/// Returns the insurance pool balance for a specific token.
+pub fn get_insurance_pool_balance(env: &Env, token: &Address) -> i128 {
+    let key = VaultKey::InsurancePoolBalance(token.clone());
+    env.storage().persistent().get(&key).unwrap_or(0_i128)
+}
+
+/// Adds `amount` to the insurance pool balance for `token`.
+pub fn add_insurance_pool_balance(env: &Env, token: &Address, amount: i128) {
+    let key = VaultKey::InsurancePoolBalance(token.clone());
+    let current: i128 = env.storage().persistent().get(&key).unwrap_or(0);
+    env.storage()
+        .persistent()
+        .set(&key, &current.saturating_add(amount));
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
+}
+
+/// Subtracts `amount` from the insurance pool balance for `token`.
+/// Panics with `InsufficientInsurancePool` if balance would go negative.
+pub fn deduct_insurance_pool_balance(
+    env: &Env,
+    token: &Address,
+    amount: i128,
+) -> Result<(), crate::errors::VaultError> {
+    let key = VaultKey::InsurancePoolBalance(token.clone());
+    let current: i128 = env.storage().persistent().get(&key).unwrap_or(0);
+    if amount > current {
+        return Err(crate::errors::VaultError::InsufficientInsurancePool);
+    }
+    env.storage()
+        .persistent()
+        .set(&key, &(current - amount));
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
+    Ok(())
+}
+
+/// Allocates and returns the next global claim ID (monotonic).
+pub fn next_claim_id(env: &Env) -> u32 {
+    let key = VaultKey::InsuranceClaimCounter;
+    let id: u32 = env.storage().persistent().get(&key).unwrap_or(0);
+    env.storage().persistent().set(&key, &(id + 1));
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
+    id
+}
+
+/// Persists an `InsuranceClaim`.
+pub fn set_claim(env: &Env, claim_id: u32, claim: &InsuranceClaim) {
+    let key = VaultKey::InsuranceClaim(claim_id);
+    env.storage().persistent().set(&key, claim);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
+}
+
+/// Reads an `InsuranceClaim` (bumps TTL — use on mutation paths).
+pub fn get_claim(env: &Env, claim_id: u32) -> Option<InsuranceClaim> {
+    let key = VaultKey::InsuranceClaim(claim_id);
+    let claim: Option<InsuranceClaim> = env.storage().persistent().get(&key);
+    if claim.is_some() {
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
+    }
+    claim
+}
+
+/// Reads an `InsuranceClaim` without bumping TTL (read-only queries).
+pub fn get_claim_readonly(env: &Env, claim_id: u32) -> Option<InsuranceClaim> {
+    let key = VaultKey::InsuranceClaim(claim_id);
+    env.storage().persistent().get(&key)
 }

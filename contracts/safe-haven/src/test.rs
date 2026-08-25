@@ -2488,3 +2488,498 @@ fn test_version_returns_cargo_pkg_version() {
     let parts: Vec<&str> = version_str.split('.').collect();
     assert_eq!(parts.len(), 3, "Version should be in semantic format (major.minor.patch)");
 }
+
+// ================================================================
+//  Issue #333 — Recurring deposit subscription tests
+// ================================================================
+
+/// Helper: creates a subscription with default sensible params.
+fn create_default_subscription(
+    vault: &SafeHavenClient<'static>,
+    env: &Env,
+    depositor: &Address,
+    token: &Address,
+) -> u32 {
+    vault.create_subscription(
+        depositor,
+        token,
+        &1_000_i128,   // amount
+        &120_u64,      // interval_secs (2 min)
+        &3_u32,        // total_count
+        &120_u64,      // lock_duration_secs (2 min)
+        &0_u32,        // penalty_bps
+    )
+}
+
+#[test]
+fn test_create_subscription_success() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+
+    let sub_id = create_default_subscription(&vault, &env, &alice, &token);
+    assert_eq!(sub_id, 0);
+
+    let sub = vault.get_subscription(&alice, &sub_id).unwrap();
+    assert_eq!(sub.depositor, alice);
+    assert_eq!(sub.token, token);
+    assert_eq!(sub.amount, 1_000);
+    assert_eq!(sub.interval_secs, 120);
+    assert_eq!(sub.total_count, 3);
+    assert_eq!(sub.executed_count, 0);
+    assert_eq!(sub.lock_duration_secs, 120);
+    assert_eq!(sub.penalty_bps, 0);
+    assert!(!sub.cancelled);
+}
+
+#[test]
+fn test_create_subscription_ids_increment() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+
+    let id0 = create_default_subscription(&vault, &env, &alice, &token);
+    let id1 = create_default_subscription(&vault, &env, &alice, &token);
+    assert_eq!(id0, 0);
+    assert_eq!(id1, 1);
+
+    let ids = vault.get_subscription_ids(&alice);
+    assert_eq!(ids.len(), 2);
+}
+
+#[test]
+fn test_create_subscription_invalid_amount() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    let result = vault.try_create_subscription(
+        &alice, &token, &0_i128, &120_u64, &3_u32, &120_u64, &0_u32,
+    );
+    assert_eq!(result, Err(Ok(VaultError::InvalidAmount)));
+}
+
+#[test]
+fn test_create_subscription_zero_interval_fails() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    let result = vault.try_create_subscription(
+        &alice, &token, &1_000_i128, &0_u64, &3_u32, &120_u64, &0_u32,
+    );
+    assert_eq!(result, Err(Ok(VaultError::InvalidSubscriptionParams)));
+}
+
+#[test]
+fn test_create_subscription_zero_count_fails() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    let result = vault.try_create_subscription(
+        &alice, &token, &1_000_i128, &120_u64, &0_u32, &120_u64, &0_u32,
+    );
+    assert_eq!(result, Err(Ok(VaultError::InvalidSubscriptionParams)));
+}
+
+#[test]
+fn test_create_subscription_lock_duration_too_short_fails() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    // lock_duration_secs = 10 < MIN_LOCK_DURATION_SECS (60)
+    let result = vault.try_create_subscription(
+        &alice, &token, &1_000_i128, &120_u64, &3_u32, &10_u64, &0_u32,
+    );
+    assert_eq!(result, Err(Ok(VaultError::LockDurationTooShort)));
+}
+
+#[test]
+fn test_create_subscription_invalid_penalty_bps() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    let result = vault.try_create_subscription(
+        &alice, &token, &1_000_i128, &120_u64, &3_u32, &120_u64, &10_001_u32,
+    );
+    assert_eq!(result, Err(Ok(VaultError::InvalidPenaltyBps)));
+}
+
+#[test]
+fn test_create_subscription_paused_fails() {
+    let (env, vault, token, admin, alice, _fee) = setup();
+    vault.pause(&admin);
+    let result = vault.try_create_subscription(
+        &alice, &token, &1_000_i128, &120_u64, &3_u32, &120_u64, &0_u32,
+    );
+    assert_eq!(result, Err(Ok(VaultError::ContractPaused)));
+}
+
+#[test]
+fn test_execute_subscription_creates_deposit() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+
+    let sub_id = create_default_subscription(&vault, &env, &alice, &token);
+    // First execution is due immediately.
+    let deposit_id = vault.execute_subscription(&alice, &sub_id);
+
+    // A deposit should now exist for alice.
+    let entry = vault.get_vault(&alice, &deposit_id).unwrap();
+    assert_eq!(entry.amount, 1_000);
+    assert_eq!(entry.token, token);
+    assert_eq!(entry.depositor, alice);
+
+    // executed_count should be 1.
+    let sub = vault.get_subscription(&alice, &sub_id).unwrap();
+    assert_eq!(sub.executed_count, 1);
+}
+
+#[test]
+fn test_execute_subscription_respects_interval() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+
+    let sub_id = create_default_subscription(&vault, &env, &alice, &token);
+    // First execution succeeds.
+    vault.execute_subscription(&alice, &sub_id);
+
+    // Second execution before interval elapses should fail.
+    let result = vault.try_execute_subscription(&alice, &sub_id);
+    assert_eq!(result, Err(Ok(VaultError::SubscriptionNotDue)));
+
+    // Advance past the interval (120 s).
+    advance_time(&env, 121);
+    let deposit_id2 = vault.execute_subscription(&alice, &sub_id);
+
+    let sub = vault.get_subscription(&alice, &sub_id).unwrap();
+    assert_eq!(sub.executed_count, 2);
+
+    let entry = vault.get_vault(&alice, &deposit_id2).unwrap();
+    assert_eq!(entry.amount, 1_000);
+}
+
+#[test]
+fn test_execute_subscription_completes_after_total_count() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+
+    // total_count = 2
+    let sub_id = vault.create_subscription(
+        &alice, &token, &1_000_i128, &60_u64, &2_u32, &60_u64, &0_u32,
+    );
+
+    vault.execute_subscription(&alice, &sub_id);
+    advance_time(&env, 61);
+    vault.execute_subscription(&alice, &sub_id);
+
+    // Third call should fail — completed.
+    advance_time(&env, 61);
+    let result = vault.try_execute_subscription(&alice, &sub_id);
+    assert_eq!(result, Err(Ok(VaultError::SubscriptionCompleted)));
+}
+
+#[test]
+fn test_cancel_subscription_success() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+
+    let sub_id = create_default_subscription(&vault, &env, &alice, &token);
+    vault.cancel_subscription(&alice, &sub_id);
+
+    let sub = vault.get_subscription(&alice, &sub_id).unwrap();
+    assert!(sub.cancelled);
+}
+
+#[test]
+fn test_cancel_subscription_prevents_execution() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+
+    let sub_id = create_default_subscription(&vault, &env, &alice, &token);
+    vault.cancel_subscription(&alice, &sub_id);
+
+    let result = vault.try_execute_subscription(&alice, &sub_id);
+    assert_eq!(result, Err(Ok(VaultError::SubscriptionCancelled)));
+}
+
+#[test]
+fn test_cancel_subscription_twice_fails() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+
+    let sub_id = create_default_subscription(&vault, &env, &alice, &token);
+    vault.cancel_subscription(&alice, &sub_id);
+
+    let result = vault.try_cancel_subscription(&alice, &sub_id);
+    assert_eq!(result, Err(Ok(VaultError::SubscriptionCancelled)));
+}
+
+#[test]
+fn test_cancel_nonexistent_subscription_fails() {
+    let (_env, vault, _token, _admin, alice, _fee) = setup();
+    let result = vault.try_cancel_subscription(&alice, &999_u32);
+    assert_eq!(result, Err(Ok(VaultError::NoSubscriptionFound)));
+}
+
+#[test]
+fn test_execute_nonexistent_subscription_fails() {
+    let (_env, vault, _token, _admin, alice, _fee) = setup();
+    let result = vault.try_execute_subscription(&alice, &999_u32);
+    assert_eq!(result, Err(Ok(VaultError::NoSubscriptionFound)));
+}
+
+#[test]
+fn test_execute_subscription_deducts_token_balance() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    let token_client = TokenClient::new(&env, &token);
+
+    let balance_before = token_client.balance(&alice);
+    let sub_id = create_default_subscription(&vault, &env, &alice, &token);
+    vault.execute_subscription(&alice, &sub_id);
+    let balance_after = token_client.balance(&alice);
+
+    assert_eq!(balance_before - balance_after, 1_000);
+}
+
+#[test]
+fn test_execute_subscription_deposit_is_withdrawable_after_lock() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+
+    let sub_id = create_default_subscription(&vault, &env, &alice, &token);
+    let deposit_id = vault.execute_subscription(&alice, &sub_id);
+
+    // Lock is 120 s — should be locked right after execution.
+    let result = vault.try_withdraw(&alice, &deposit_id);
+    assert_eq!(result, Err(Ok(VaultError::FundsStillLocked)));
+
+    advance_time(&env, 121);
+    vault.withdraw(&alice, &deposit_id);
+}
+
+#[test]
+fn test_get_subscription_ids_returns_all() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+
+    for _ in 0..3 {
+        create_default_subscription(&vault, &env, &alice, &token);
+    }
+
+    let ids = vault.get_subscription_ids(&alice);
+    assert_eq!(ids.len(), 3);
+    assert_eq!(ids.get(0).unwrap(), 0);
+    assert_eq!(ids.get(1).unwrap(), 1);
+    assert_eq!(ids.get(2).unwrap(), 2);
+}
+
+// ================================================================
+//  Issue #334 — Deposit insurance pool tests
+// ================================================================
+
+/// Helper: create a deposit with a penalty and cancel it, which funds the pool.
+fn fund_pool_via_cancel(
+    env: &Env,
+    vault: &SafeHavenClient<'static>,
+    depositor: &Address,
+    token: &Address,
+) {
+    // Deposit 10_000 with 10% penalty, then cancel immediately to fund the pool.
+    let unlock_time = env.ledger().timestamp() + 120;
+    let deposit_id =
+        vault.deposit(depositor, token, &10_000_i128, &unlock_time, &1_000_u32); // 10%
+    vault.cancel_deposit(depositor, &deposit_id);
+}
+
+#[test]
+fn test_insurance_pool_funded_from_penalty() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+
+    // Before any cancellations, balance should be zero.
+    assert_eq!(vault.get_insurance_pool_balance(&token), 0);
+
+    fund_pool_via_cancel(&env, &vault, &alice, &token);
+
+    // penalty = 10_000 * 10% = 1_000
+    // insurance_cut = 1_000 * 5% = 50
+    let pool_balance = vault.get_insurance_pool_balance(&token);
+    assert_eq!(pool_balance, 50);
+}
+
+#[test]
+fn test_insurance_pool_accumulates_across_cancellations() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+
+    // Mint more tokens for alice.
+    StellarAssetClient::new(&env, &token).mint(&alice, &100_000);
+
+    fund_pool_via_cancel(&env, &vault, &alice, &token);
+    fund_pool_via_cancel(&env, &vault, &alice, &token);
+    fund_pool_via_cancel(&env, &vault, &alice, &token);
+
+    // 3 × 50 = 150
+    let pool_balance = vault.get_insurance_pool_balance(&token);
+    assert_eq!(pool_balance, 150);
+}
+
+#[test]
+fn test_claim_insurance_success() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+
+    fund_pool_via_cancel(&env, &vault, &alice, &token);
+
+    let evidence = soroban_sdk::String::from_str(&env, "tx-hash-123");
+    let claim_id = vault.claim_insurance(&alice, &token, &50_i128, &evidence);
+    assert_eq!(claim_id, 0);
+
+    let claim = vault.get_claim(&claim_id).unwrap();
+    assert_eq!(claim.claim_id, 0);
+    assert_eq!(claim.claimant, alice);
+    assert_eq!(claim.token, token);
+    assert_eq!(claim.amount_requested, 50);
+    // status is Pending — cannot compare ClaimStatus directly in test context
+    // but we verify approve/deny transitions below.
+}
+
+#[test]
+fn test_claim_insurance_invalid_amount_fails() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    let evidence = soroban_sdk::String::from_str(&env, "evidence");
+    let result = vault.try_claim_insurance(&alice, &token, &0_i128, &evidence);
+    assert_eq!(result, Err(Ok(VaultError::InvalidAmount)));
+}
+
+#[test]
+fn test_approve_claim_disburses_funds() {
+    let (env, vault, token, admin, alice, _fee) = setup();
+
+    fund_pool_via_cancel(&env, &vault, &alice, &token);
+    let pool_before = vault.get_insurance_pool_balance(&token);
+    assert_eq!(pool_before, 50);
+
+    let token_client = TokenClient::new(&env, &token);
+    let alice_balance_before = token_client.balance(&alice);
+
+    let evidence = soroban_sdk::String::from_str(&env, "incident-abc");
+    let claim_id = vault.claim_insurance(&alice, &token, &50_i128, &evidence);
+    let amount = vault.approve_claim(&admin, &claim_id);
+
+    assert_eq!(amount, 50);
+
+    // Pool balance should be zero now.
+    assert_eq!(vault.get_insurance_pool_balance(&token), 0);
+
+    // Alice should have received 50.
+    let alice_balance_after = token_client.balance(&alice);
+    assert_eq!(alice_balance_after - alice_balance_before, 50);
+}
+
+#[test]
+fn test_approve_claim_insufficient_pool_fails() {
+    let (env, vault, token, admin, alice, _fee) = setup();
+
+    // No cancellations — pool is empty.
+    let evidence = soroban_sdk::String::from_str(&env, "evidence");
+    let claim_id = vault.claim_insurance(&alice, &token, &100_i128, &evidence);
+
+    let result = vault.try_approve_claim(&admin, &claim_id);
+    assert_eq!(result, Err(Ok(VaultError::InsufficientInsurancePool)));
+}
+
+#[test]
+fn test_deny_claim_no_funds_moved() {
+    let (env, vault, token, admin, alice, _fee) = setup();
+
+    fund_pool_via_cancel(&env, &vault, &alice, &token);
+    let pool_before = vault.get_insurance_pool_balance(&token);
+
+    let evidence = soroban_sdk::String::from_str(&env, "incident-xyz");
+    let claim_id = vault.claim_insurance(&alice, &token, &50_i128, &evidence);
+    vault.deny_claim(&admin, &claim_id);
+
+    // Pool balance unchanged.
+    assert_eq!(vault.get_insurance_pool_balance(&token), pool_before);
+}
+
+#[test]
+fn test_approve_already_resolved_claim_fails() {
+    let (env, vault, token, admin, alice, _fee) = setup();
+
+    fund_pool_via_cancel(&env, &vault, &alice, &token);
+
+    let evidence = soroban_sdk::String::from_str(&env, "evidence");
+    let claim_id = vault.claim_insurance(&alice, &token, &50_i128, &evidence);
+    vault.approve_claim(&admin, &claim_id);
+
+    // Approving again should fail.
+    let result = vault.try_approve_claim(&admin, &claim_id);
+    assert_eq!(result, Err(Ok(VaultError::ClaimAlreadyResolved)));
+}
+
+#[test]
+fn test_deny_already_resolved_claim_fails() {
+    let (env, vault, token, admin, alice, _fee) = setup();
+
+    let evidence = soroban_sdk::String::from_str(&env, "evidence");
+    let claim_id = vault.claim_insurance(&alice, &token, &1_i128, &evidence);
+    vault.deny_claim(&admin, &claim_id);
+
+    let result = vault.try_deny_claim(&admin, &claim_id);
+    assert_eq!(result, Err(Ok(VaultError::ClaimAlreadyResolved)));
+}
+
+#[test]
+fn test_approve_claim_non_admin_fails() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+
+    let evidence = soroban_sdk::String::from_str(&env, "evidence");
+    let claim_id = vault.claim_insurance(&alice, &token, &1_i128, &evidence);
+
+    let result = vault.try_approve_claim(&alice, &claim_id);
+    assert_eq!(result, Err(Ok(VaultError::Unauthorized)));
+}
+
+#[test]
+fn test_deny_claim_non_admin_fails() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+
+    let evidence = soroban_sdk::String::from_str(&env, "evidence");
+    let claim_id = vault.claim_insurance(&alice, &token, &1_i128, &evidence);
+
+    let result = vault.try_deny_claim(&alice, &claim_id);
+    assert_eq!(result, Err(Ok(VaultError::Unauthorized)));
+}
+
+#[test]
+fn test_approve_nonexistent_claim_fails() {
+    let (_env, vault, _token, admin, _alice, _fee) = setup();
+    let result = vault.try_approve_claim(&admin, &999_u32);
+    assert_eq!(result, Err(Ok(VaultError::NoClaimFound)));
+}
+
+#[test]
+fn test_deny_nonexistent_claim_fails() {
+    let (_env, vault, _token, admin, _alice, _fee) = setup();
+    let result = vault.try_deny_claim(&admin, &999_u32);
+    assert_eq!(result, Err(Ok(VaultError::NoClaimFound)));
+}
+
+#[test]
+fn test_get_claim_returns_none_for_missing() {
+    let (_env, vault, _token, _admin, _alice, _fee) = setup();
+    assert!(vault.get_claim(&999_u32).is_none());
+}
+
+#[test]
+fn test_claim_ids_are_monotonically_increasing() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+
+    let evidence = soroban_sdk::String::from_str(&env, "ev");
+    let id0 = vault.claim_insurance(&alice, &token, &1_i128, &evidence);
+    let id1 = vault.claim_insurance(&alice, &token, &1_i128, &evidence);
+    let id2 = vault.claim_insurance(&alice, &token, &1_i128, &evidence);
+
+    assert_eq!(id0, 0);
+    assert_eq!(id1, 1);
+    assert_eq!(id2, 2);
+}
+
+#[test]
+fn test_cancel_deposit_routes_insurance_cut_to_pool() {
+    // Verify the exact arithmetic: penalty = amount * bps / 10_000
+    // insurance_cut = penalty * 500 / 10_000  (5%)
+    // fee_cut       = penalty - insurance_cut
+    let (env, vault, token, _admin, alice, fee) = setup();
+
+    let unlock_time = env.ledger().timestamp() + 120;
+    // amount = 20_000, penalty_bps = 500 (5%) → penalty = 1_000
+    // insurance_cut = 1_000 * 500 / 10_000 = 50
+    // fee_cut = 1_000 - 50 = 950
+    let deposit_id = vault.deposit(&alice, &token, &20_000_i128, &unlock_time, &500_u32);
+
+    let token_client = TokenClient::new(&env, &token);
+    let fee_before = token_client.balance(&fee);
+
+    vault.cancel_deposit(&alice, &deposit_id);
+
+    let fee_after = token_client.balance(&fee);
+    assert_eq!(fee_after - fee_before, 950);
+    assert_eq!(vault.get_insurance_pool_balance(&token), 50);
+}

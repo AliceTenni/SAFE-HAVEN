@@ -3,7 +3,7 @@
 //  Stellar Blockchain | Soroban SDK v22
 // ============================================================
 
-use soroban_sdk::{contract, contractimpl, token, Address, Env, Vec};
+use soroban_sdk::{contract, contractimpl, token, Address, Env, String, Vec};
 
 use crate::{
     constants::{
@@ -12,7 +12,10 @@ use crate::{
     },
     errors::VaultError,
     events, storage,
-    types::{VaultEntry, LedgerVaultEntry, Page, STORAGE_VERSION},
+    types::{
+        ClaimStatus, InsuranceClaim, LedgerVaultEntry, Page, RecurringDeposit, VaultEntry,
+        INSURANCE_POOL_BPS, STORAGE_VERSION,
+    },
 };
 
 #[contract]
@@ -295,7 +298,23 @@ impl SafeHaven {
             if penalty > 0 {
                 let fee_recipient =
                     storage::get_fee_recipient(&env).ok_or(VaultError::MissingFeeRecipient)?;
-                token_client.transfer(&contract, &fee_recipient, &penalty);
+
+                // Reserve INSURANCE_POOL_BPS (5%) of the penalty for the insurance pool.
+                let insurance_cut: i128 =
+                    (penalty * INSURANCE_POOL_BPS as i128) / 10_000;
+                let fee_cut = penalty - insurance_cut;
+
+                if insurance_cut > 0 {
+                    // The insurance cut stays in the contract; only the ledger balance is
+                    // updated so the pool funds never leave the contract address.
+                    storage::add_insurance_pool_balance(&env, &entry.token, insurance_cut);
+                    let new_balance =
+                        storage::get_insurance_pool_balance(&env, &entry.token);
+                    events::insurance_pool_funded(&env, &entry.token, insurance_cut, new_balance);
+                }
+                if fee_cut > 0 {
+                    token_client.transfer(&contract, &fee_recipient, &fee_cut);
+                }
             }
             if refund > 0 {
                 token_client.transfer(&contract, &depositor, &refund);
@@ -326,7 +345,21 @@ impl SafeHaven {
             if penalty > 0 {
                 let fee_recipient =
                     storage::get_fee_recipient(&env).ok_or(VaultError::MissingFeeRecipient)?;
-                token_client.transfer(&contract, &fee_recipient, &penalty);
+
+                // Reserve INSURANCE_POOL_BPS (5%) of the penalty for the insurance pool.
+                let insurance_cut: i128 =
+                    (penalty * INSURANCE_POOL_BPS as i128) / 10_000;
+                let fee_cut = penalty - insurance_cut;
+
+                if insurance_cut > 0 {
+                    storage::add_insurance_pool_balance(&env, &entry.token, insurance_cut);
+                    let new_balance =
+                        storage::get_insurance_pool_balance(&env, &entry.token);
+                    events::insurance_pool_funded(&env, &entry.token, insurance_cut, new_balance);
+                }
+                if fee_cut > 0 {
+                    token_client.transfer(&contract, &fee_recipient, &fee_cut);
+                }
             }
             if refund > 0 {
                 token_client.transfer(&contract, &depositor, &refund);
@@ -613,7 +646,7 @@ impl SafeHaven {
         let limit = if depositors.len() > MAX_BATCH_SIZE { MAX_BATCH_SIZE } else { depositors.len() as u32 };
         let mut results = Vec::new(&env);
         for i in 0..limit {
-            if let Some((depositor, deposit_id)) = pairs.get(i) {
+            if let Some(depositor) = depositors.get(i) {
                 let entry = storage::get_deposit_readonly(&env, &depositor, deposit_id);
                 results.push_back(entry);
             }
@@ -712,7 +745,7 @@ impl SafeHaven {
     /// A `Page<Address>` containing:
     /// - `items`: The paginated list of addresses
     /// - `total_count`: Total number of active depositors across all pages
-    pub fn get_depositors(env: Env, offset: u32, limit: u32) -> Page<Address> {
+    pub fn get_depositors(env: Env, offset: u32, limit: u32) -> Page {
         let (items, total_count) = storage::get_depositors_page(&env, offset, limit);
         Page { items, total_count }
     }
@@ -824,5 +857,344 @@ impl SafeHaven {
 
         storage::set_storage_version(&env, STORAGE_VERSION);
         Ok(true)
+    }
+
+    // ----------------------------------------------------------------
+    //  Issue #333: Recurring deposit subscriptions
+    // ----------------------------------------------------------------
+
+    /// Creates a recurring deposit subscription.
+    ///
+    /// The depositor commits to having `total_count` individual deposits of
+    /// `amount` tokens created at intervals of `interval_secs` seconds.  The
+    /// first execution is immediately due (caller can invoke `execute_subscription`
+    /// right after creation, or wait `interval_secs`).
+    ///
+    /// # Parameters
+    /// - `depositor`         — account that will fund every deposit tick; must sign.
+    /// - `token`             — SAC token to lock.
+    /// - `amount`            — amount per deposit tick (> 0, ≤ `max_deposit`).
+    /// - `interval_secs`     — seconds between ticks (> 0).
+    /// - `total_count`       — total number of ticks (> 0).
+    /// - `lock_duration_secs`— lock duration per individual deposit (≥ `MIN_LOCK_DURATION_SECS`).
+    /// - `penalty_bps`       — early-exit penalty for each produced deposit (0–10000).
+    ///
+    /// # Returns
+    /// The new `subscription_id`.
+    pub fn create_subscription(
+        env: Env,
+        depositor: Address,
+        token: Address,
+        amount: i128,
+        interval_secs: u64,
+        total_count: u32,
+        lock_duration_secs: u64,
+        penalty_bps: u32,
+    ) -> Result<u32, VaultError> {
+        depositor.require_auth();
+
+        if storage::is_paused(&env) {
+            return Err(VaultError::ContractPaused);
+        }
+
+        // Validate params
+        if amount <= 0 {
+            return Err(VaultError::InvalidAmount);
+        }
+        let max_deposit = storage::get_max_deposit(&env).unwrap_or(MAX_DEPOSIT_AMOUNT);
+        if amount > max_deposit {
+            return Err(VaultError::AmountTooLarge);
+        }
+        if interval_secs == 0 || total_count == 0 {
+            return Err(VaultError::InvalidSubscriptionParams);
+        }
+        if lock_duration_secs < MIN_LOCK_DURATION_SECS {
+            return Err(VaultError::LockDurationTooShort);
+        }
+        let max_lock = storage::get_max_lock_secs(&env).unwrap_or(MAX_LOCK_DURATION_SECS);
+        if lock_duration_secs > max_lock {
+            return Err(VaultError::LockDurationTooLong);
+        }
+        if penalty_bps > 10_000 {
+            return Err(VaultError::InvalidPenaltyBps);
+        }
+        if penalty_bps > 0 && storage::get_fee_recipient(&env).is_none() {
+            return Err(VaultError::MissingFeeRecipient);
+        }
+
+        let sub_id = storage::next_subscription_id(&env, &depositor);
+        let now = env.ledger().timestamp();
+
+        let sub = RecurringDeposit {
+            depositor: depositor.clone(),
+            token: token.clone(),
+            amount,
+            interval_secs,
+            total_count,
+            executed_count: 0,
+            lock_duration_secs,
+            penalty_bps,
+            // First execution is due immediately.
+            next_execution_time: now,
+            cancelled: false,
+        };
+
+        storage::set_subscription(&env, &depositor, sub_id, &sub);
+        events::subscription_created(
+            &env,
+            &depositor,
+            &token,
+            sub_id,
+            amount,
+            interval_secs,
+            total_count,
+        );
+
+        Ok(sub_id)
+    }
+
+    /// Cancels an active subscription.
+    ///
+    /// Only the depositor who created the subscription may cancel it.
+    /// Already-executed deposits are unaffected — they remain locked until
+    /// their individual `unlock_time`.
+    pub fn cancel_subscription(
+        env: Env,
+        depositor: Address,
+        sub_id: u32,
+    ) -> Result<(), VaultError> {
+        depositor.require_auth();
+
+        let mut sub = storage::get_subscription(&env, &depositor, sub_id)
+            .ok_or(VaultError::NoSubscriptionFound)?;
+
+        if sub.cancelled {
+            return Err(VaultError::SubscriptionCancelled);
+        }
+        if sub.executed_count >= sub.total_count {
+            return Err(VaultError::SubscriptionCompleted);
+        }
+
+        sub.cancelled = true;
+        storage::set_subscription(&env, &depositor, sub_id, &sub);
+
+        events::subscription_cancelled(&env, &depositor, sub_id, sub.executed_count);
+        Ok(())
+    }
+
+    /// Executes the next tick of a recurring deposit subscription.
+    ///
+    /// This is a *permissionless* function — anyone may call it as long as the
+    /// subscription is active and the interval has elapsed.  This mirrors the
+    /// "oracle-triggered" model described in issue #333: an off-chain keeper
+    /// (or the depositor themselves) triggers execution at the right time.
+    ///
+    /// On each call the contract:
+    /// 1. Validates the subscription is not cancelled / completed.
+    /// 2. Checks `now >= next_execution_time`.
+    /// 3. Transfers `amount` tokens from `depositor` to the contract.
+    /// 4. Creates a `VaultEntry` locked for `lock_duration_secs` from `now`.
+    /// 5. Updates `executed_count` and `next_execution_time`.
+    ///
+    /// # Returns
+    /// The new `deposit_id` created for this tick.
+    pub fn execute_subscription(
+        env: Env,
+        depositor: Address,
+        sub_id: u32,
+    ) -> Result<u32, VaultError> {
+        // No auth required — permissionless execution by any caller (keeper/oracle).
+
+        if storage::is_paused(&env) {
+            return Err(VaultError::ContractPaused);
+        }
+
+        let mut sub = storage::get_subscription(&env, &depositor, sub_id)
+            .ok_or(VaultError::NoSubscriptionFound)?;
+
+        if sub.cancelled {
+            return Err(VaultError::SubscriptionCancelled);
+        }
+        if sub.executed_count >= sub.total_count {
+            return Err(VaultError::SubscriptionCompleted);
+        }
+
+        let now = env.ledger().timestamp();
+        if now < sub.next_execution_time {
+            return Err(VaultError::SubscriptionNotDue);
+        }
+
+        // Transfer tokens from depositor into the contract.
+        let token_client = token::Client::new(&env, &sub.token);
+        token_client.transfer(&sub.depositor, &env.current_contract_address(), &sub.amount);
+
+        // Create a locked VaultEntry for this tick.
+        let unlock_time = now.saturating_add(sub.lock_duration_secs);
+        let deposit_id = storage::next_deposit_id(&env, &depositor);
+        let entry = VaultEntry {
+            token: sub.token.clone(),
+            amount: sub.amount,
+            unlock_time,
+            depositor: depositor.clone(),
+            penalty_bps: sub.penalty_bps,
+        };
+        storage::set_deposit(&env, &depositor, deposit_id, &entry);
+        storage::add_depositor(&env, &depositor);
+
+        // Advance subscription state.
+        sub.executed_count = sub.executed_count.saturating_add(1);
+        sub.next_execution_time = now.saturating_add(sub.interval_secs);
+        storage::set_subscription(&env, &depositor, sub_id, &sub);
+
+        events::subscription_executed(
+            &env,
+            &depositor,
+            &sub.token,
+            sub_id,
+            deposit_id,
+            sub.executed_count,
+        );
+        events::deposit(&env, &depositor, &sub.token, sub.amount, unlock_time, deposit_id);
+
+        Ok(deposit_id)
+    }
+
+    /// Returns the `RecurringDeposit` struct for the given `(depositor, sub_id)`,
+    /// or `None` if not found.
+    pub fn get_subscription(
+        env: Env,
+        depositor: Address,
+        sub_id: u32,
+    ) -> Option<RecurringDeposit> {
+        storage::get_subscription_readonly(&env, &depositor, sub_id)
+    }
+
+    /// Returns all subscription IDs ever created for `depositor` (includes
+    /// cancelled and completed ones — filter by `cancelled` / `executed_count`).
+    pub fn get_subscription_ids(env: Env, depositor: Address) -> Vec<u32> {
+        storage::get_subscription_ids(&env, &depositor)
+    }
+
+    // ----------------------------------------------------------------
+    //  Issue #334: Deposit insurance pool
+    // ----------------------------------------------------------------
+
+    /// Returns the current insurance pool balance for `token`.
+    pub fn get_insurance_pool_balance(env: Env, token: Address) -> i128 {
+        storage::get_insurance_pool_balance(&env, &token)
+    }
+
+    /// Files an insurance claim against the pool for a specific token.
+    ///
+    /// The claimant provides free-form `incident_evidence` (e.g. a description
+    /// of what happened or an off-chain transaction hash).  The admin reviews
+    /// and either approves or denies via `approve_claim` / `deny_claim`.
+    ///
+    /// There is no restriction on who can file a claim — any address may submit
+    /// evidence.  Restricting claims to depositors only would require iterating
+    /// every deposit, which is budget-unsafe.
+    ///
+    /// # Returns
+    /// A new `claim_id`.
+    pub fn claim_insurance(
+        env: Env,
+        claimant: Address,
+        token: Address,
+        amount_requested: i128,
+        incident_evidence: String,
+    ) -> Result<u32, VaultError> {
+        claimant.require_auth();
+
+        if amount_requested <= 0 {
+            return Err(VaultError::InvalidAmount);
+        }
+
+        let claim_id = storage::next_claim_id(&env);
+        let claim = InsuranceClaim {
+            claim_id,
+            claimant: claimant.clone(),
+            token: token.clone(),
+            amount_requested,
+            incident_evidence,
+            status: ClaimStatus::Pending,
+        };
+
+        storage::set_claim(&env, claim_id, &claim);
+        events::insurance_claim_filed(&env, &claimant, &token, claim_id, amount_requested);
+
+        Ok(claim_id)
+    }
+
+    /// Admin: approve an insurance claim and disburse funds from the pool.
+    ///
+    /// The full `amount_requested` is paid out from the pool balance for
+    /// `claim.token`.  Returns `InsufficientInsurancePool` if the pool
+    /// balance is lower than the requested amount.
+    ///
+    /// # Returns
+    /// The amount disbursed.
+    pub fn approve_claim(env: Env, admin: Address, claim_id: u32) -> Result<i128, VaultError> {
+        admin.require_auth();
+        storage::require_admin(&env, &admin)?;
+
+        let mut claim = storage::get_claim(&env, claim_id).ok_or(VaultError::NoClaimFound)?;
+
+        match claim.status {
+            ClaimStatus::Approved | ClaimStatus::Denied => {
+                return Err(VaultError::ClaimAlreadyResolved)
+            }
+            ClaimStatus::Pending => {}
+        }
+
+        // Deduct from pool balance first (checks-effects-interactions).
+        storage::deduct_insurance_pool_balance(&env, &claim.token, claim.amount_requested)?;
+
+        // Update claim status.
+        claim.status = ClaimStatus::Approved;
+        storage::set_claim(&env, claim_id, &claim);
+
+        // Transfer tokens from contract to claimant.
+        let token_client = token::Client::new(&env, &claim.token);
+        token_client.transfer(
+            &env.current_contract_address(),
+            &claim.claimant,
+            &claim.amount_requested,
+        );
+
+        events::insurance_claim_approved(
+            &env,
+            &admin,
+            &claim.claimant,
+            claim_id,
+            claim.amount_requested,
+        );
+
+        Ok(claim.amount_requested)
+    }
+
+    /// Admin: deny an insurance claim.  No funds are moved.
+    pub fn deny_claim(env: Env, admin: Address, claim_id: u32) -> Result<(), VaultError> {
+        admin.require_auth();
+        storage::require_admin(&env, &admin)?;
+
+        let mut claim = storage::get_claim(&env, claim_id).ok_or(VaultError::NoClaimFound)?;
+
+        match claim.status {
+            ClaimStatus::Approved | ClaimStatus::Denied => {
+                return Err(VaultError::ClaimAlreadyResolved)
+            }
+            ClaimStatus::Pending => {}
+        }
+
+        claim.status = ClaimStatus::Denied;
+        storage::set_claim(&env, claim_id, &claim);
+
+        events::insurance_claim_denied(&env, &admin, claim_id);
+        Ok(())
+    }
+
+    /// Returns the `InsuranceClaim` for `claim_id`, or `None` if not found.
+    pub fn get_claim(env: Env, claim_id: u32) -> Option<InsuranceClaim> {
+        storage::get_claim_readonly(&env, claim_id)
     }
 }

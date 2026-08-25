@@ -108,3 +108,88 @@ pub fn withdraw_to(
     let topics = (Symbol::new(env, "withdraw_to"), depositor.clone(), token.clone());
     env.events().publish(topics, (recipient.clone(), amount));
 }
+
+// ────────────────────────────────────────────────────────────────
+//  Issue #333 — Recurring deposit subscription events
+// ────────────────────────────────────────────────────────────────
+
+/// Emitted when a new recurring deposit subscription is created.
+pub fn subscription_created(
+    env: &Env,
+    depositor: &Address,
+    token: &Address,
+    sub_id: u32,
+    amount: i128,
+    interval_secs: u64,
+    total_count: u32,
+) {
+    let topics = (Symbol::new(env, "sub_created"), depositor.clone(), token.clone());
+    env.events()
+        .publish(topics, (sub_id, amount, interval_secs, total_count));
+}
+
+/// Emitted when one interval of a subscription is executed and a deposit is created.
+pub fn subscription_executed(
+    env: &Env,
+    depositor: &Address,
+    token: &Address,
+    sub_id: u32,
+    deposit_id: u32,
+    executed_count: u32,
+) {
+    let topics = (Symbol::new(env, "sub_executed"), depositor.clone(), token.clone());
+    env.events()
+        .publish(topics, (sub_id, deposit_id, executed_count));
+}
+
+/// Emitted when a depositor cancels their subscription.
+pub fn subscription_cancelled(
+    env: &Env,
+    depositor: &Address,
+    sub_id: u32,
+    executed_count: u32,
+) {
+    let topics = (Symbol::new(env, "sub_cancelled"), depositor.clone());
+    env.events().publish(topics, (sub_id, executed_count));
+}
+
+// ────────────────────────────────────────────────────────────────
+//  Issue #334 — Insurance pool events
+// ────────────────────────────────────────────────────────────────
+
+/// Emitted when penalty fees are contributed to the insurance pool.
+pub fn insurance_pool_funded(env: &Env, token: &Address, amount: i128, new_balance: i128) {
+    let topics = (Symbol::new(env, "ins_funded"), token.clone());
+    env.events().publish(topics, (amount, new_balance));
+}
+
+/// Emitted when a depositor files an insurance claim.
+pub fn insurance_claim_filed(
+    env: &Env,
+    claimant: &Address,
+    token: &Address,
+    claim_id: u32,
+    amount_requested: i128,
+) {
+    let topics = (Symbol::new(env, "ins_claim"), claimant.clone(), token.clone());
+    env.events().publish(topics, (claim_id, amount_requested));
+}
+
+/// Emitted when an admin approves a claim and funds are disbursed.
+pub fn insurance_claim_approved(
+    env: &Env,
+    admin: &Address,
+    claimant: &Address,
+    claim_id: u32,
+    amount: i128,
+) {
+    let topics = (Symbol::new(env, "ins_approved"), claimant.clone());
+    env.events()
+        .publish(topics, (admin.clone(), claim_id, amount));
+}
+
+/// Emitted when an admin denies a claim.
+pub fn insurance_claim_denied(env: &Env, admin: &Address, claim_id: u32) {
+    let topics = (Symbol::new(env, "ins_denied"),);
+    env.events().publish(topics, (admin.clone(), claim_id));
+}
