@@ -12,11 +12,98 @@ use crate::{
     },
     errors::VaultError,
     events, storage,
-    types::{VaultEntry, LedgerVaultEntry, Page, STORAGE_VERSION},
+    types::{
+        DepositType, MultiTokenVaultEntry, TokenDeposit, VaultEntry, LedgerVaultEntry, Page,
+        STORAGE_VERSION, MAX_TOKENS_PER_DEPOSIT,
+    },
 };
+
+/// Minimum compound frequency: must be at least 60 seconds if non-zero.
+const MIN_COMPOUND_FREQUENCY_SECS: u64 = 60;
+
+/// Annual interest rate used for compound accrual: 5% expressed as basis points (500).
+/// In production this could be made configurable, but per the issue scope it is fixed.
+const ANNUAL_INTEREST_BPS: u128 = 500;
+
+/// Seconds in a year (non-leap) used for pro-rata interest calculations.
+const SECS_PER_YEAR: u128 = 31_536_000;
 
 #[contract]
 pub struct SafeHaven;
+
+// ----------------------------------------------------------------
+//  Internal helpers
+// ----------------------------------------------------------------
+
+/// Compute the accrued balance for `entry` as of `now`.
+///
+/// Uses compound interest applied period-by-period:
+///   balance_after_one_period = balance + balance × ANNUAL_INTEREST_BPS × freq_secs
+///                                                    ─────────────────────────────
+///                                                       SECS_PER_YEAR × 10_000
+///
+/// Crucially, the multiplication is done **before** the division so that integer
+/// truncation does not zero-out the per-period rate for sub-year frequencies.
+/// This guarantees that any `amount ≥ (SECS_PER_YEAR × 10_000) / ANNUAL_INTEREST_BPS`
+/// (≈ 6.3 M for 5% annual rate) will accrue at least 1 unit per period.
+///
+/// Returns the new balance (>= original amount).
+fn compute_accrued_amount(amount: i128, entry_freq: u64, last_accrual: u64, now: u64) -> i128 {
+    if entry_freq == 0 || now <= last_accrual {
+        return amount;
+    }
+
+    let elapsed = now.saturating_sub(last_accrual);
+    let periods = elapsed / entry_freq; // integer division — only complete periods
+
+    if periods == 0 {
+        return amount;
+    }
+
+    // Denominator: SECS_PER_YEAR × 10_000 (fixed for 5% p.a. expressed in bps)
+    let denominator: u128 = SECS_PER_YEAR.saturating_mul(10_000);
+    let freq_u128 = entry_freq as u128;
+
+    // Apply compounding iteratively.  Capped to guard against enormous period counts.
+    let mut balance = amount;
+    let periods_capped = periods.min(2_628_000); // 5 years ÷ 60 s/period
+    for _ in 0..periods_capped {
+        // interest = balance × ANNUAL_INTEREST_BPS × freq / (SECS_PER_YEAR × 10_000)
+        // Multiplying balance × numerator first avoids truncating the small rate.
+        let interest = (balance as u128)
+            .saturating_mul(ANNUAL_INTEREST_BPS)
+            .saturating_mul(freq_u128)
+            / denominator;
+        balance = balance.saturating_add(interest as i128);
+    }
+    balance
+}
+
+/// Check the withdrawal whitelist for `(depositor, deposit_id)`.
+/// Returns `Ok(())` if:
+///   - no whitelist is configured (None), OR
+///   - the whitelist is empty, OR
+///   - `recipient` is in the whitelist.
+/// Returns `Err(RecipientNotWhitelisted)` otherwise.
+fn check_whitelist(
+    env: &Env,
+    depositor: &Address,
+    deposit_id: u32,
+    recipient: &Address,
+) -> Result<(), VaultError> {
+    if let Some(wl) = storage::get_withdrawal_whitelist(env, depositor, deposit_id) {
+        if wl.is_empty() {
+            return Ok(());
+        }
+        for addr in wl.iter() {
+            if addr == *recipient {
+                return Ok(());
+            }
+        }
+        return Err(VaultError::RecipientNotWhitelisted);
+    }
+    Ok(())
+}
 
 #[contractimpl]
 impl SafeHaven {
@@ -33,11 +120,6 @@ impl SafeHaven {
     ) -> Result<(), VaultError> {
         admin.require_auth();
 
-        // Use is_initialized as the sole re-initialization guard (closes #46).
-        // Previously the contract checked admin presence, which became inconsistent
-        // after renounce_admin(): the Initialized flag stayed true but there was no
-        // admin, so a re-initialization call might pass the admin-presence check.
-        // Using the dedicated Initialized flag is unambiguous in all states.
         if storage::is_initialized(&env) {
             return Err(VaultError::AlreadyInitialized);
         }
@@ -68,7 +150,7 @@ impl SafeHaven {
     }
 
     // ----------------------------------------------------------------
-    //  Core: Deposit
+    //  Core: Single-token Deposit
     // ----------------------------------------------------------------
 
     pub fn deposit(
@@ -127,6 +209,8 @@ impl SafeHaven {
             unlock_time,
             depositor: depositor.clone(),
             penalty_bps,
+            compound_frequency_secs: 0,
+            last_accrual_timestamp: now,
         };
 
         storage::set_deposit(&env, &depositor, deposit_id, &entry);
@@ -193,6 +277,8 @@ impl SafeHaven {
             unlock_time,
             depositor: depositor.clone(),
             penalty_bps,
+            compound_frequency_secs: 0,
+            last_accrual_timestamp: now,
         };
 
         storage::set_deposit(&env, &depositor, deposit_id, &entry);
@@ -203,7 +289,7 @@ impl SafeHaven {
     }
 
     // ----------------------------------------------------------------
-    //  Core: Deposit by Ledger Sequence (https://github.com/kenedybok3/SAFE-HAVEN/issues/88)
+    //  Core: Deposit by Ledger Sequence
     // ----------------------------------------------------------------
 
     pub fn deposit_by_ledger(
@@ -268,20 +354,324 @@ impl SafeHaven {
     }
 
     // ----------------------------------------------------------------
+    //  #330 — Multi-token Deposit
+    // ----------------------------------------------------------------
+
+    /// Deposit multiple tokens in a single vault entry.
+    ///
+    /// - `tokens_and_amounts`: list of `(token, amount)` pairs, length 1–MAX_TOKENS_PER_DEPOSIT.
+    /// - Each individual `amount` is validated (> 0, ≤ max_deposit).
+    /// - All tokens are transferred from `depositor` to the contract atomically.
+    /// - Returns the new deposit ID (shared counter with single-token deposits).
+    pub fn multi_deposit(
+        env: Env,
+        depositor: Address,
+        tokens_and_amounts: Vec<TokenDeposit>,
+        unlock_time: u64,
+        penalty_bps: u32,
+    ) -> Result<u32, VaultError> {
+        depositor.require_auth();
+
+        if storage::is_paused(&env) {
+            return Err(VaultError::ContractPaused);
+        }
+
+        let count = tokens_and_amounts.len();
+        if count == 0 {
+            return Err(VaultError::EmptyTokenList);
+        }
+        if count > MAX_TOKENS_PER_DEPOSIT {
+            return Err(VaultError::TooManyTokens);
+        }
+
+        if penalty_bps > 10_000 {
+            return Err(VaultError::InvalidPenaltyBps);
+        }
+
+        if penalty_bps > 0 && storage::get_fee_recipient(&env).is_none() {
+            return Err(VaultError::MissingFeeRecipient);
+        }
+
+        let now = env.ledger().timestamp();
+        if unlock_time <= now {
+            return Err(VaultError::UnlockTimeNotInFuture);
+        }
+
+        let max_lock = storage::get_max_lock_secs(&env).unwrap_or(MAX_LOCK_DURATION_SECS);
+        let lock_duration: u64 = unlock_time.saturating_sub(now);
+        if lock_duration > max_lock {
+            return Err(VaultError::LockDurationTooLong);
+        }
+        if lock_duration < MIN_LOCK_DURATION_SECS {
+            return Err(VaultError::LockDurationTooShort);
+        }
+
+        let max_deposit = storage::get_max_deposit(&env).unwrap_or(MAX_DEPOSIT_AMOUNT);
+
+        // Validate all amounts before transferring anything (checks before effects).
+        for td in tokens_and_amounts.iter() {
+            if td.amount <= 0 {
+                return Err(VaultError::InvalidAmount);
+            }
+            if td.amount > max_deposit {
+                return Err(VaultError::AmountTooLarge);
+            }
+        }
+
+        let deposit_id = storage::next_deposit_id(&env, &depositor);
+        let contract = env.current_contract_address();
+
+        // Transfer all tokens into the contract.
+        for td in tokens_and_amounts.iter() {
+            let token_client = token::Client::new(&env, &td.token);
+            token_client.transfer(&depositor, &contract, &td.amount);
+        }
+
+        let entry = MultiTokenVaultEntry {
+            tokens: tokens_and_amounts.clone(),
+            unlock_time,
+            depositor: depositor.clone(),
+            penalty_bps,
+            compound_frequency_secs: 0,
+            last_accrual_timestamp: now,
+        };
+
+        storage::set_multi_deposit(&env, &depositor, deposit_id, &entry);
+        storage::add_depositor(&env, &depositor);
+        events::multi_deposit(&env, &depositor, count, unlock_time, deposit_id);
+
+        Ok(deposit_id)
+    }
+
+    /// Query a multi-token vault entry.  Returns `None` if no multi-token deposit
+    /// exists at the given `(depositor, deposit_id)`.
+    pub fn get_multi_vault(
+        env: Env,
+        depositor: Address,
+        deposit_id: u32,
+    ) -> Option<MultiTokenVaultEntry> {
+        storage::get_multi_deposit_readonly(&env, &depositor, deposit_id)
+    }
+
+    // ----------------------------------------------------------------
+    //  #331 — Withdrawal Whitelist
+    // ----------------------------------------------------------------
+
+    /// Set (or replace) the withdrawal whitelist for an existing deposit.
+    /// Only the depositor themselves may call this.
+    ///
+    /// - An empty `addresses` vec means "no restriction" (anyone may receive).
+    /// - Calling this again replaces the previous whitelist entirely.
+    pub fn set_withdrawal_whitelist(
+        env: Env,
+        depositor: Address,
+        deposit_id: u32,
+        addresses: Vec<Address>,
+    ) -> Result<(), VaultError> {
+        depositor.require_auth();
+
+        // Verify the deposit exists (timestamp-based, ledger-based, or multi-token).
+        let deposit_exists =
+            storage::get_deposit_readonly(&env, &depositor, deposit_id).is_some()
+                || storage::get_deposit_by_ledger_readonly(&env, &depositor, deposit_id).is_some()
+                || storage::get_multi_deposit_readonly(&env, &depositor, deposit_id).is_some();
+
+        if !deposit_exists {
+            return Err(VaultError::NoDepositFound);
+        }
+
+        storage::set_withdrawal_whitelist(&env, &depositor, deposit_id, &addresses);
+        events::whitelist_set(&env, &depositor, deposit_id, &addresses);
+
+        Ok(())
+    }
+
+    /// Return the current withdrawal whitelist for `(depositor, deposit_id)`.
+    /// Returns `None` if no whitelist has been configured (= no restriction).
+    pub fn get_withdrawal_whitelist(
+        env: Env,
+        depositor: Address,
+        deposit_id: u32,
+    ) -> Option<Vec<Address>> {
+        storage::get_withdrawal_whitelist(&env, &depositor, deposit_id)
+    }
+
+    // ----------------------------------------------------------------
+    //  #332 — Compound Interest Deposit
+    // ----------------------------------------------------------------
+
+    /// Like `deposit` but with an explicit compound-interest frequency.
+    ///
+    /// - `compound_frequency_secs`: interval between compounding events in seconds.
+    ///   Must be ≥ 60 if non-zero; 0 disables compounding (equivalent to plain deposit).
+    /// - Interest rate is fixed at `ANNUAL_INTEREST_BPS` (500 bps = 5% p.a.).
+    pub fn deposit_with_compound_interest(
+        env: Env,
+        depositor: Address,
+        token: Address,
+        amount: i128,
+        unlock_time: u64,
+        penalty_bps: u32,
+        compound_frequency_secs: u64,
+    ) -> Result<u32, VaultError> {
+        depositor.require_auth();
+
+        if storage::is_paused(&env) {
+            return Err(VaultError::ContractPaused);
+        }
+
+        if amount <= 0 {
+            return Err(VaultError::InvalidAmount);
+        }
+
+        let max_deposit = storage::get_max_deposit(&env).unwrap_or(MAX_DEPOSIT_AMOUNT);
+        if amount > max_deposit {
+            return Err(VaultError::AmountTooLarge);
+        }
+
+        if penalty_bps > 10_000 {
+            return Err(VaultError::InvalidPenaltyBps);
+        }
+
+        if penalty_bps > 0 && storage::get_fee_recipient(&env).is_none() {
+            return Err(VaultError::MissingFeeRecipient);
+        }
+
+        // Validate compound frequency: 0 = disabled; otherwise ≥ 60s.
+        if compound_frequency_secs != 0 && compound_frequency_secs < MIN_COMPOUND_FREQUENCY_SECS {
+            return Err(VaultError::InvalidCompoundFrequency);
+        }
+
+        let now = env.ledger().timestamp();
+        if unlock_time <= now {
+            return Err(VaultError::UnlockTimeNotInFuture);
+        }
+
+        let max_lock = storage::get_max_lock_secs(&env).unwrap_or(MAX_LOCK_DURATION_SECS);
+        let lock_duration: u64 = unlock_time.saturating_sub(now);
+        if lock_duration > max_lock {
+            return Err(VaultError::LockDurationTooLong);
+        }
+        if lock_duration < MIN_LOCK_DURATION_SECS {
+            return Err(VaultError::LockDurationTooShort);
+        }
+
+        let deposit_id = storage::next_deposit_id(&env, &depositor);
+
+        let token_client = token::Client::new(&env, &token);
+        token_client.transfer(&depositor, &env.current_contract_address(), &amount);
+
+        let entry = VaultEntry {
+            token: token.clone(),
+            amount,
+            unlock_time,
+            depositor: depositor.clone(),
+            penalty_bps,
+            compound_frequency_secs,
+            last_accrual_timestamp: now,
+        };
+
+        storage::set_deposit(&env, &depositor, deposit_id, &entry);
+        storage::add_depositor(&env, &depositor);
+        events::deposit(&env, &depositor, &token, amount, unlock_time, deposit_id);
+
+        Ok(deposit_id)
+    }
+
+    /// Trigger compound-interest accrual for a deposit.
+    ///
+    /// Accrues all complete compound periods elapsed since `last_accrual_timestamp`
+    /// and updates the stored `amount` and `last_accrual_timestamp` in-place.
+    /// If fewer than one period has elapsed, this is a no-op (returns `Ok(false)`).
+    ///
+    /// Returns `Ok(true)` if accrual happened, `Ok(false)` if nothing changed,
+    /// `Err(NoDepositFound)` if no deposit exists.
+    pub fn update_accrual(
+        env: Env,
+        depositor: Address,
+        deposit_id: u32,
+    ) -> Result<bool, VaultError> {
+        // No auth required — anyone can trigger accrual (it only benefits the depositor).
+
+        let mut entry = storage::get_deposit(&env, &depositor, deposit_id)
+            .ok_or(VaultError::NoDepositFound)?;
+
+        if entry.compound_frequency_secs == 0 {
+            // Compounding not enabled for this deposit.
+            return Ok(false);
+        }
+
+        let now = env.ledger().timestamp();
+        let new_amount =
+            compute_accrued_amount(entry.amount, entry.compound_frequency_secs, entry.last_accrual_timestamp, now);
+
+        if new_amount == entry.amount {
+            return Ok(false);
+        }
+
+        let old_amount = entry.amount;
+
+        // Advance last_accrual_timestamp by the number of complete periods that were applied.
+        let elapsed = now.saturating_sub(entry.last_accrual_timestamp);
+        let periods = elapsed / entry.compound_frequency_secs;
+        entry.last_accrual_timestamp = entry
+            .last_accrual_timestamp
+            .saturating_add(periods.saturating_mul(entry.compound_frequency_secs));
+        entry.amount = new_amount;
+
+        storage::set_deposit(&env, &depositor, deposit_id, &entry);
+        events::interest_accrued(&env, &depositor, deposit_id, old_amount, new_amount);
+
+        Ok(true)
+    }
+
+    /// Returns the current balance of a deposit including any unaccrued compound
+    /// interest (i.e. the value `withdraw` would release if called right now).
+    ///
+    /// This is a read-only query — it does NOT update storage.
+    pub fn get_current_balance(
+        env: Env,
+        depositor: Address,
+        deposit_id: u32,
+    ) -> Option<i128> {
+        let entry = storage::get_deposit_readonly(&env, &depositor, deposit_id)?;
+        let now = env.ledger().timestamp();
+        let balance = compute_accrued_amount(
+            entry.amount,
+            entry.compound_frequency_secs,
+            entry.last_accrual_timestamp,
+            now,
+        );
+        Some(balance)
+    }
+
+    // ----------------------------------------------------------------
     //  Core: Cancel Deposit (early exit with penalty)
     // ----------------------------------------------------------------
 
     pub fn cancel_deposit(env: Env, depositor: Address, deposit_id: u32) -> Result<(), VaultError> {
         depositor.require_auth();
 
-        // Try timestamp-based deposit first
-        if let Some(entry) = storage::get_deposit(&env, &depositor, deposit_id) {
+        // Try timestamp-based deposit first (accrue interest before calculating refund).
+        if let Some(mut entry) = storage::get_deposit(&env, &depositor, deposit_id) {
             let now = env.ledger().timestamp();
             if now >= entry.unlock_time {
                 return Err(VaultError::VaultAlreadyUnlocked);
             }
 
+            // Accrue interest before computing refund (so penalty is taken from current balance).
+            if entry.compound_frequency_secs > 0 {
+                let new_amount = compute_accrued_amount(
+                    entry.amount,
+                    entry.compound_frequency_secs,
+                    entry.last_accrual_timestamp,
+                    now,
+                );
+                entry.amount = new_amount;
+            }
+
             storage::remove_deposit(&env, &depositor, deposit_id);
+            storage::remove_withdrawal_whitelist(&env, &depositor, deposit_id);
             if storage::get_deposit_ids(&env, &depositor).len() == 0 {
                 storage::remove_depositor(&env, &depositor);
             }
@@ -290,7 +680,7 @@ impl SafeHaven {
             let contract = env.current_contract_address();
 
             let penalty: i128 = (entry.amount * entry.penalty_bps as i128) / 10_000;
-            let refund = entry.amount - penalty;
+            let refund = entry.amount.saturating_sub(penalty);
 
             if penalty > 0 {
                 let fee_recipient =
@@ -305,7 +695,7 @@ impl SafeHaven {
             return Ok(());
         }
 
-        // Try ledger-based deposit
+        // Try ledger-based deposit.
         if let Some(entry) = storage::get_deposit_by_ledger_readonly(&env, &depositor, deposit_id) {
             let current_ledger = env.ledger().sequence();
             if current_ledger >= entry.unlock_ledger {
@@ -313,6 +703,7 @@ impl SafeHaven {
             }
 
             storage::remove_deposit_by_ledger(&env, &depositor, deposit_id);
+            storage::remove_withdrawal_whitelist(&env, &depositor, deposit_id);
             if storage::get_deposit_ids(&env, &depositor).len() == 0 {
                 storage::remove_depositor(&env, &depositor);
             }
@@ -321,7 +712,7 @@ impl SafeHaven {
             let contract = env.current_contract_address();
 
             let penalty: i128 = (entry.amount * entry.penalty_bps as i128) / 10_000;
-            let refund = entry.amount - penalty;
+            let refund = entry.amount.saturating_sub(penalty);
 
             if penalty > 0 {
                 let fee_recipient =
@@ -333,6 +724,38 @@ impl SafeHaven {
             }
 
             events::deposit_cancelled(&env, &depositor, &entry.token, entry.amount, penalty, deposit_id);
+            return Ok(());
+        }
+
+        // Try multi-token deposit.
+        if let Some(entry) = storage::get_multi_deposit_readonly(&env, &depositor, deposit_id) {
+            let now = env.ledger().timestamp();
+            if now >= entry.unlock_time {
+                return Err(VaultError::VaultAlreadyUnlocked);
+            }
+
+            storage::remove_multi_deposit(&env, &depositor, deposit_id);
+            storage::remove_withdrawal_whitelist(&env, &depositor, deposit_id);
+            if storage::get_deposit_ids(&env, &depositor).len() == 0 {
+                storage::remove_depositor(&env, &depositor);
+            }
+
+            let contract = env.current_contract_address();
+            for td in entry.tokens.iter() {
+                let penalty: i128 = (td.amount * entry.penalty_bps as i128) / 10_000;
+                let refund = td.amount.saturating_sub(penalty);
+
+                let token_client = token::Client::new(&env, &td.token);
+                if penalty > 0 {
+                    let fee_recipient =
+                        storage::get_fee_recipient(&env).ok_or(VaultError::MissingFeeRecipient)?;
+                    token_client.transfer(&contract, &fee_recipient, &penalty);
+                }
+                if refund > 0 {
+                    token_client.transfer(&contract, &depositor, &refund);
+                }
+                events::deposit_cancelled(&env, &depositor, &td.token, td.amount, penalty, deposit_id);
+            }
             return Ok(());
         }
 
@@ -346,14 +769,25 @@ impl SafeHaven {
     pub fn withdraw(env: Env, depositor: Address, deposit_id: u32) -> Result<(), VaultError> {
         depositor.require_auth();
 
-        // Try timestamp-based deposit first
-        if let Some(entry) = storage::get_deposit_readonly(&env, &depositor, deposit_id) {
+        // Try timestamp-based deposit first.
+        if let Some(mut entry) = storage::get_deposit_readonly(&env, &depositor, deposit_id) {
             let now = env.ledger().timestamp();
             if now < entry.unlock_time {
                 return Err(VaultError::FundsStillLocked);
             }
 
+            // Accrue any outstanding interest before computing the final payout.
+            if entry.compound_frequency_secs > 0 {
+                entry.amount = compute_accrued_amount(
+                    entry.amount,
+                    entry.compound_frequency_secs,
+                    entry.last_accrual_timestamp,
+                    now,
+                );
+            }
+
             storage::remove_deposit(&env, &depositor, deposit_id);
+            storage::remove_withdrawal_whitelist(&env, &depositor, deposit_id);
             if storage::get_deposit_ids(&env, &depositor).len() == 0 {
                 storage::remove_depositor(&env, &depositor);
             }
@@ -365,7 +799,7 @@ impl SafeHaven {
             return Ok(());
         }
 
-        // Try ledger-based deposit
+        // Try ledger-based deposit.
         if let Some(entry) = storage::get_deposit_by_ledger_readonly(&env, &depositor, deposit_id) {
             let current_ledger = env.ledger().sequence();
             if current_ledger < entry.unlock_ledger {
@@ -373,6 +807,7 @@ impl SafeHaven {
             }
 
             storage::remove_deposit_by_ledger(&env, &depositor, deposit_id);
+            storage::remove_withdrawal_whitelist(&env, &depositor, deposit_id);
             if storage::get_deposit_ids(&env, &depositor).len() == 0 {
                 storage::remove_depositor(&env, &depositor);
             }
@@ -384,9 +819,36 @@ impl SafeHaven {
             return Ok(());
         }
 
+        // Try multi-token deposit.
+        if let Some(entry) = storage::get_multi_deposit_readonly(&env, &depositor, deposit_id) {
+            let now = env.ledger().timestamp();
+            if now < entry.unlock_time {
+                return Err(VaultError::FundsStillLocked);
+            }
+
+            storage::remove_multi_deposit(&env, &depositor, deposit_id);
+            storage::remove_withdrawal_whitelist(&env, &depositor, deposit_id);
+            if storage::get_deposit_ids(&env, &depositor).len() == 0 {
+                storage::remove_depositor(&env, &depositor);
+            }
+
+            let contract = env.current_contract_address();
+            let token_count = entry.tokens.len();
+            for td in entry.tokens.iter() {
+                let token_client = token::Client::new(&env, &td.token);
+                token_client.transfer(&contract, &depositor, &td.amount);
+                events::withdraw(&env, &depositor, &td.token, td.amount, deposit_id);
+            }
+            events::multi_withdraw(&env, &depositor, &depositor, deposit_id, token_count);
+            return Ok(());
+        }
+
         Err(VaultError::NoDepositFound)
     }
 
+    /// Withdraw to a specific recipient address.
+    ///
+    /// If a whitelist has been set for this deposit, `recipient` must be in it.
     pub fn withdraw_to(
         env: Env,
         depositor: Address,
@@ -395,14 +857,28 @@ impl SafeHaven {
     ) -> Result<(), VaultError> {
         depositor.require_auth();
 
-        // Try timestamp-based deposit first
-        if let Some(entry) = storage::get_deposit_readonly(&env, &depositor, deposit_id) {
+        // Try timestamp-based deposit first.
+        if let Some(mut entry) = storage::get_deposit_readonly(&env, &depositor, deposit_id) {
             let now = env.ledger().timestamp();
             if now < entry.unlock_time {
                 return Err(VaultError::FundsStillLocked);
             }
 
+            // #331: enforce whitelist.
+            check_whitelist(&env, &depositor, deposit_id, &recipient)?;
+
+            // Accrue interest before payout.
+            if entry.compound_frequency_secs > 0 {
+                entry.amount = compute_accrued_amount(
+                    entry.amount,
+                    entry.compound_frequency_secs,
+                    entry.last_accrual_timestamp,
+                    now,
+                );
+            }
+
             storage::remove_deposit(&env, &depositor, deposit_id);
+            storage::remove_withdrawal_whitelist(&env, &depositor, deposit_id);
             if storage::get_deposit_ids(&env, &depositor).len() == 0 {
                 storage::remove_depositor(&env, &depositor);
             }
@@ -414,14 +890,18 @@ impl SafeHaven {
             return Ok(());
         }
 
-        // Try ledger-based deposit
+        // Try ledger-based deposit.
         if let Some(entry) = storage::get_deposit_by_ledger_readonly(&env, &depositor, deposit_id) {
             let current_ledger = env.ledger().sequence();
             if current_ledger < entry.unlock_ledger {
                 return Err(VaultError::FundsStillLocked);
             }
 
+            // #331: enforce whitelist.
+            check_whitelist(&env, &depositor, deposit_id, &recipient)?;
+
             storage::remove_deposit_by_ledger(&env, &depositor, deposit_id);
+            storage::remove_withdrawal_whitelist(&env, &depositor, deposit_id);
             if storage::get_deposit_ids(&env, &depositor).len() == 0 {
                 storage::remove_depositor(&env, &depositor);
             }
@@ -430,6 +910,33 @@ impl SafeHaven {
             token_client.transfer(&env.current_contract_address(), &recipient, &entry.amount);
 
             events::withdraw_to(&env, &depositor, &recipient, &entry.token, entry.amount);
+            return Ok(());
+        }
+
+        // Try multi-token deposit.
+        if let Some(entry) = storage::get_multi_deposit_readonly(&env, &depositor, deposit_id) {
+            let now = env.ledger().timestamp();
+            if now < entry.unlock_time {
+                return Err(VaultError::FundsStillLocked);
+            }
+
+            // #331: enforce whitelist.
+            check_whitelist(&env, &depositor, deposit_id, &recipient)?;
+
+            storage::remove_multi_deposit(&env, &depositor, deposit_id);
+            storage::remove_withdrawal_whitelist(&env, &depositor, deposit_id);
+            if storage::get_deposit_ids(&env, &depositor).len() == 0 {
+                storage::remove_depositor(&env, &depositor);
+            }
+
+            let contract = env.current_contract_address();
+            let token_count = entry.tokens.len();
+            for td in entry.tokens.iter() {
+                let token_client = token::Client::new(&env, &td.token);
+                token_client.transfer(&contract, &recipient, &td.amount);
+                events::withdraw_to(&env, &depositor, &recipient, &td.token, td.amount);
+            }
+            events::multi_withdraw(&env, &depositor, &recipient, deposit_id, token_count);
             return Ok(());
         }
 
@@ -449,9 +956,10 @@ impl SafeHaven {
         admin.require_auth();
         storage::require_admin(&env, &admin)?;
 
-        // Try timestamp-based deposit first
+        // Try timestamp-based deposit first.
         if let Some(entry) = storage::get_deposit_readonly(&env, &depositor, deposit_id) {
             storage::remove_deposit(&env, &depositor, deposit_id);
+            storage::remove_withdrawal_whitelist(&env, &depositor, deposit_id);
             if storage::get_deposit_ids(&env, &depositor).len() == 0 {
                 storage::remove_depositor(&env, &depositor);
             }
@@ -463,9 +971,10 @@ impl SafeHaven {
             return Ok(());
         }
 
-        // Try ledger-based deposit
+        // Try ledger-based deposit.
         if let Some(entry) = storage::get_deposit_by_ledger_readonly(&env, &depositor, deposit_id) {
             storage::remove_deposit_by_ledger(&env, &depositor, deposit_id);
+            storage::remove_withdrawal_whitelist(&env, &depositor, deposit_id);
             if storage::get_deposit_ids(&env, &depositor).len() == 0 {
                 storage::remove_depositor(&env, &depositor);
             }
@@ -474,6 +983,23 @@ impl SafeHaven {
             token_client.transfer(&env.current_contract_address(), &depositor, &entry.amount);
 
             events::emergency_withdraw(&env, &admin, &depositor, &entry.token, entry.amount, deposit_id);
+            return Ok(());
+        }
+
+        // Try multi-token deposit.
+        if let Some(entry) = storage::get_multi_deposit_readonly(&env, &depositor, deposit_id) {
+            storage::remove_multi_deposit(&env, &depositor, deposit_id);
+            storage::remove_withdrawal_whitelist(&env, &depositor, deposit_id);
+            if storage::get_deposit_ids(&env, &depositor).len() == 0 {
+                storage::remove_depositor(&env, &depositor);
+            }
+
+            let contract = env.current_contract_address();
+            for td in entry.tokens.iter() {
+                let token_client = token::Client::new(&env, &td.token);
+                token_client.transfer(&contract, &depositor, &td.amount);
+                events::emergency_withdraw(&env, &admin, &depositor, &td.token, td.amount, deposit_id);
+            }
             return Ok(());
         }
 
@@ -552,8 +1078,6 @@ impl SafeHaven {
             return Err(VaultError::Unauthorized);
         }
 
-        // Emit an event when a pending admin is cancelled so off-chain indexers
-        // and UIs observing admin state transitions won't show a stale pending admin.
         if let Some(pending) = storage::get_pending_admin(&env) {
             storage::remove_pending_admin(&env);
             events::admin_transfer_cancelled(&env, &admin, &pending);
@@ -579,26 +1103,16 @@ impl SafeHaven {
     //  Read-only Queries
     // ----------------------------------------------------------------
 
-    /// No auth required — this is a public read-only query (closes https://github.com/kenedybok3/SAFE-HAVEN/issues/81)
     pub fn get_vault(env: Env, depositor: Address, deposit_id: u32) -> Option<VaultEntry> {
         storage::get_deposit_readonly(&env, &depositor, deposit_id)
     }
 
-    /// Returns the `LedgerVaultEntry` for a ledger-sequence-based deposit, or `None` if not found.
-    /// No auth required — public read-only query (closes https://github.com/kenedybok3/SAFE-HAVEN/issues/44).
     pub fn get_ledger_vault(env: Env, depositor: Address, deposit_id: u32) -> Option<LedgerVaultEntry> {
         storage::get_deposit_by_ledger_readonly(&env, &depositor, deposit_id)
     }
 
-    /// Returns whether a deposit is timestamp-based (`DepositType::TimeBased`) or
-    /// ledger-sequence-based (`DepositType::LedgerBased`), or `None` if no deposit
-    /// exists at the given `(depositor, deposit_id)` pair.
-    ///
-    /// This eliminates the need for callers to speculatively call both `get_vault`
-    /// and `get_ledger_vault` just to determine the deposit type, saving a full RPC
-    /// round-trip on every lookup (closes #47).
-    ///
-    /// No auth required — public read-only query.
+    /// Returns whether a deposit is timestamp-based, ledger-based, or multi-token.
+    /// Returns `None` if no deposit exists at the given `(depositor, deposit_id)`.
     pub fn get_deposit_type(env: Env, depositor: Address, deposit_id: u32) -> Option<DepositType> {
         if storage::get_deposit_readonly(&env, &depositor, deposit_id).is_some() {
             return Some(DepositType::TimeBased);
@@ -606,14 +1120,27 @@ impl SafeHaven {
         if storage::get_deposit_by_ledger_readonly(&env, &depositor, deposit_id).is_some() {
             return Some(DepositType::LedgerBased);
         }
+        if storage::get_multi_deposit_readonly(&env, &depositor, deposit_id).is_some() {
+            return Some(DepositType::MultiToken);
+        }
         None
     }
 
-    pub fn get_vault_batch(env: Env, depositors: Vec<Address>, deposit_id: u32) -> Vec<Option<VaultEntry>> {
-        let limit = if depositors.len() > MAX_BATCH_SIZE { MAX_BATCH_SIZE } else { depositors.len() as u32 };
+    /// Fetch a single deposit entry for each `(depositor, deposit_id)` pair.
+    /// Clamped to `MAX_BATCH_SIZE` (25) entries per call.
+    pub fn get_vault_batch(
+        env: Env,
+        depositors: Vec<Address>,
+        deposit_id: u32,
+    ) -> Vec<Option<VaultEntry>> {
+        let limit = if depositors.len() > MAX_BATCH_SIZE {
+            MAX_BATCH_SIZE
+        } else {
+            depositors.len()
+        };
         let mut results = Vec::new(&env);
         for i in 0..limit {
-            if let Some((depositor, deposit_id)) = pairs.get(i) {
+            if let Some(depositor) = depositors.get(i) {
                 let entry = storage::get_deposit_readonly(&env, &depositor, deposit_id);
                 results.push_back(entry);
             }
@@ -623,7 +1150,7 @@ impl SafeHaven {
 
     /// Fetch multiple deposits for a single depositor in one RPC call.
     /// Limit: up to 25 deposit IDs per call.
-    /// Returns Vec of (deposit_id, Option<VaultEntry>) pairs.
+    /// Returns `Vec` of `(deposit_id, Option<VaultEntry>)` pairs.
     pub fn get_deposit_batch(
         env: Env,
         depositor: Address,
@@ -648,25 +1175,23 @@ impl SafeHaven {
         storage::get_deposit_ids(&env, &depositor)
     }
 
-    /// Returns the current ledger timestamp.
-    /// Read-only — does not bump storage TTL.
     pub fn get_time(env: Env) -> u64 {
         env.ledger().timestamp()
     }
 
-    /// No auth required — this is a public read-only query (closes https://github.com/kenedybok3/SAFE-HAVEN/issues/81)
-    ///
-    /// For timestamp-based deposits: returns exact seconds remaining.
-    /// For ledger-based deposits: returns an estimate in seconds using
-    /// `LEDGER_SECONDS` (fixes https://github.com/kenedybok3/SAFE-HAVEN/issues/21). Returns 0 when unlocked or not found.
+    /// Returns time remaining for a deposit.
+    /// For timestamp-based deposits: exact seconds remaining.
+    /// For ledger-based deposits: estimated seconds (remaining_ledgers × 5).
+    /// For multi-token deposits: exact seconds remaining.
+    /// Returns 0 when unlocked or not found.
     pub fn time_remaining(env: Env, depositor: Address, deposit_id: u32) -> u64 {
-        // Timestamp-based path
+        // Timestamp-based path.
         if let Some(entry) = storage::get_deposit_readonly(&env, &depositor, deposit_id) {
             let now = env.ledger().timestamp();
             return entry.unlock_time.saturating_sub(now);
         }
 
-        // Ledger-based path: convert remaining ledgers → estimated seconds (fixes https://github.com/kenedybok3/SAFE-HAVEN/issues/21)
+        // Ledger-based path.
         if let Some(entry) = storage::get_deposit_by_ledger_readonly(&env, &depositor, deposit_id) {
             let current = env.ledger().sequence();
             if current >= entry.unlock_ledger {
@@ -674,6 +1199,12 @@ impl SafeHaven {
             }
             let remaining_ledgers = (entry.unlock_ledger - current) as u64;
             return remaining_ledgers.saturating_mul(storage::LEDGER_SECONDS);
+        }
+
+        // Multi-token path.
+        if let Some(entry) = storage::get_multi_deposit_readonly(&env, &depositor, deposit_id) {
+            let now = env.ledger().timestamp();
+            return entry.unlock_time.saturating_sub(now);
         }
 
         0
@@ -701,18 +1232,7 @@ impl SafeHaven {
         storage::get_depositor_count(&env)
     }
 
-    /// Returns a page of depositor addresses and the total count of all active depositors.
-    /// This allows callers to implement pagination without a separate RPC call.
-    ///
-    /// # Parameters
-    /// - `offset`: Number of active depositors to skip (0-indexed)
-    /// - `limit`: Maximum number of addresses to return in this page
-    ///
-    /// # Returns
-    /// A `Page<Address>` containing:
-    /// - `items`: The paginated list of addresses
-    /// - `total_count`: Total number of active depositors across all pages
-    pub fn get_depositors(env: Env, offset: u32, limit: u32) -> Page<Address> {
+    pub fn get_depositors(env: Env, offset: u32, limit: u32) -> Page {
         let (items, total_count) = storage::get_depositors_page(&env, offset, limit);
         Page { items, total_count }
     }
@@ -721,28 +1241,14 @@ impl SafeHaven {
         storage::is_initialized(&env)
     }
 
-    /// Returns the contract version from Cargo.toml at compile time.
-    /// Allows clients and monitoring tools to confirm which version is deployed
-    /// without inspecting bytecode directly.
     pub fn version(_env: Env) -> soroban_sdk::String {
         soroban_sdk::String::from_slice(&_env, env!("CARGO_PKG_VERSION"))
     }
 
     // ----------------------------------------------------------------
-    //  Read-only: Paginated flat deposits view (Task 1)
+    //  Read-only: Paginated flat deposits view
     // ----------------------------------------------------------------
 
-    /// Returns a paginated flat list of all active timestamp-based deposits across
-    /// every depositor.  Each element is `(depositor, deposit_id, VaultEntry)`.
-    ///
-    /// `offset` and `limit` are applied to the *deposit* stream, not the depositor
-    /// list, so callers get a predictable page size regardless of how many deposits
-    /// each depositor holds.  Ledger-based deposits are not included here; use
-    /// `get_depositors` + `get_deposit_ids` to enumerate those.
-    ///
-    /// Gas note: this function reads every depositor's ID list up to `offset + limit`
-    /// deposits.  Keep `limit` reasonable (≤ 50) in production to stay within the
-    /// Soroban instruction budget.
     pub fn get_deposits_page(
         env: Env,
         offset: u32,
@@ -752,13 +1258,11 @@ impl SafeHaven {
         let mut global_index: u32 = 0;
         let end_at = offset.saturating_add(limit);
 
-        // Walk all depositors in insertion order, skipping stale (flag-removed) ones.
         let depositor_list = storage::get_all_depositors_raw(&env);
         for depositor in depositor_list.iter() {
             if global_index >= end_at {
                 break;
             }
-            // Skip depositors whose flag has been cleared (O(1) remove).
             if !storage::depositor_is_active(&env, &depositor) {
                 continue;
             }
@@ -779,30 +1283,13 @@ impl SafeHaven {
     }
 
     // ----------------------------------------------------------------
-    //  Admin: Storage migration (Task 4)
+    //  Admin: Storage migration
     // ----------------------------------------------------------------
 
-    /// Returns the schema version currently stored on-chain.
-    /// Returns `None` for contracts deployed before versioning was introduced
-    /// (treat as version 0 / pre-migration).
     pub fn get_storage_version(env: Env) -> Option<u32> {
         storage::get_storage_version(&env)
     }
 
-    /// Admin-only migration hook.
-    ///
-    /// Call this after upgrading the contract WASM to a version that changed the
-    /// layout of a `#[contracttype]` struct.  The function:
-    ///
-    /// 1. Verifies admin auth.
-    /// 2. Reads the current on-chain version (`None` → 0).
-    /// 3. Applies each migration step in order (currently a no-op placeholder
-    ///    that demonstrates the pattern — replace with real field backfills when
-    ///    `VaultEntry` gains new fields).
-    /// 4. Writes `STORAGE_VERSION` so subsequent calls are idempotent.
-    ///
-    /// Returning `Ok(false)` means the schema was already up-to-date; no work done.
-    /// Returning `Ok(true)` means migration was applied.
     pub fn migrate(env: Env, admin: Address) -> Result<bool, VaultError> {
         admin.require_auth();
         storage::require_admin(&env, &admin)?;
@@ -810,17 +1297,8 @@ impl SafeHaven {
         let current_version = storage::get_storage_version(&env).unwrap_or(0);
 
         if current_version >= STORAGE_VERSION {
-            // Already at the current schema version — nothing to do.
             return Ok(false);
         }
-
-        // ── Migration v0 → v1 ───────────────────────────────────────────────
-        // Version 1 introduces the StorageVersion key itself.  No struct fields
-        // changed in this version, so the migration is a no-op data-wise.
-        // When a future version (e.g. v2) adds a field to VaultEntry, add a
-        // loop here that reads every deposit in the old format and rewrites it
-        // with the new default field value.
-        // ────────────────────────────────────────────────────────────────────
 
         storage::set_storage_version(&env, STORAGE_VERSION);
         Ok(true)

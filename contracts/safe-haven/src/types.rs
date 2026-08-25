@@ -1,8 +1,11 @@
-use soroban_sdk::{contracttype, Address};
+use soroban_sdk::{contracttype, Address, Vec};
 
 pub const MAX_DEPOSIT_AMOUNT: i128 = 1_000_000_000_000_000;
 pub const MAX_LOCK_DURATION_SECS: u64 = 157_788_000;
 pub const MIN_LOCK_DURATION_SECS: u64 = 60;
+
+/// Maximum number of tokens allowed in a single multi-token deposit (issue #330).
+pub const MAX_TOKENS_PER_DEPOSIT: u32 = 5;
 
 /// Current storage schema version. Bump this constant when the on-chain
 /// layout of a `contracttype` struct changes so `migrate()` can detect
@@ -14,6 +17,10 @@ pub const STORAGE_VERSION: u32 = 1;
 pub enum VaultKey {
     Deposit(Address, u32),
     DepositByLedger(Address, u32),
+    /// Multi-token deposit entry (issue #330).
+    MultiDeposit(Address, u32),
+    /// Withdrawal whitelist for a deposit (issue #331).
+    WithdrawalWhitelist(Address, u32),
     DepositCounter(Address),
     /// Stores a `Vec<u32>` of active deposit IDs for a depositor (both timestamp- and
     /// ledger-based). Maintained alongside the counter so `get_deposit_ids` is O(1).
@@ -45,6 +52,10 @@ pub struct VaultEntry {
     pub unlock_time: u64,
     pub depositor: Address,
     pub penalty_bps: u32,
+    /// Compound interest accrual frequency in seconds (0 = no compounding). (issue #332)
+    pub compound_frequency_secs: u64,
+    /// Timestamp of last compound accrual (issue #332).
+    pub last_accrual_timestamp: u64,
 }
 
 #[contracttype]
@@ -57,12 +68,48 @@ pub struct LedgerVaultEntry {
     pub penalty_bps: u32,
 }
 
-/// Paginated query result containing a page of items and the total count.
+/// A single token+amount pair used in multi-token deposits (issue #330).
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Page<T> {
+pub struct TokenDeposit {
+    pub token: Address,
+    pub amount: i128,
+}
+
+/// Vault entry that holds multiple token deposits (issue #330).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MultiTokenVaultEntry {
+    /// Each element is a (token, amount) pair. Length ≤ MAX_TOKENS_PER_DEPOSIT.
+    pub tokens: Vec<TokenDeposit>,
+    pub unlock_time: u64,
+    pub depositor: Address,
+    pub penalty_bps: u32,
+    /// Compound interest accrual frequency in seconds (0 = no compounding). (issue #332)
+    pub compound_frequency_secs: u64,
+    /// Timestamp of last compound accrual (issue #332).
+    pub last_accrual_timestamp: u64,
+}
+
+/// The deposit type discriminant returned by `get_deposit_type`.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DepositType {
+    /// Timestamp-based (`VaultEntry`) single-token deposit.
+    TimeBased,
+    /// Ledger-sequence-based (`LedgerVaultEntry`) deposit.
+    LedgerBased,
+    /// Multi-token timestamp-based deposit (`MultiTokenVaultEntry`). (issue #330)
+    MultiToken,
+}
+
+/// Paginated query result for depositor addresses.
+/// (Soroban `#[contracttype]` does not support generics.)
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Page {
     /// The items in this page
-    pub items: soroban_sdk::Vec<T>,
+    pub items: soroban_sdk::Vec<Address>,
     /// Total number of active items across all pages
     pub total_count: u32,
 }
