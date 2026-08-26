@@ -12,7 +12,7 @@ use crate::{
     },
     errors::VaultError,
     events, storage,
-    types::{VaultEntry, LedgerVaultEntry, Page, STORAGE_VERSION},
+    types::{DepositType, VaultEntry, LedgerVaultEntry, Page, STORAGE_VERSION},
 };
 
 #[contract]
@@ -686,7 +686,7 @@ impl SafeHaven {
         let limit = if depositors.len() > MAX_BATCH_SIZE { MAX_BATCH_SIZE } else { depositors.len() as u32 };
         let mut results = Vec::new(&env);
         for i in 0..limit {
-            if let Some((depositor, deposit_id)) = pairs.get(i) {
+            if let Some(depositor) = depositors.get(i) {
                 let entry = storage::get_deposit_readonly(&env, &depositor, deposit_id);
                 results.push_back(entry);
             }
