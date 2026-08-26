@@ -35,6 +35,12 @@ pub enum VaultKey {
     /// Persists the schema version written by the last `migrate()` call (or 1
     /// for contracts that were initialized before versioning was introduced).
     StorageVersion,
+    /// Current contract version (semantic versioning string)
+    ContractVersion,
+    /// Tracks the pending upgrade proposal
+    PendingUpgrade,
+    /// Tracks the previous contract version for rollback support
+    PreviousContractVersion,
 }
 
 #[contracttype]
@@ -65,4 +71,28 @@ pub struct Page<T> {
     pub items: soroban_sdk::Vec<T>,
     /// Total number of active items across all pages
     pub total_count: u32,
+}
+
+/// Represents the status of an upgrade proposal
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum UpgradeStatus {
+    None = 0,
+    Proposed = 1,
+    Executed = 2,
+    RolledBack = 3,
+}
+
+/// Information about a pending upgrade
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UpgradeEntry {
+    /// Address of the new contract code
+    pub new_contract_id: Address,
+    /// Timestamp when the upgrade can be executed
+    pub execute_after: u64,
+    /// Status of the upgrade
+    pub status: UpgradeStatus,
+    /// Optional migration step count for tracking
+    pub migration_step_count: u32,
 }

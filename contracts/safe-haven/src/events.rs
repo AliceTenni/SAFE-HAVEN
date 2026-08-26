@@ -108,3 +108,41 @@ pub fn withdraw_to(
     let topics = (Symbol::new(env, "withdraw_to"), depositor.clone(), token.clone());
     env.events().publish(topics, (recipient.clone(), amount));
 }
+
+pub fn upgrade_proposed(
+    env: &Env,
+    admin: &Address,
+    new_contract_id: &Address,
+    execute_after: u64,
+) {
+    let topics = (Symbol::new(env, "upgrade_prop"), admin.clone());
+    env.events()
+        .publish(topics, (new_contract_id.clone(), execute_after));
+}
+
+pub fn upgrade_executed(
+    env: &Env,
+    admin: &Address,
+    new_contract_id: &Address,
+    old_version: &soroban_sdk::String,
+    new_version: &soroban_sdk::String,
+) {
+    let topics = (Symbol::new(env, "upgrade_exec"), admin.clone());
+    env.events().publish(
+        topics,
+        (new_contract_id.clone(), old_version.clone(), new_version.clone()),
+    );
+}
+
+pub fn upgrade_rolled_back(
+    env: &Env,
+    admin: &Address,
+    rolled_back_version: &soroban_sdk::String,
+    restored_version: &soroban_sdk::String,
+) {
+    let topics = (Symbol::new(env, "upgrade_rollback"), admin.clone());
+    env.events().publish(
+        topics,
+        (rolled_back_version.clone(), restored_version.clone()),
+    );
+}

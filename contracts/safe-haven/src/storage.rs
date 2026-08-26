@@ -451,3 +451,65 @@ pub fn get_storage_version(env: &Env) -> Option<u32> {
         .persistent()
         .get(&VaultKey::StorageVersion)
 }
+
+// ----------------------------------------------------------------
+//  Upgrade helpers
+// ----------------------------------------------------------------
+
+/// Sets the current contract version string
+pub fn set_contract_version(env: &Env, version: &str) {
+    env.storage()
+        .persistent()
+        .set(&VaultKey::ContractVersion, version);
+    env.storage()
+        .persistent()
+        .extend_ttl(&VaultKey::ContractVersion, BUMP_THRESHOLD, BUMP_TARGET);
+}
+
+/// Retrieves the current contract version string
+pub fn get_contract_version(env: &Env) -> Option<String> {
+    env.storage()
+        .persistent()
+        .get(&VaultKey::ContractVersion)
+}
+
+/// Stores the previous contract version for rollback support
+pub fn set_previous_contract_version(env: &Env, version: &str) {
+    env.storage()
+        .persistent()
+        .set(&VaultKey::PreviousContractVersion, version);
+    env.storage()
+        .persistent()
+        .extend_ttl(&VaultKey::PreviousContractVersion, BUMP_THRESHOLD, BUMP_TARGET);
+}
+
+/// Retrieves the previous contract version for rollback support
+pub fn get_previous_contract_version(env: &Env) -> Option<String> {
+    env.storage()
+        .persistent()
+        .get(&VaultKey::PreviousContractVersion)
+}
+
+/// Sets a pending upgrade proposal
+pub fn set_upgrade(env: &Env, upgrade: &crate::types::UpgradeEntry) {
+    env.storage()
+        .persistent()
+        .set(&VaultKey::PendingUpgrade, upgrade);
+    env.storage()
+        .persistent()
+        .extend_ttl(&VaultKey::PendingUpgrade, BUMP_THRESHOLD, BUMP_TARGET);
+}
+
+/// Retrieves the current pending upgrade proposal
+pub fn get_upgrade(env: &Env) -> Option<crate::types::UpgradeEntry> {
+    env.storage()
+        .persistent()
+        .get(&VaultKey::PendingUpgrade)
+}
+
+/// Removes the pending upgrade proposal from storage
+pub fn remove_upgrade(env: &Env) {
+    env.storage()
+        .persistent()
+        .remove(&VaultKey::PendingUpgrade);
+}

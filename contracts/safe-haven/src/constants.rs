@@ -23,3 +23,7 @@ pub const MIN_LOCK_LEDGERS: u32 = (MIN_LOCK_DURATION_SECS / LEDGER_SECONDS) as u
 /// and one event publish — roughly 1–2M instructions each.
 /// 25 leaves comfortable headroom for the common migration use-case.
 pub const MAX_BATCH_SIZE: u32 = 25;
+
+/// Upgrade timelock period: 7 days in seconds (604,800 seconds).
+/// Provides a safety review window before an upgrade is executed.
+pub const UPGRADE_TIMELOCK_SECS: u64 = 7 * 24 * 60 * 60; // 604,800 seconds

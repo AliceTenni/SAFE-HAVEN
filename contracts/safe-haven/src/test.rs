@@ -2488,3 +2488,216 @@ fn test_version_returns_cargo_pkg_version() {
     let parts: Vec<&str> = version_str.split('.').collect();
     assert_eq!(parts.len(), 3, "Version should be in semantic format (major.minor.patch)");
 }
+
+// ================================================================
+//  Upgrade mechanism with timelock and rollback (Task 5-8)
+// ================================================================
+
+#[test]
+fn test_propose_upgrade_success() {
+    let (env, vault, _token, admin, _alice, _fee) = setup();
+    
+    let new_contract = Address::generate(&env);
+    let migration_step_count = 0u32;
+    
+    vault.propose_upgrade(&admin, &new_contract, &migration_step_count);
+    
+    let status = vault.get_upgrade_status();
+    assert!(status.is_some(), "upgrade status should be set after proposal");
+    let (contract_id, execute_after, status_code) = status.unwrap();
+    assert_eq!(contract_id, new_contract);
+    assert_eq!(status_code, 1); // Proposed = 1
+    
+    let now = env.ledger().timestamp();
+    let timelock = crate::constants::UPGRADE_TIMELOCK_SECS;
+    assert_eq!(execute_after, now + timelock);
+}
+
+#[test]
+fn test_propose_upgrade_non_admin_fails() {
+    let (env, vault, _token, _admin, alice, _fee) = setup();
+    
+    let new_contract = Address::generate(&env);
+    let migration_step_count = 0u32;
+    
+    let result = vault.try_propose_upgrade(&alice, &new_contract, &migration_step_count);
+    assert_eq!(result, Err(Ok(VaultError::Unauthorized)));
+}
+
+#[test]
+fn test_propose_upgrade_while_one_in_progress_fails() {
+    let (env, vault, _token, admin, _alice, _fee) = setup();
+    
+    let new_contract_1 = Address::generate(&env);
+    let new_contract_2 = Address::generate(&env);
+    let migration_step_count = 0u32;
+    
+    // Propose first upgrade
+    vault.propose_upgrade(&admin, &new_contract_1, &migration_step_count);
+    
+    // Try to propose a second upgrade while first is still in progress
+    let result = vault.try_propose_upgrade(&admin, &new_contract_2, &migration_step_count);
+    assert_eq!(result, Err(Ok(VaultError::UpgradeInProgress)));
+}
+
+#[test]
+fn test_execute_upgrade_before_timelock_fails() {
+    let (env, vault, _token, admin, _alice, _fee) = setup();
+    
+    let new_contract = Address::generate(&env);
+    let migration_step_count = 0u32;
+    
+    vault.propose_upgrade(&admin, &new_contract, &migration_step_count);
+    
+    // Try to execute before timelock expires
+    let result = vault.try_execute_upgrade(&admin);
+    assert_eq!(result, Err(Ok(VaultError::UpgradeTimeoutNotElapsed)));
+}
+
+#[test]
+fn test_execute_upgrade_after_timelock_succeeds() {
+    let (env, vault, _token, admin, _alice, _fee) = setup();
+    
+    let new_contract = Address::generate(&env);
+    let migration_step_count = 0u32;
+    
+    vault.propose_upgrade(&admin, &new_contract, &migration_step_count);
+    
+    // Advance time past the timelock period
+    let timelock = crate::constants::UPGRADE_TIMELOCK_SECS;
+    advance_time(&env, timelock + 1);
+    
+    // Execute upgrade should succeed
+    vault.execute_upgrade(&admin);
+    
+    let status = vault.get_upgrade_status();
+    assert!(status.is_some());
+    let (_contract_id, _execute_after, status_code) = status.unwrap();
+    assert_eq!(status_code, 2); // Executed = 2
+}
+
+#[test]
+fn test_execute_upgrade_non_admin_fails() {
+    let (env, vault, _token, admin, alice, _fee) = setup();
+    
+    let new_contract = Address::generate(&env);
+    let migration_step_count = 0u32;
+    
+    vault.propose_upgrade(&admin, &new_contract, &migration_step_count);
+    
+    let timelock = crate::constants::UPGRADE_TIMELOCK_SECS;
+    advance_time(&env, timelock + 1);
+    
+    // Try to execute as non-admin
+    let result = vault.try_execute_upgrade(&alice);
+    assert_eq!(result, Err(Ok(VaultError::Unauthorized)));
+}
+
+#[test]
+fn test_execute_upgrade_no_proposal_fails() {
+    let (_env, vault, _token, admin, _alice, _fee) = setup();
+    
+    // Try to execute when no proposal exists
+    let result = vault.try_execute_upgrade(&admin);
+    assert_eq!(result, Err(Ok(VaultError::UpgradeNotFound)));
+}
+
+#[test]
+fn test_rollback_upgrade_after_execution_succeeds() {
+    let (env, vault, _token, admin, _alice, _fee) = setup();
+    
+    let new_contract = Address::generate(&env);
+    let migration_step_count = 0u32;
+    
+    vault.propose_upgrade(&admin, &new_contract, &migration_step_count);
+    
+    let timelock = crate::constants::UPGRADE_TIMELOCK_SECS;
+    advance_time(&env, timelock + 1);
+    
+    vault.execute_upgrade(&admin);
+    
+    // Now rollback should succeed
+    vault.rollback_upgrade(&admin);
+    
+    let status = vault.get_upgrade_status();
+    assert!(status.is_some());
+    let (_contract_id, _execute_after, status_code) = status.unwrap();
+    assert_eq!(status_code, 3); // RolledBack = 3
+}
+
+#[test]
+fn test_rollback_upgrade_non_admin_fails() {
+    let (env, vault, _token, admin, alice, _fee) = setup();
+    
+    let new_contract = Address::generate(&env);
+    let migration_step_count = 0u32;
+    
+    vault.propose_upgrade(&admin, &new_contract, &migration_step_count);
+    
+    let timelock = crate::constants::UPGRADE_TIMELOCK_SECS;
+    advance_time(&env, timelock + 1);
+    
+    vault.execute_upgrade(&admin);
+    
+    // Try to rollback as non-admin
+    let result = vault.try_rollback_upgrade(&alice);
+    assert_eq!(result, Err(Ok(VaultError::Unauthorized)));
+}
+
+#[test]
+fn test_rollback_upgrade_before_execution_fails() {
+    let (env, vault, _token, admin, _alice, _fee) = setup();
+    
+    let new_contract = Address::generate(&env);
+    let migration_step_count = 0u32;
+    
+    vault.propose_upgrade(&admin, &new_contract, &migration_step_count);
+    
+    // Try to rollback while still in Proposed state
+    let result = vault.try_rollback_upgrade(&admin);
+    assert_eq!(result, Err(Ok(VaultError::UpgradeFailed)));
+}
+
+#[test]
+fn test_rollback_upgrade_no_proposal_fails() {
+    let (_env, vault, _token, admin, _alice, _fee) = setup();
+    
+    // Try to rollback when no proposal exists
+    let result = vault.try_rollback_upgrade(&admin);
+    assert_eq!(result, Err(Ok(VaultError::UpgradeNotFound)));
+}
+
+#[test]
+fn test_propose_upgrade_after_rollback_succeeds() {
+    let (env, vault, _token, admin, _alice, _fee) = setup();
+    
+    let new_contract_1 = Address::generate(&env);
+    let new_contract_2 = Address::generate(&env);
+    let migration_step_count = 0u32;
+    
+    // First upgrade cycle
+    vault.propose_upgrade(&admin, &new_contract_1, &migration_step_count);
+    
+    let timelock = crate::constants::UPGRADE_TIMELOCK_SECS;
+    advance_time(&env, timelock + 1);
+    
+    vault.execute_upgrade(&admin);
+    vault.rollback_upgrade(&admin);
+    
+    // Now propose a new upgrade - should succeed because previous is RolledBack
+    vault.propose_upgrade(&admin, &new_contract_2, &migration_step_count);
+    
+    let status = vault.get_upgrade_status();
+    assert!(status.is_some());
+    let (contract_id, _, status_code) = status.unwrap();
+    assert_eq!(contract_id, new_contract_2);
+    assert_eq!(status_code, 1); // Proposed = 1
+}
+
+#[test]
+fn test_get_upgrade_status_no_proposal_returns_none() {
+    let (_env, vault, _token, _admin, _alice, _fee) = setup();
+    
+    let status = vault.get_upgrade_status();
+    assert_eq!(status, None);
+}

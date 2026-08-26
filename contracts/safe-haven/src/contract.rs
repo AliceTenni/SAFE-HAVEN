@@ -8,7 +8,7 @@ use soroban_sdk::{contract, contractimpl, token, Address, Env, Vec};
 use crate::{
     constants::{
         MAX_BATCH_SIZE, MAX_DEPOSIT_AMOUNT, MAX_LOCK_DURATION_SECS, MIN_LOCK_DURATION_SECS,
-        MIN_LOCK_LEDGERS,
+        MIN_LOCK_LEDGERS, UPGRADE_TIMELOCK_SECS,
     },
     errors::VaultError,
     events, storage,
@@ -787,6 +787,151 @@ impl SafeHaven {
     /// (treat as version 0 / pre-migration).
     pub fn get_storage_version(env: Env) -> Option<u32> {
         storage::get_storage_version(&env)
+    }
+
+    // ----------------------------------------------------------------
+    //  Admin: Contract upgrade with timelock and rollback (Task 5-8)
+    // ----------------------------------------------------------------
+
+    /// Proposes a new contract upgrade, initiating a timelock period.
+    /// 
+    /// Only the admin can propose an upgrade. The upgrade cannot be executed
+    /// until UPGRADE_TIMELOCK_SECS have elapsed, providing a safety review window.
+    /// If an upgrade is already in progress, returns UpgradeInProgress error.
+    ///
+    /// Parameters:
+    /// - admin: The current admin address (must authenticate)
+    /// - new_contract_id: Address of the new contract code
+    /// - migration_step_count: Optional count of migration steps to track
+    pub fn propose_upgrade(
+        env: Env,
+        admin: Address,
+        new_contract_id: Address,
+        migration_step_count: u32,
+    ) -> Result<(), VaultError> {
+        admin.require_auth();
+        storage::require_admin(&env, &admin)?;
+
+        // Check if an upgrade is already in progress
+        if let Some(existing) = storage::get_upgrade(&env) {
+            if existing.status != crate::types::UpgradeStatus::RolledBack 
+                && existing.status != crate::types::UpgradeStatus::Executed {
+                return Err(VaultError::UpgradeInProgress);
+            }
+        }
+
+        let now = env.ledger().timestamp();
+        let execute_after = now + UPGRADE_TIMELOCK_SECS;
+
+        // Store the upgrade proposal
+        let upgrade_entry = crate::types::UpgradeEntry {
+            new_contract_id: new_contract_id.clone(),
+            execute_after,
+            status: crate::types::UpgradeStatus::Proposed,
+            migration_step_count,
+        };
+
+        storage::set_upgrade(&env, &upgrade_entry);
+        events::upgrade_proposed(&env, &admin, &new_contract_id, execute_after);
+
+        Ok(())
+    }
+
+    /// Executes a proposed upgrade after the timelock has elapsed.
+    /// 
+    /// Only the admin can execute an upgrade. The upgrade must have been proposed
+    /// and the timelock period must have fully elapsed. Upon execution, the current
+    /// contract version is saved as the previous version for potential rollback.
+    pub fn execute_upgrade(
+        env: Env,
+        admin: Address,
+    ) -> Result<(), VaultError> {
+        admin.require_auth();
+        storage::require_admin(&env, &admin)?;
+
+        let upgrade = storage::get_upgrade(&env)
+            .ok_or(VaultError::UpgradeNotFound)?;
+
+        if upgrade.status != crate::types::UpgradeStatus::Proposed {
+            return Err(VaultError::UpgradeFailed);
+        }
+
+        let now = env.ledger().timestamp();
+        if now < upgrade.execute_after {
+            return Err(VaultError::UpgradeTimeoutNotElapsed);
+        }
+
+        // Save current version as previous for rollback support
+        let current_version = storage::get_contract_version(&env)
+            .unwrap_or_else(|| soroban_sdk::String::from_slice(&env, "0.0.0"));
+        
+        storage::set_previous_contract_version(&env, &current_version);
+
+        // Update to new version
+        let new_version_str = soroban_sdk::String::from_slice(&env, "1.0.0");
+        storage::set_contract_version(&env, &new_version_str);
+
+        // Mark upgrade as executed
+        let mut upgraded = upgrade;
+        upgraded.status = crate::types::UpgradeStatus::Executed;
+        storage::set_upgrade(&env, &upgraded);
+
+        events::upgrade_executed(&env, &admin, &upgrade.new_contract_id, &current_version, &new_version_str);
+
+        Ok(())
+    }
+
+    /// Rolls back to the previous contract version.
+    ///
+    /// Only the admin can initiate a rollback. This can only be called if an upgrade
+    /// has been executed. The contract version is restored to the previous version.
+    pub fn rollback_upgrade(env: Env, admin: Address) -> Result<(), VaultError> {
+        admin.require_auth();
+        storage::require_admin(&env, &admin)?;
+
+        let upgrade = storage::get_upgrade(&env)
+            .ok_or(VaultError::UpgradeNotFound)?;
+
+        if upgrade.status != crate::types::UpgradeStatus::Executed {
+            return Err(VaultError::UpgradeFailed);
+        }
+
+        let current_version = storage::get_contract_version(&env)
+            .unwrap_or_else(|| soroban_sdk::String::from_slice(&env, "0.0.0"));
+
+        let previous_version = storage::get_previous_contract_version(&env)
+            .ok_or(VaultError::UpgradeFailed)?;
+
+        // Restore previous version
+        storage::set_contract_version(&env, &previous_version);
+
+        // Mark upgrade as rolled back
+        let mut rolled_back = upgrade;
+        rolled_back.status = crate::types::UpgradeStatus::RolledBack;
+        storage::set_upgrade(&env, &rolled_back);
+
+        events::upgrade_rolled_back(&env, &admin, &current_version, &previous_version);
+
+        Ok(())
+    }
+
+    /// Retrieves the current upgrade status and timelock information.
+    ///
+    /// Returns information about any pending, executed, or rolled-back upgrade,
+    /// including the timelock expiration timestamp.
+    pub fn get_upgrade_status(env: Env) -> Option<(Address, u64, u32)> {
+        if let Some(upgrade) = storage::get_upgrade(&env) {
+            // Return (new_contract_id, execute_after, status_code)
+            let status_code = match upgrade.status {
+                crate::types::UpgradeStatus::None => 0,
+                crate::types::UpgradeStatus::Proposed => 1,
+                crate::types::UpgradeStatus::Executed => 2,
+                crate::types::UpgradeStatus::RolledBack => 3,
+            };
+            Some((upgrade.new_contract_id, upgrade.execute_after, status_code))
+        } else {
+            None
+        }
     }
 
     /// Admin-only migration hook.

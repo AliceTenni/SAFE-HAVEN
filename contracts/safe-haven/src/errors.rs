@@ -21,4 +21,12 @@ pub enum VaultError {
     /// `initialize` was called on an already-initialized contract.
     /// The `is_initialized` flag is the sole re-initialization guard (closes #46).
     AlreadyInitialized = 15,
+    /// An upgrade is already in progress
+    UpgradeInProgress = 16,
+    /// No upgrade proposal found
+    UpgradeNotFound = 17,
+    /// Upgrade timelock period has not elapsed
+    UpgradeTimeoutNotElapsed = 18,
+    /// Upgrade execution or rollback failed
+    UpgradeFailed = 19,
 }
