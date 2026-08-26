@@ -45,6 +45,7 @@ pub struct VaultEntry {
     pub unlock_time: u64,
     pub depositor: Address,
     pub penalty_bps: u32,
+    pub withdrawal_delay_secs: u64,
 }
 
 #[contracttype]
