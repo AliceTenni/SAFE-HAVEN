@@ -11,6 +11,22 @@ pub const STORAGE_VERSION: u32 = 1;
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DepositType {
+    TimeBased,
+    LedgerBased,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DepositRequest {
+    pub token: Address,
+    pub amount: i128,
+    pub unlock_time: u64,
+    pub penalty_bps: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum VaultKey {
     Deposit(Address, u32),
     DepositByLedger(Address, u32),

@@ -12,7 +12,7 @@ use crate::{
     },
     errors::VaultError,
     events, storage,
-    types::{VaultEntry, LedgerVaultEntry, Page, STORAGE_VERSION},
+    types::{DepositRequest, DepositType, VaultEntry, LedgerVaultEntry, Page, STORAGE_VERSION},
 };
 
 #[contract]
@@ -134,6 +134,79 @@ impl SafeHaven {
         events::deposit(&env, &depositor, &token, amount, unlock_time, deposit_id);
 
         Ok(deposit_id)
+    }
+
+    pub fn batch_deposit(
+        env: Env,
+        depositor: Address,
+        deposits: Vec<DepositRequest>,
+    ) -> Result<Vec<u32>, VaultError> {
+        depositor.require_auth();
+
+        if deposits.len() > MAX_BATCH_SIZE {
+            return Err(VaultError::BatchTooLarge);
+        }
+
+        let mut deposit_ids = Vec::new(&env);
+        for request in deposits.iter() {
+            if storage::is_paused(&env) || request.amount <= 0 {
+                return Err(if storage::is_paused(&env) {
+                    VaultError::ContractPaused
+                } else {
+                    VaultError::InvalidAmount
+                });
+            }
+            let max_deposit = storage::get_max_deposit(&env).unwrap_or(MAX_DEPOSIT_AMOUNT);
+            if request.amount > max_deposit {
+                return Err(VaultError::AmountTooLarge);
+            }
+            if request.penalty_bps > 10_000 {
+                return Err(VaultError::InvalidPenaltyBps);
+            }
+            if request.penalty_bps > 0 && storage::get_fee_recipient(&env).is_none() {
+                return Err(VaultError::MissingFeeRecipient);
+            }
+            let now = env.ledger().timestamp();
+            if request.unlock_time <= now {
+                return Err(VaultError::UnlockTimeNotInFuture);
+            }
+            let lock_duration = request.unlock_time.saturating_sub(now);
+            let max_lock = storage::get_max_lock_secs(&env).unwrap_or(MAX_LOCK_DURATION_SECS);
+            if lock_duration > max_lock {
+                return Err(VaultError::LockDurationTooLong);
+            }
+            if lock_duration < MIN_LOCK_DURATION_SECS {
+                return Err(VaultError::LockDurationTooShort);
+            }
+        }
+
+        for request in deposits.iter() {
+            let deposit_id = storage::next_deposit_id(&env, &depositor);
+            token::Client::new(&env, &request.token).transfer(
+                &depositor,
+                &env.current_contract_address(),
+                &request.amount,
+            );
+            let entry = VaultEntry {
+                token: request.token.clone(),
+                amount: request.amount,
+                unlock_time: request.unlock_time,
+                depositor: depositor.clone(),
+                penalty_bps: request.penalty_bps,
+            };
+            storage::set_deposit(&env, &depositor, deposit_id, &entry);
+            storage::add_depositor(&env, &depositor);
+            events::deposit(
+                &env,
+                &depositor,
+                &request.token,
+                request.amount,
+                request.unlock_time,
+                deposit_id,
+            );
+            deposit_ids.push_back(deposit_id);
+        }
+        Ok(deposit_ids)
     }
 
     pub fn deposit_for(
@@ -613,7 +686,7 @@ impl SafeHaven {
         let limit = if depositors.len() > MAX_BATCH_SIZE { MAX_BATCH_SIZE } else { depositors.len() as u32 };
         let mut results = Vec::new(&env);
         for i in 0..limit {
-            if let Some((depositor, deposit_id)) = pairs.get(i) {
+            if let Some(depositor) = depositors.get(i) {
                 let entry = storage::get_deposit_readonly(&env, &depositor, deposit_id);
                 results.push_back(entry);
             }
