@@ -449,6 +449,23 @@ impl SafeHaven {
         admin.require_auth();
         storage::require_admin(&env, &admin)?;
 
+        // Determine the withdrawal amount and perform limit check upfront
+        // Get deposit info to know the withdrawal amount before modifying state
+        let deposit_amount = if let Some(entry) = storage::get_deposit_readonly(&env, &depositor, deposit_id) {
+            entry.amount
+        } else if let Some(entry) = storage::get_deposit_by_ledger_readonly(&env, &depositor, deposit_id) {
+            entry.amount
+        } else {
+            return Err(VaultError::NoDepositFound);
+        };
+
+        // Enforce per-ledger limit: check if adding this withdrawal would exceed the limit
+        let current_withdrawal = storage::get_current_ledger_emergency_withdrawal(&env);
+        let new_total = current_withdrawal.saturating_add(deposit_amount);
+        if new_total > crate::types::MAX_EMERGENCY_WITHDRAWAL_PER_LEDGER {
+            return Err(VaultError::EmergencyWithdrawalLimitExceeded);
+        }
+
         // Try timestamp-based deposit first
         if let Some(entry) = storage::get_deposit_readonly(&env, &depositor, deposit_id) {
             storage::remove_deposit(&env, &depositor, deposit_id);
@@ -459,6 +476,8 @@ impl SafeHaven {
             let token_client = token::Client::new(&env, &entry.token);
             token_client.transfer(&env.current_contract_address(), &depositor, &entry.amount);
 
+            // Track the withdrawal and emit event
+            storage::add_emergency_withdrawal(&env, entry.amount);
             events::emergency_withdraw(&env, &admin, &depositor, &entry.token, entry.amount, deposit_id);
             return Ok(());
         }
@@ -473,6 +492,8 @@ impl SafeHaven {
             let token_client = token::Client::new(&env, &entry.token);
             token_client.transfer(&env.current_contract_address(), &depositor, &entry.amount);
 
+            // Track the withdrawal and emit event
+            storage::add_emergency_withdrawal(&env, entry.amount);
             events::emergency_withdraw(&env, &admin, &depositor, &entry.token, entry.amount, deposit_id);
             return Ok(());
         }
@@ -726,6 +747,16 @@ impl SafeHaven {
     /// without inspecting bytecode directly.
     pub fn version(_env: Env) -> soroban_sdk::String {
         soroban_sdk::String::from_slice(&_env, env!("CARGO_PKG_VERSION"))
+    }
+
+    /// Admin-readable query: returns the cumulative emergency withdrawal amount
+    /// for a specific ledger sequence number.
+    /// 
+    /// This allows admins to audit emergency withdrawal activity and ensure
+    /// the per-ledger limit is being respected. Returns 0 if no emergency
+    /// withdrawals have occurred in that ledger.
+    pub fn get_emergency_withdrawal_total(env: Env, ledger: u32) -> i128 {
+        storage::get_emergency_withdrawal_per_ledger(&env, ledger)
     }
 
     // ----------------------------------------------------------------

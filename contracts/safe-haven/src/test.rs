@@ -2488,3 +2488,214 @@ fn test_version_returns_cargo_pkg_version() {
     let parts: Vec<&str> = version_str.split('.').collect();
     assert_eq!(parts.len(), 3, "Version should be in semantic format (major.minor.patch)");
 }
+
+
+// ================================================================
+//  Emergency Withdrawal Per-Ledger Limit
+// ================================================================
+
+#[test]
+fn test_emergency_withdrawal_limit_single_withdrawal_succeeds() {
+    let (env, vault, token, admin, alice, _fee) = setup();
+    let unlock_time = env.ledger().timestamp() + 3600;
+    let deposit_id = vault.deposit(&alice, &token, &1_000, &unlock_time, &0);
+
+    // First emergency withdrawal should succeed
+    let result = vault.try_emergency_withdraw(&admin, &alice, &deposit_id);
+    assert_eq!(result, Ok(()));
+    
+    // Verify deposit is removed
+    assert_eq!(vault.get_vault(&alice, &deposit_id), None);
+}
+
+#[test]
+fn test_emergency_withdrawal_limit_cumulative_tracking() {
+    let (env, vault, token, admin, alice, _fee) = setup();
+    StellarAssetClient::new(&env, &token).mint(&alice, &100_000_000);
+    
+    let unlock_time = env.ledger().timestamp() + 3600;
+    let id1 = vault.deposit(&alice, &token, &10_000_000, &unlock_time, &0);
+    let id2 = vault.deposit(&alice, &token, &20_000_000, &unlock_time, &0);
+
+    // First withdrawal (10M) should succeed
+    assert_eq!(vault.try_emergency_withdraw(&admin, &alice, &id1), Ok(()));
+    
+    // Query the current ledger's total
+    let total = vault.get_emergency_withdrawal_total(&env, env.ledger().sequence());
+    assert_eq!(total, 10_000_000);
+    
+    // Second withdrawal (20M) should succeed — total is 30M, under limit of 100M
+    assert_eq!(vault.try_emergency_withdraw(&admin, &alice, &id2), Ok(()));
+    
+    // Verify total is now 30M
+    let total = vault.get_emergency_withdrawal_total(&env, env.ledger().sequence());
+    assert_eq!(total, 30_000_000);
+}
+
+#[test]
+fn test_emergency_withdrawal_limit_exceeds_fails() {
+    let (env, vault, token, admin, alice, _fee) = setup();
+    use crate::types::MAX_EMERGENCY_WITHDRAWAL_PER_LEDGER;
+    
+    // Mint enough for a deposit exceeding the limit
+    StellarAssetClient::new(&env, &token).mint(&alice, &(MAX_EMERGENCY_WITHDRAWAL_PER_LEDGER + 1_000_000));
+    
+    let unlock_time = env.ledger().timestamp() + 3600;
+    let deposit_id = vault.deposit(&alice, &token, &(MAX_EMERGENCY_WITHDRAWAL_PER_LEDGER + 1_000_000), &unlock_time, &0);
+
+    // Emergency withdrawal should fail because the amount exceeds the limit
+    let result = vault.try_emergency_withdraw(&admin, &alice, &deposit_id);
+    assert_eq!(result, Err(Ok(VaultError::EmergencyWithdrawalLimitExceeded)));
+    
+    // Verify deposit still exists
+    assert!(vault.get_vault(&alice, &deposit_id).is_some());
+}
+
+#[test]
+fn test_emergency_withdrawal_limit_at_boundary() {
+    let (env, vault, token, admin, alice, _fee) = setup();
+    use crate::types::MAX_EMERGENCY_WITHDRAWAL_PER_LEDGER;
+    
+    StellarAssetClient::new(&env, &token).mint(&alice, &(MAX_EMERGENCY_WITHDRAWAL_PER_LEDGER * 2));
+    
+    let unlock_time = env.ledger().timestamp() + 3600;
+    let id1 = vault.deposit(&alice, &token, &MAX_EMERGENCY_WITHDRAWAL_PER_LEDGER, &unlock_time, &0);
+    let id2 = vault.deposit(&alice, &token, &1_000, &unlock_time, &0);
+
+    // First withdrawal (exactly at limit) should succeed
+    assert_eq!(vault.try_emergency_withdraw(&admin, &alice, &id1), Ok(()));
+    
+    // Second withdrawal (1 more) should fail — would exceed limit
+    let result = vault.try_emergency_withdraw(&admin, &alice, &id2);
+    assert_eq!(result, Err(Ok(VaultError::EmergencyWithdrawalLimitExceeded)));
+}
+
+#[test]
+fn test_emergency_withdrawal_limit_resets_at_ledger_boundary() {
+    let (env, vault, token, admin, alice, _fee) = setup();
+    use crate::types::MAX_EMERGENCY_WITHDRAWAL_PER_LEDGER;
+    
+    StellarAssetClient::new(&env, &token).mint(&alice, &(MAX_EMERGENCY_WITHDRAWAL_PER_LEDGER * 2));
+    
+    let unlock_time = env.ledger().timestamp() + 10_000;
+    let id1 = vault.deposit(&alice, &token, &(MAX_EMERGENCY_WITHDRAWAL_PER_LEDGER - 1_000), &unlock_time, &0);
+    let id2 = vault.deposit(&alice, &token, &(MAX_EMERGENCY_WITHDRAWAL_PER_LEDGER - 1_000), &unlock_time, &0);
+
+    // First withdrawal in ledger N should succeed
+    assert_eq!(vault.try_emergency_withdraw(&admin, &alice, &id1), Ok(()));
+    let total_ledger_n = vault.get_emergency_withdrawal_total(&env, env.ledger().sequence());
+    assert_eq!(total_ledger_n, MAX_EMERGENCY_WITHDRAWAL_PER_LEDGER - 1_000);
+    
+    // Advance to next ledger
+    advance_time(&env, 5);
+    
+    // Second withdrawal should now be in a different ledger and succeed
+    // (because the counter resets based on ledger sequence)
+    assert_eq!(vault.try_emergency_withdraw(&admin, &alice, &id2), Ok(()));
+    
+    // Verify new ledger's total is separate
+    let total_ledger_next = vault.get_emergency_withdrawal_total(&env, env.ledger().sequence());
+    assert_eq!(total_ledger_next, MAX_EMERGENCY_WITHDRAWAL_PER_LEDGER - 1_000);
+    
+    // Verify old ledger's total is unchanged
+    let old_ledger = env.ledger().sequence() - 1;
+    let total_old = vault.get_emergency_withdrawal_total(&env, old_ledger);
+    assert_eq!(total_old, MAX_EMERGENCY_WITHDRAWAL_PER_LEDGER - 1_000);
+}
+
+#[test]
+fn test_emergency_withdrawal_multiple_deposits_same_ledger() {
+    let (env, vault, token, admin, alice, _fee) = setup();
+    use crate::types::MAX_EMERGENCY_WITHDRAWAL_PER_LEDGER;
+    
+    StellarAssetClient::new(&env, &token).mint(&alice, &(MAX_EMERGENCY_WITHDRAWAL_PER_LEDGER * 2));
+    
+    let unlock_time = env.ledger().timestamp() + 3600;
+    
+    // Create 5 deposits of 20M each = 100M total (exactly at limit)
+    let mut ids = soroban_sdk::Vec::new(&env);
+    for _ in 0..5 {
+        let id = vault.deposit(&alice, &token, &20_000_000, &unlock_time, &0);
+        ids.push_back(id);
+    }
+
+    // Withdraw all 5 in same ledger — should succeed because total == limit
+    for i in 0..5 {
+        let result = vault.try_emergency_withdraw(&admin, &alice, &ids.get(i).unwrap());
+        assert_eq!(result, Ok(()));
+    }
+    
+    // Verify total is 100M
+    let total = vault.get_emergency_withdrawal_total(&env, env.ledger().sequence());
+    assert_eq!(total, 100_000_000);
+}
+
+#[test]
+fn test_emergency_withdrawal_limit_multiple_depositors() {
+    let (env, vault, token, admin, alice, _fee) = setup();
+    use crate::types::MAX_EMERGENCY_WITHDRAWAL_PER_LEDGER;
+    
+    let bob: Address = Address::generate(&env);
+    StellarAssetClient::new(&env, &token).mint(&bob, &(MAX_EMERGENCY_WITHDRAWAL_PER_LEDGER / 2));
+    StellarAssetClient::new(&env, &token).mint(&alice, &(MAX_EMERGENCY_WITHDRAWAL_PER_LEDGER / 2));
+    
+    let unlock_time = env.ledger().timestamp() + 3600;
+    let alice_id = vault.deposit(&alice, &token, &(MAX_EMERGENCY_WITHDRAWAL_PER_LEDGER / 2), &unlock_time, &0);
+    let bob_id = vault.deposit(&bob, &token, &(MAX_EMERGENCY_WITHDRAWAL_PER_LEDGER / 2), &unlock_time, &0);
+
+    // First emergency withdrawal (alice, 50M) should succeed
+    assert_eq!(vault.try_emergency_withdraw(&admin, &alice, &alice_id), Ok(()));
+    
+    // Second emergency withdrawal (bob, 50M) should succeed — total is 100M (at limit)
+    assert_eq!(vault.try_emergency_withdraw(&admin, &bob, &bob_id), Ok(()));
+    
+    // Verify total is 100M
+    let total = vault.get_emergency_withdrawal_total(&env, env.ledger().sequence());
+    assert_eq!(total, 100_000_000);
+}
+
+#[test]
+fn test_emergency_withdrawal_query_nonexistent_ledger() {
+    let (env, vault, _token, _admin, _alice, _fee) = setup();
+    
+    // Query a ledger that has never had any emergency withdrawals
+    let future_ledger = env.ledger().sequence() + 1000;
+    let total = vault.get_emergency_withdrawal_total(&env, future_ledger);
+    assert_eq!(total, 0);
+}
+
+#[test]
+fn test_emergency_withdrawal_ledger_based_deposit_limit() {
+    let (env, vault, token, admin, alice, _fee) = setup();
+    
+    let unlock_ledger = env.ledger().sequence() + 20;
+    let deposit_id = vault.deposit_by_ledger(&alice, &token, &1_000, &unlock_ledger, &0);
+
+    // Emergency withdrawal should work for ledger-based deposits too
+    assert_eq!(vault.try_emergency_withdraw(&admin, &alice, &deposit_id), Ok(()));
+    
+    // Verify tracking
+    let total = vault.get_emergency_withdrawal_total(&env, env.ledger().sequence());
+    assert_eq!(total, 1_000);
+}
+
+#[test]
+fn test_emergency_withdrawal_mixed_deposit_types_same_ledger() {
+    let (env, vault, token, admin, alice, _fee) = setup();
+    
+    StellarAssetClient::new(&env, &token).mint(&alice, &100_000);
+    
+    let unlock_time = env.ledger().timestamp() + 3600;
+    let unlock_ledger = env.ledger().sequence() + 20;
+    
+    let ts_id = vault.deposit(&alice, &token, &30_000, &unlock_time, &0);
+    let lg_id = vault.deposit_by_ledger(&alice, &token, &20_000, &unlock_ledger, &0);
+
+    // Withdraw both in same ledger
+    assert_eq!(vault.try_emergency_withdraw(&admin, &alice, &ts_id), Ok(()));
+    assert_eq!(vault.try_emergency_withdraw(&admin, &alice, &lg_id), Ok(()));
+    
+    // Verify total tracking
+    let total = vault.get_emergency_withdrawal_total(&env, env.ledger().sequence());
+    assert_eq!(total, 50_000);
+}

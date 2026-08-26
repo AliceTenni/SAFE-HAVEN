@@ -21,4 +21,8 @@ pub enum VaultError {
     /// `initialize` was called on an already-initialized contract.
     /// The `is_initialized` flag is the sole re-initialization guard (closes #46).
     AlreadyInitialized = 15,
+    /// Emergency withdrawal limit exceeded for this ledger.
+    /// The cumulative amount of emergency withdrawals in the current ledger
+    /// would exceed `MAX_EMERGENCY_WITHDRAWAL_PER_LEDGER`.
+    EmergencyWithdrawalLimitExceeded = 16,
 }

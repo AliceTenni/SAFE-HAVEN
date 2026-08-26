@@ -4,6 +4,11 @@ pub const MAX_DEPOSIT_AMOUNT: i128 = 1_000_000_000_000_000;
 pub const MAX_LOCK_DURATION_SECS: u64 = 157_788_000;
 pub const MIN_LOCK_DURATION_SECS: u64 = 60;
 
+/// Maximum cumulative amount that can be emergency-withdrawn in a single ledger.
+/// This prevents admin abuse by limiting the total value that can be released
+/// out-of-schedule per ledger. Resets at each ledger boundary.
+pub const MAX_EMERGENCY_WITHDRAWAL_PER_LEDGER: i128 = 100_000_000_000_000; // 100M stroops
+
 /// Current storage schema version. Bump this constant when the on-chain
 /// layout of a `contracttype` struct changes so `migrate()` can detect
 /// and upgrade stale entries.
@@ -35,6 +40,11 @@ pub enum VaultKey {
     /// Persists the schema version written by the last `migrate()` call (or 1
     /// for contracts that were initialized before versioning was introduced).
     StorageVersion,
+    /// Stores the cumulative emergency withdrawal amount for a specific ledger sequence.
+    /// Key is the ledger number; value is total i128 amount withdrawn in that ledger.
+    /// Resets implicitly when the ledger number changes (caller reads the current
+    /// ledger and uses it as the key, so stale entries are never consulted).
+    EmergencyWithdrawalPerLedger(u32),
 }
 
 #[contracttype]
