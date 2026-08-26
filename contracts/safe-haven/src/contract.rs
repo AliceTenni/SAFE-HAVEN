@@ -7,8 +7,8 @@ use soroban_sdk::{contract, contractimpl, token, Address, Env, Vec};
 
 use crate::{
     constants::{
-        MAX_BATCH_SIZE, MAX_DEPOSIT_AMOUNT, MAX_LOCK_DURATION_SECS, MIN_LOCK_DURATION_SECS,
-        MIN_LOCK_LEDGERS,
+        INTEREST_YEAR_SECS, MAX_BATCH_SIZE, MAX_DEPOSIT_AMOUNT, MAX_LOCK_DURATION_SECS,
+        MIN_LOCK_DURATION_SECS, MIN_LOCK_LEDGERS,
     },
     errors::VaultError,
     events, storage,
@@ -17,6 +17,21 @@ use crate::{
 
 #[contract]
 pub struct SafeHaven;
+
+fn calculate_interest(entry: &VaultEntry, now: u64) -> Result<i128, VaultError> {
+    let elapsed = now.saturating_sub(entry.deposited_at) as i128;
+    let numerator = entry
+        .amount
+        .checked_mul(entry.interest_rate_bps as i128)
+        .and_then(|value| value.checked_mul(elapsed))
+        .ok_or(VaultError::InterestCalculationOverflow)?;
+    let denominator = (10_000_i128)
+        .checked_mul(INTEREST_YEAR_SECS as i128)
+        .ok_or(VaultError::InterestCalculationOverflow)?;
+    numerator
+        .checked_div(denominator)
+        .ok_or(VaultError::InterestCalculationOverflow)
+}
 
 #[contractimpl]
 impl SafeHaven {
@@ -127,6 +142,9 @@ impl SafeHaven {
             unlock_time,
             depositor: depositor.clone(),
             penalty_bps,
+            interest_rate_bps: 0,
+            accrued_interest: 0,
+            deposited_at: now,
         };
 
         storage::set_deposit(&env, &depositor, deposit_id, &entry);
@@ -193,8 +211,75 @@ impl SafeHaven {
             unlock_time,
             depositor: depositor.clone(),
             penalty_bps,
+            interest_rate_bps: 0,
+            accrued_interest: 0,
+            deposited_at: now,
         };
 
+        storage::set_deposit(&env, &depositor, deposit_id, &entry);
+        storage::add_depositor(&env, &depositor);
+        events::deposit(&env, &depositor, &token, amount, unlock_time, deposit_id);
+
+        Ok(deposit_id)
+    }
+
+    pub fn deposit_with_interest(
+        env: Env,
+        depositor: Address,
+        token: Address,
+        amount: i128,
+        unlock_time: u64,
+        penalty_bps: u32,
+        interest_rate_bps: u32,
+    ) -> Result<u32, VaultError> {
+        depositor.require_auth();
+
+        if storage::is_paused(&env) {
+            return Err(VaultError::ContractPaused);
+        }
+        if amount <= 0 {
+            return Err(VaultError::InvalidAmount);
+        }
+        let max_deposit = storage::get_max_deposit(&env).unwrap_or(MAX_DEPOSIT_AMOUNT);
+        if amount > max_deposit {
+            return Err(VaultError::AmountTooLarge);
+        }
+        if penalty_bps > 10_000 {
+            return Err(VaultError::InvalidPenaltyBps);
+        }
+        if penalty_bps > 0 && storage::get_fee_recipient(&env).is_none() {
+            return Err(VaultError::MissingFeeRecipient);
+        }
+
+        let now = env.ledger().timestamp();
+        if unlock_time <= now {
+            return Err(VaultError::UnlockTimeNotInFuture);
+        }
+        let lock_duration = unlock_time.saturating_sub(now);
+        let max_lock = storage::get_max_lock_secs(&env).unwrap_or(MAX_LOCK_DURATION_SECS);
+        if lock_duration > max_lock {
+            return Err(VaultError::LockDurationTooLong);
+        }
+        if lock_duration < MIN_LOCK_DURATION_SECS {
+            return Err(VaultError::LockDurationTooShort);
+        }
+
+        let deposit_id = storage::next_deposit_id(&env, &depositor);
+        token::Client::new(&env, &token).transfer(
+            &depositor,
+            &env.current_contract_address(),
+            &amount,
+        );
+        let entry = VaultEntry {
+            token: token.clone(),
+            amount,
+            unlock_time,
+            depositor: depositor.clone(),
+            penalty_bps,
+            interest_rate_bps,
+            accrued_interest: 0,
+            deposited_at: now,
+        };
         storage::set_deposit(&env, &depositor, deposit_id, &entry);
         storage::add_depositor(&env, &depositor);
         events::deposit(&env, &depositor, &token, amount, unlock_time, deposit_id);
@@ -352,6 +437,11 @@ impl SafeHaven {
             if now < entry.unlock_time {
                 return Err(VaultError::FundsStillLocked);
             }
+            let interest = calculate_interest(&entry, now)?;
+            let payout = entry
+                .amount
+                .checked_add(interest)
+                .ok_or(VaultError::InterestCalculationOverflow)?;
 
             storage::remove_deposit(&env, &depositor, deposit_id);
             if storage::get_deposit_ids(&env, &depositor).len() == 0 {
@@ -359,9 +449,9 @@ impl SafeHaven {
             }
 
             let token_client = token::Client::new(&env, &entry.token);
-            token_client.transfer(&env.current_contract_address(), &depositor, &entry.amount);
+            token_client.transfer(&env.current_contract_address(), &depositor, &payout);
 
-            events::withdraw(&env, &depositor, &entry.token, entry.amount, deposit_id);
+            events::withdraw(&env, &depositor, &entry.token, payout, deposit_id);
             return Ok(());
         }
 
@@ -401,6 +491,11 @@ impl SafeHaven {
             if now < entry.unlock_time {
                 return Err(VaultError::FundsStillLocked);
             }
+            let interest = calculate_interest(&entry, now)?;
+            let payout = entry
+                .amount
+                .checked_add(interest)
+                .ok_or(VaultError::InterestCalculationOverflow)?;
 
             storage::remove_deposit(&env, &depositor, deposit_id);
             if storage::get_deposit_ids(&env, &depositor).len() == 0 {
@@ -408,9 +503,9 @@ impl SafeHaven {
             }
 
             let token_client = token::Client::new(&env, &entry.token);
-            token_client.transfer(&env.current_contract_address(), &recipient, &entry.amount);
+            token_client.transfer(&env.current_contract_address(), &recipient, &payout);
 
-            events::withdraw_to(&env, &depositor, &recipient, &entry.token, entry.amount);
+            events::withdraw_to(&env, &depositor, &recipient, &entry.token, payout);
             return Ok(());
         }
 
@@ -677,6 +772,12 @@ impl SafeHaven {
         }
 
         0
+    }
+
+    pub fn get_accrued_interest(env: Env, depositor: Address, deposit_id: u32) -> i128 {
+        storage::get_deposit_readonly(&env, &depositor, deposit_id)
+            .and_then(|entry| calculate_interest(&entry, env.ledger().timestamp()).ok())
+            .unwrap_or(0)
     }
 
     pub fn get_admin(env: Env) -> Option<Address> {

@@ -174,6 +174,8 @@ fn test_deposit_success() {
     assert_eq!(entry.token, token);
     assert_eq!(entry.depositor, alice);
     assert_eq!(entry.penalty_bps, 0);
+    assert_eq!(entry.interest_rate_bps, 0);
+    assert_eq!(entry.accrued_interest, 0);
 
     let events = env.events().all();
     // Event emission is verified by test_deposit_for_event_emitted; the
@@ -188,6 +190,34 @@ fn test_deposit_transfers_tokens_to_contract() {
     let unlock_time = env.ledger().timestamp() + 3600;
     vault.deposit(&alice, &token, &1_000, &unlock_time, &0);
     assert_eq!(token_client.balance(&alice), 9_000);
+}
+
+#[test]
+fn test_deposit_with_interest_accrues_simple_interest() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    let token_client = TokenClient::new(&env, &token);
+    let unlock_time = env.ledger().timestamp() + 3600;
+    let id = vault.deposit_with_interest(&alice, &token, &1_000, &unlock_time, &0, &1_000);
+    StellarAssetClient::new(&env, &token).mint(&vault.address, &1_000);
+
+    advance_time(&env, 31_536_000);
+    assert_eq!(vault.get_accrued_interest(&alice, &id), 100);
+    vault.withdraw(&alice, &id);
+    assert_eq!(token_client.balance(&alice), 10_000 - 1_000 + 1_100);
+}
+
+#[test]
+fn test_deposit_with_interest_supports_zero_and_partial_rates() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    StellarAssetClient::new(&env, &token).mint(&alice, &2_000);
+    let first_unlock = env.ledger().timestamp() + 3600;
+    let second_unlock = env.ledger().timestamp() + 7200;
+    let first = vault.deposit_with_interest(&alice, &token, &1_000, &first_unlock, &0, &0);
+    let second = vault.deposit_with_interest(&alice, &token, &1_000, &second_unlock, &0, &500);
+
+    advance_time(&env, 15_768_000);
+    assert_eq!(vault.get_accrued_interest(&alice, &first), 0);
+    assert_eq!(vault.get_accrued_interest(&alice, &second), 25);
 }
 
 // ================================================================
@@ -1296,6 +1326,9 @@ fn test_vault_entry_xdr_snapshot() {
         unlock_time: 9_999_u64,
         depositor: depositor.clone(),
         penalty_bps: 0,
+        interest_rate_bps: 0,
+        accrued_interest: 0,
+        deposited_at: 0,
     };
 
     let xdr_bytes = entry.clone().to_xdr(&env);

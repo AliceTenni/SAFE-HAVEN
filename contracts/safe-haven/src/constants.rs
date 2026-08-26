@@ -23,3 +23,4 @@ pub const MIN_LOCK_LEDGERS: u32 = (MIN_LOCK_DURATION_SECS / LEDGER_SECONDS) as u
 /// and one event publish — roughly 1–2M instructions each.
 /// 25 leaves comfortable headroom for the common migration use-case.
 pub const MAX_BATCH_SIZE: u32 = 25;
+pub const INTEREST_YEAR_SECS: u64 = 31_536_000;
