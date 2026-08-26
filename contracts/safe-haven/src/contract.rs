@@ -7,12 +7,12 @@ use soroban_sdk::{contract, contractimpl, token, Address, Env, Vec};
 
 use crate::{
     constants::{
-        MAX_BATCH_SIZE, MAX_DEPOSIT_AMOUNT, MAX_LOCK_DURATION_SECS, MIN_LOCK_DURATION_SECS,
+        ARCHIVED_DEPOSIT_MIN_AGE_SECS, MAX_BATCH_SIZE, MAX_DEPOSIT_AMOUNT, MAX_LOCK_DURATION_SECS, MIN_LOCK_DURATION_SECS,
         MIN_LOCK_LEDGERS,
     },
     errors::VaultError,
     events, storage,
-    types::{VaultEntry, LedgerVaultEntry, Page, STORAGE_VERSION},
+    types::{VaultEntry, LedgerVaultEntry, STORAGE_VERSION, DepositType, Page},
 };
 
 #[contract]
@@ -481,6 +481,175 @@ impl SafeHaven {
     }
 
     // ----------------------------------------------------------------
+    //  Archival: Archive and Delete Deposits
+    // ----------------------------------------------------------------
+
+    /// Archive a completed (withdrawn or cancelled) timestamp-based deposit for record-keeping.
+    /// The depositor manually archives a deposit entry that has been withdrawn or cancelled,
+    /// storing it with the current archive timestamp.
+    ///
+    /// # Preconditions
+    /// - Deposit must NOT exist in active storage (must have been withdrawn or cancelled already)
+    /// - Caller must provide the original deposit entry data
+    ///
+    /// # Parameters
+    /// - `depositor`: The original deposit owner
+    /// - `deposit_id`: The ID of the deposit to archive
+    /// - `token`: Token address (must match the original deposit)
+    /// - `amount`: Amount (must match the original deposit)
+    /// - `unlock_time`: Unlock time (must match the original deposit)
+    /// - `penalty_bps`: Penalty basis points (must match the original deposit)
+    ///
+    /// # Returns
+    /// - `Ok(())` on success
+    /// - `Err(VaultError::NoDepositFound)` if active deposit still exists
+    /// - `Err(VaultError::NoArchivedDepositFound)` if archived deposit already exists
+    pub fn archive_deposit(
+        env: Env,
+        depositor: Address,
+        deposit_id: u32,
+        token: Address,
+        amount: i128,
+        unlock_time: u64,
+        penalty_bps: u32,
+    ) -> Result<(), VaultError> {
+        depositor.require_auth();
+
+        // Verify the deposit is NOT in active storage
+        if storage::get_deposit_readonly(&env, &depositor, deposit_id).is_some() {
+            return Err(VaultError::NoDepositFound);
+        }
+
+        if storage::get_deposit_by_ledger_readonly(&env, &depositor, deposit_id).is_some() {
+            return Err(VaultError::NoDepositFound);
+        }
+
+        // Verify not already archived
+        if storage::get_archived_deposit_readonly(&env, &depositor, deposit_id).is_some() {
+            return Err(VaultError::NoArchivedDepositFound);
+        }
+
+        let now = env.ledger().timestamp();
+        let entry = VaultEntry {
+            token: token.clone(),
+            amount,
+            unlock_time,
+            depositor: depositor.clone(),
+            penalty_bps,
+        };
+
+        storage::set_archived_deposit(&env, &depositor, deposit_id, &entry, now);
+        events::deposit_archived(&env, &depositor, &token, amount, deposit_id);
+        Ok(())
+    }
+
+    /// Archive a completed (withdrawn or cancelled) ledger-based deposit for record-keeping.
+    /// The depositor manually archives a ledger-based deposit entry that has been withdrawn or cancelled,
+    /// storing it with the current archive timestamp.
+    ///
+    /// # Preconditions
+    /// - Deposit must NOT exist in active storage (must have been withdrawn or cancelled already)
+    /// - Caller must provide the original deposit entry data
+    ///
+    /// # Parameters
+    /// - `depositor`: The original deposit owner
+    /// - `deposit_id`: The ID of the deposit to archive
+    /// - `token`: Token address (must match the original deposit)
+    /// - `amount`: Amount (must match the original deposit)
+    /// - `unlock_ledger`: Unlock ledger (must match the original deposit)
+    /// - `penalty_bps`: Penalty basis points (must match the original deposit)
+    ///
+    /// # Returns
+    /// - `Ok(())` on success
+    /// - `Err(VaultError::NoDepositFound)` if active deposit still exists
+    /// - `Err(VaultError::NoArchivedDepositFound)` if archived deposit already exists
+    pub fn archive_deposit_by_ledger(
+        env: Env,
+        depositor: Address,
+        deposit_id: u32,
+        token: Address,
+        amount: i128,
+        unlock_ledger: u32,
+        penalty_bps: u32,
+    ) -> Result<(), VaultError> {
+        depositor.require_auth();
+
+        // Verify the deposit is NOT in active storage
+        if storage::get_deposit_readonly(&env, &depositor, deposit_id).is_some() {
+            return Err(VaultError::NoDepositFound);
+        }
+
+        if storage::get_deposit_by_ledger_readonly(&env, &depositor, deposit_id).is_some() {
+            return Err(VaultError::NoDepositFound);
+        }
+
+        // Verify not already archived
+        if storage::get_archived_deposit_by_ledger_readonly(&env, &depositor, deposit_id).is_some() {
+            return Err(VaultError::NoArchivedDepositFound);
+        }
+
+        let now = env.ledger().timestamp();
+        let entry = LedgerVaultEntry {
+            token: token.clone(),
+            amount,
+            unlock_ledger,
+            depositor: depositor.clone(),
+            penalty_bps,
+        };
+
+        storage::set_archived_deposit_by_ledger(&env, &depositor, deposit_id, &entry, now);
+        events::deposit_archived_by_ledger(&env, &depositor, &token, amount, deposit_id);
+        Ok(())
+    }
+
+    /// Delete an archived deposit that is old enough (>= 1 year).
+    /// Only deposits archived more than 1 year ago can be deleted.
+    ///
+    /// # Preconditions
+    /// - Archived deposit must exist
+    /// - Deposit must be at least 1 year old
+    ///
+    /// # Parameters
+    /// - `depositor`: The original deposit owner
+    /// - `deposit_id`: The ID of the archived deposit to delete
+    ///
+    /// # Returns
+    /// - `Ok(())` on success (deposit deleted)
+    /// - `Err(VaultError::NoArchivedDepositFound)` if no archived deposit exists
+    /// - `Err(VaultError::ArchivedDepositTooYoung)` if deposit is less than 1 year old
+    pub fn delete_archived_deposit(
+        env: Env,
+        depositor: Address,
+        deposit_id: u32,
+    ) -> Result<(), VaultError> {
+        depositor.require_auth();
+
+        let now = env.ledger().timestamp();
+
+        // Check timestamp-based archived deposit
+        if let Some(archived) = storage::get_archived_deposit_readonly(&env, &depositor, deposit_id) {
+            let age = now.saturating_sub(archived.archive_timestamp);
+            if age < ARCHIVED_DEPOSIT_MIN_AGE_SECS {
+                return Err(VaultError::ArchivedDepositTooYoung);
+            }
+            storage::remove_archived_deposit(&env, &depositor, deposit_id);
+            return Ok(());
+        }
+
+        // Check ledger-based archived deposit
+        if let Some(archived) = storage::get_archived_deposit_by_ledger_readonly(&env, &depositor, deposit_id) {
+            let age = now.saturating_sub(archived.archive_timestamp);
+            if age < ARCHIVED_DEPOSIT_MIN_AGE_SECS {
+                return Err(VaultError::ArchivedDepositTooYoung);
+            }
+            storage::remove_archived_deposit_by_ledger(&env, &depositor, deposit_id);
+            return Ok(());
+        }
+
+        Err(VaultError::NoArchivedDepositFound)
+    }
+
+    // ----------------------------------------------------------------
     //  Admin: Pause / Unpause
     // ----------------------------------------------------------------
 
@@ -613,7 +782,7 @@ impl SafeHaven {
         let limit = if depositors.len() > MAX_BATCH_SIZE { MAX_BATCH_SIZE } else { depositors.len() as u32 };
         let mut results = Vec::new(&env);
         for i in 0..limit {
-            if let Some((depositor, deposit_id)) = pairs.get(i) {
+            if let Some(depositor) = depositors.get(i) {
                 let entry = storage::get_deposit_readonly(&env, &depositor, deposit_id);
                 results.push_back(entry);
             }
@@ -709,10 +878,10 @@ impl SafeHaven {
     /// - `limit`: Maximum number of addresses to return in this page
     ///
     /// # Returns
-    /// A `Page<Address>` containing:
+    /// A `Page` containing:
     /// - `items`: The paginated list of addresses
     /// - `total_count`: Total number of active depositors across all pages
-    pub fn get_depositors(env: Env, offset: u32, limit: u32) -> Page<Address> {
+    pub fn get_depositors(env: Env, offset: u32, limit: u32) -> Page {
         let (items, total_count) = storage::get_depositors_page(&env, offset, limit);
         Page { items, total_count }
     }

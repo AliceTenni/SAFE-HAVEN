@@ -108,3 +108,34 @@ pub fn withdraw_to(
     let topics = (Symbol::new(env, "withdraw_to"), depositor.clone(), token.clone());
     env.events().publish(topics, (recipient.clone(), amount));
 }
+
+pub fn deposit_archived(
+    env: &Env,
+    depositor: &Address,
+    token: &Address,
+    amount: i128,
+    deposit_id: u32,
+) {
+    let topics = (Symbol::new(env, "arch_deposit"), depositor.clone(), token.clone());
+    env.events().publish(topics, (amount, deposit_id));
+}
+
+pub fn deposit_archived_by_ledger(
+    env: &Env,
+    depositor: &Address,
+    token: &Address,
+    amount: i128,
+    deposit_id: u32,
+) {
+    let topics = (Symbol::new(env, "arch_dep_ledger"), depositor.clone(), token.clone());
+    env.events().publish(topics, (amount, deposit_id));
+}
+
+pub fn archived_deposit_deleted(
+    env: &Env,
+    depositor: &Address,
+    deposit_id: u32,
+) {
+    let topics = (Symbol::new(env, "del_archive"), depositor.clone());
+    env.events().publish(topics, deposit_id);
+}

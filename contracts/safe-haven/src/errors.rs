@@ -21,4 +21,8 @@ pub enum VaultError {
     /// `initialize` was called on an already-initialized contract.
     /// The `is_initialized` flag is the sole re-initialization guard (closes #46).
     AlreadyInitialized = 15,
+    /// Attempted to delete an archived deposit that is not old enough (< 1 year).
+    ArchivedDepositTooYoung = 16,
+    /// No archived deposit found at the given (depositor, deposit_id).
+    NoArchivedDepositFound = 17,
 }

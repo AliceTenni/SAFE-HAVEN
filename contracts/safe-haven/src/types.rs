@@ -35,6 +35,12 @@ pub enum VaultKey {
     /// Persists the schema version written by the last `migrate()` call (or 1
     /// for contracts that were initialized before versioning was introduced).
     StorageVersion,
+    /// Stores archived (withdrawn/cancelled) timestamp-based deposits.
+    /// Maps (depositor, deposit_id) to (ArchivedVaultEntry, archive_timestamp).
+    ArchivedDeposit(Address, u32),
+    /// Stores archived (withdrawn/cancelled) ledger-based deposits.
+    /// Maps (depositor, deposit_id) to (ArchivedLedgerVaultEntry, archive_timestamp).
+    ArchivedDepositByLedger(Address, u32),
 }
 
 #[contracttype]
@@ -57,12 +63,61 @@ pub struct LedgerVaultEntry {
     pub penalty_bps: u32,
 }
 
-/// Paginated query result containing a page of items and the total count.
+/// Deposit type discriminant: timestamp-based or ledger-sequence-based
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Page<T> {
+pub enum DepositType {
+    TimeBased,
+    LedgerBased,
+}
+
+/// Paginated result for Address items (e.g., depositor addresses)
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Page {
     /// The items in this page
-    pub items: soroban_sdk::Vec<T>,
+    pub items: soroban_sdk::Vec<Address>,
     /// Total number of active items across all pages
     pub total_count: u32,
+}
+
+impl Page {
+    /// Returns the number of items in this page
+    pub fn len(&self) -> u32 {
+        self.items.len() as u32
+    }
+
+    /// Returns true if this page is empty
+    pub fn is_empty(&self) -> bool {
+        self.items.len() == 0
+    }
+
+    /// Get an item by index
+    pub fn get(&self, index: u32) -> Option<Address> {
+        self.items.get(index)
+    }
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ArchivedVaultEntry {
+    pub token: Address,
+    pub amount: i128,
+    pub unlock_time: u64,
+    pub depositor: Address,
+    pub penalty_bps: u32,
+    /// Timestamp (in seconds since epoch) when this deposit was archived
+    pub archive_timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ArchivedLedgerVaultEntry {
+    pub token: Address,
+    pub amount: i128,
+    pub unlock_ledger: u32,
+    pub depositor: Address,
+    pub penalty_bps: u32,
+    /// Timestamp (in seconds since epoch) when this deposit was archived
+    pub archive_timestamp: u64,
 }

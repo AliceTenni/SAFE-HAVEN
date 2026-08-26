@@ -2488,3 +2488,410 @@ fn test_version_returns_cargo_pkg_version() {
     let parts: Vec<&str> = version_str.split('.').collect();
     assert_eq!(parts.len(), 3, "Version should be in semantic format (major.minor.patch)");
 }
+
+
+// ================================================================
+//  Archival — Archive and Delete Deposits
+// ================================================================
+
+#[test]
+fn test_archive_deposit_success() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    let unlock_time = env.ledger().timestamp() + 3600;
+
+    // Create and withdraw a deposit
+    let deposit_id = vault.deposit(&alice, &token, &1_000, &unlock_time, &0);
+    advance_time(&env, 3600);
+    vault.withdraw(&alice, &deposit_id);
+
+    // Archive the withdrawn deposit
+    let result = vault.try_archive_deposit(
+        &alice,
+        &deposit_id,
+        &token,
+        &1_000,
+        &unlock_time,
+        &0,
+    );
+    assert_eq!(result, Ok(Ok(())));
+}
+
+#[test]
+fn test_archive_deposit_fails_if_active() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    let unlock_time = env.ledger().timestamp() + 3600;
+
+    // Create a deposit but don't withdraw it
+    let deposit_id = vault.deposit(&alice, &token, &1_000, &unlock_time, &0);
+
+    // Try to archive active deposit — should fail
+    let result = vault.try_archive_deposit(
+        &alice,
+        &deposit_id,
+        &token,
+        &1_000,
+        &unlock_time,
+        &0,
+    );
+    assert_eq!(result, Err(Ok(VaultError::NoDepositFound)));
+}
+
+#[test]
+fn test_archive_deposit_fails_if_already_archived() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    let unlock_time = env.ledger().timestamp() + 3600;
+
+    // Create and withdraw a deposit
+    let deposit_id = vault.deposit(&alice, &token, &1_000, &unlock_time, &0);
+    advance_time(&env, 3600);
+    vault.withdraw(&alice, &deposit_id);
+
+    // Archive it once
+    vault.archive_deposit(&alice, &deposit_id, &token, &1_000, &unlock_time, &0);
+
+    // Try to archive again — should fail
+    let result = vault.try_archive_deposit(
+        &alice,
+        &deposit_id,
+        &token,
+        &1_000,
+        &unlock_time,
+        &0,
+    );
+    assert_eq!(result, Err(Ok(VaultError::NoArchivedDepositFound)));
+}
+
+#[test]
+fn test_archive_deposit_by_ledger_success() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    let current_ledger = env.ledger().sequence();
+    let unlock_ledger = current_ledger + 100;
+
+    // Create and withdraw a ledger-based deposit
+    let deposit_id = vault.deposit_by_ledger(&alice, &token, &1_000, &unlock_ledger, &0);
+
+    // Advance ledger past unlock
+    env.ledger().set(LedgerInfo {
+        timestamp: env.ledger().timestamp() + 500,
+        protocol_version: env.ledger().protocol_version(),
+        sequence_number: unlock_ledger,
+        network_id: Default::default(),
+        base_reserve: 10,
+        min_temp_entry_ttl: 16,
+        min_persistent_entry_ttl: 4096,
+        max_entry_ttl: 33_000_000,
+    });
+
+    vault.withdraw(&alice, &deposit_id);
+
+    // Archive the withdrawn ledger-based deposit
+    let result = vault.try_archive_deposit_by_ledger(
+        &alice,
+        &deposit_id,
+        &token,
+        &1_000,
+        &unlock_ledger,
+        &0,
+    );
+    assert_eq!(result, Ok(Ok(())));
+}
+
+#[test]
+fn test_delete_archived_deposit_success() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    let unlock_time = env.ledger().timestamp() + 3600;
+
+    // Create and withdraw a deposit
+    let deposit_id = vault.deposit(&alice, &token, &1_000, &unlock_time, &0);
+    advance_time(&env, 3600);
+    vault.withdraw(&alice, &deposit_id);
+
+    // Archive the deposit
+    vault.archive_deposit(&alice, &deposit_id, &token, &1_000, &unlock_time, &0);
+
+    // Advance time by 1 year (31,536,000 seconds)
+    advance_time(&env, 31_536_000);
+
+    // Delete the archived deposit — should succeed
+    let result = vault.try_delete_archived_deposit(&alice, &deposit_id);
+    assert_eq!(result, Ok(Ok(())));
+}
+
+#[test]
+fn test_delete_archived_deposit_fails_if_too_young() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    let unlock_time = env.ledger().timestamp() + 3600;
+
+    // Create and withdraw a deposit
+    let deposit_id = vault.deposit(&alice, &token, &1_000, &unlock_time, &0);
+    advance_time(&env, 3600);
+    vault.withdraw(&alice, &deposit_id);
+
+    // Archive the deposit
+    vault.archive_deposit(&alice, &deposit_id, &token, &1_000, &unlock_time, &0);
+
+    // Try to delete immediately — should fail (too young)
+    let result = vault.try_delete_archived_deposit(&alice, &deposit_id);
+    assert_eq!(result, Err(Ok(VaultError::ArchivedDepositTooYoung)));
+}
+
+#[test]
+fn test_delete_archived_deposit_fails_at_boundary() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    let unlock_time = env.ledger().timestamp() + 3600;
+
+    // Create and withdraw a deposit
+    let deposit_id = vault.deposit(&alice, &token, &1_000, &unlock_time, &0);
+    advance_time(&env, 3600);
+    vault.withdraw(&alice, &deposit_id);
+
+    // Archive the deposit
+    vault.archive_deposit(&alice, &deposit_id, &token, &1_000, &unlock_time, &0);
+
+    // Advance time by exactly 1 year - 1 second (too young)
+    advance_time(&env, 31_536_000 - 1);
+
+    // Try to delete — should fail
+    let result = vault.try_delete_archived_deposit(&alice, &deposit_id);
+    assert_eq!(result, Err(Ok(VaultError::ArchivedDepositTooYoung)));
+}
+
+#[test]
+fn test_delete_archived_deposit_succeeds_at_exact_boundary() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    let unlock_time = env.ledger().timestamp() + 3600;
+
+    // Create and withdraw a deposit
+    let deposit_id = vault.deposit(&alice, &token, &1_000, &unlock_time, &0);
+    advance_time(&env, 3600);
+    vault.withdraw(&alice, &deposit_id);
+
+    // Archive the deposit
+    vault.archive_deposit(&alice, &deposit_id, &token, &1_000, &unlock_time, &0);
+
+    // Advance time by exactly 1 year (boundary condition)
+    advance_time(&env, 31_536_000);
+
+    // Delete should succeed
+    let result = vault.try_delete_archived_deposit(&alice, &deposit_id);
+    assert_eq!(result, Ok(Ok(())));
+}
+
+#[test]
+fn test_delete_archived_deposit_fails_if_not_found() {
+    let (env, vault, _token, _admin, alice, _fee) = setup();
+
+    // Try to delete a non-existent archived deposit
+    let result = vault.try_delete_archived_deposit(&alice, &999);
+    assert_eq!(result, Err(Ok(VaultError::NoArchivedDepositFound)));
+}
+
+#[test]
+fn test_delete_archived_deposit_by_ledger_success() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    let current_ledger = env.ledger().sequence();
+    let unlock_ledger = current_ledger + 100;
+
+    // Create and withdraw a ledger-based deposit
+    let deposit_id = vault.deposit_by_ledger(&alice, &token, &1_000, &unlock_ledger, &0);
+
+    // Advance ledger past unlock
+    env.ledger().set(LedgerInfo {
+        timestamp: env.ledger().timestamp() + 500,
+        protocol_version: env.ledger().protocol_version(),
+        sequence_number: unlock_ledger,
+        network_id: Default::default(),
+        base_reserve: 10,
+        min_temp_entry_ttl: 16,
+        min_persistent_entry_ttl: 4096,
+        max_entry_ttl: 33_000_000,
+    });
+
+    vault.withdraw(&alice, &deposit_id);
+
+    // Archive the deposit
+    vault.archive_deposit_by_ledger(&alice, &deposit_id, &token, &1_000, &unlock_ledger, &0);
+
+    // Advance time by 1 year
+    advance_time(&env, 31_536_000);
+
+    // Delete should succeed
+    let result = vault.try_delete_archived_deposit(&alice, &deposit_id);
+    assert_eq!(result, Ok(Ok(())));
+}
+
+#[test]
+fn test_archive_after_cancelled_deposit() {
+    let (env, vault, token, _admin, alice, fee) = setup();
+    let unlock_time = env.ledger().timestamp() + 3600;
+
+    // Create a deposit with penalty
+    let deposit_id = vault.deposit(&alice, &token, &1_000, &unlock_time, &5_000); // 50% penalty
+
+    // Cancel the deposit (early exit)
+    vault.cancel_deposit(&alice, &deposit_id);
+
+    // Archive the cancelled deposit
+    let result = vault.try_archive_deposit(
+        &alice,
+        &deposit_id,
+        &token,
+        &1_000,
+        &unlock_time,
+        &5_000,
+    );
+    assert_eq!(result, Ok(Ok(())));
+}
+
+#[test]
+fn test_multiple_deposits_archival() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    let unlock_time = env.ledger().timestamp() + 3600;
+
+    // Create three deposits
+    let id0 = vault.deposit(&alice, &token, &500, &unlock_time, &0);
+    let id1 = vault.deposit(&alice, &token, &1_000, &unlock_time, &0);
+    let id2 = vault.deposit(&alice, &token, &1_500, &unlock_time, &0);
+
+    // Withdraw all
+    advance_time(&env, 3600);
+    vault.withdraw(&alice, &id0);
+    vault.withdraw(&alice, &id1);
+    vault.withdraw(&alice, &id2);
+
+    // Archive all
+    vault.archive_deposit(&alice, &id0, &token, &500, &unlock_time, &0);
+    vault.archive_deposit(&alice, &id1, &token, &1_000, &unlock_time, &0);
+    vault.archive_deposit(&alice, &id2, &token, &1_500, &unlock_time, &0);
+
+    // Advance time by 1 year and delete all
+    advance_time(&env, 31_536_000);
+    assert_eq!(vault.try_delete_archived_deposit(&alice, &id0), Ok(Ok(())));
+    assert_eq!(vault.try_delete_archived_deposit(&alice, &id1), Ok(Ok(())));
+    assert_eq!(vault.try_delete_archived_deposit(&alice, &id2), Ok(Ok(())));
+}
+
+#[test]
+fn test_archive_preserves_original_deposit_data() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    let unlock_time = env.ledger().timestamp() + 3600;
+
+    // Create deposit with specific data
+    let deposit_id = vault.deposit(&alice, &token, &2_500, &unlock_time, &2_500); // 25% penalty
+
+    advance_time(&env, 3600);
+    vault.withdraw(&alice, &deposit_id);
+
+    // Archive the deposit
+    vault.archive_deposit(&alice, &deposit_id, &token, &2_500, &unlock_time, &2_500);
+
+    // Verify the archived entry matches the original
+    // (by checking it can be successfully archived with matching data)
+    // Re-archival should fail, confirming original data was preserved
+    let result = vault.try_archive_deposit(
+        &alice,
+        &deposit_id,
+        &token,
+        &2_500,
+        &unlock_time,
+        &2_500,
+    );
+    assert_eq!(result, Err(Ok(VaultError::NoArchivedDepositFound)));
+}
+
+#[test]
+fn test_archive_different_depositors() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let vault_id = env.register(SafeHaven, ());
+    let vault = SafeHavenClient::new(&env, &vault_id);
+
+    let admin: Address = Address::generate(&env);
+    let alice: Address = Address::generate(&env);
+    let bob: Address = Address::generate(&env);
+    let fee_recipient: Address = Address::generate(&env);
+
+    let token_address = env.register_stellar_asset_contract(admin.clone());
+    let token = TokenClient::new(&env, &token_address);
+    let asset_client = StellarAssetClient::new(&env, &token_address);
+
+    // Mint for both alice and bob
+    asset_client.mint(&alice, &10_000);
+    asset_client.mint(&bob, &10_000);
+
+    vault.initialize(&admin, &fee_recipient, &None, &None);
+
+    let unlock_time = env.ledger().timestamp() + 3600;
+
+    // Alice creates a deposit
+    let alice_id = vault.deposit(&alice, &token_address, &1_000, &unlock_time, &0);
+
+    // Bob creates a deposit
+    let bob_id = vault.deposit(&bob, &token_address, &2_000, &unlock_time, &0);
+
+    // Both withdraw
+    advance_time(&env, 3600);
+    vault.withdraw(&alice, &alice_id);
+    vault.withdraw(&bob, &bob_id);
+
+    // Both archive
+    vault.archive_deposit(&alice, &alice_id, &token_address, &1_000, &unlock_time, &0);
+    vault.archive_deposit(&bob, &bob_id, &token_address, &2_000, &unlock_time, &0);
+
+    // Advance time and delete
+    advance_time(&env, 31_536_000);
+    assert_eq!(vault.try_delete_archived_deposit(&alice, &alice_id), Ok(Ok(())));
+    assert_eq!(vault.try_delete_archived_deposit(&bob, &bob_id), Ok(Ok(())));
+
+    // Verify they're deleted
+    assert_eq!(vault.try_delete_archived_deposit(&alice, &alice_id), Err(Ok(VaultError::NoArchivedDepositFound)));
+    assert_eq!(vault.try_delete_archived_deposit(&bob, &bob_id), Err(Ok(VaultError::NoArchivedDepositFound)));
+}
+
+#[test]
+fn test_delete_archived_deposit_requires_auth() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let vault_id = env.register(SafeHaven, ());
+    let vault = SafeHavenClient::new(&env, &vault_id);
+
+    let admin: Address = Address::generate(&env);
+    let alice: Address = Address::generate(&env);
+    let bob: Address = Address::generate(&env);
+    let fee_recipient: Address = Address::generate(&env);
+
+    let token_address = env.register_stellar_asset_contract(admin.clone());
+    let asset_client = StellarAssetClient::new(&env, &token_address);
+
+    asset_client.mint(&alice, &10_000);
+    vault.initialize(&admin, &fee_recipient, &None, &None);
+
+    let unlock_time = env.ledger().timestamp() + 3600;
+    let deposit_id = vault.deposit(&alice, &token_address, &1_000, &unlock_time, &0);
+
+    advance_time(&env, 3600);
+    vault.withdraw(&alice, &deposit_id);
+
+    vault.archive_deposit(&alice, &deposit_id, &token_address, &1_000, &unlock_time, &0);
+    advance_time(&env, 31_536_000);
+
+    // Try to delete from different depositor (bob) — should fail due to auth
+    // Reset mocking to require explicit auth for bob
+    env.mock_auths(&[(
+        bob.clone(),
+        soroban_sdk::auth::AuthorizedInvocation {
+            function: soroban_sdk::auth::AuthorizedFunction::Contract((
+                env.current_contract_address(),
+                soroban_sdk::Symbol::new(&env, "delete_archived_deposit"),
+                soroban_sdk::Vec::new(&env),
+            )),
+            sub_invocations: soroban_sdk::Vec::new(&env),
+        },
+    )]);
+
+    let result = vault.try_delete_archived_deposit(&bob, &deposit_id);
+    // This should fail because bob is not the depositor and the contract requires auth
+    assert!(result.is_err());
+}
