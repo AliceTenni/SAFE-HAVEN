@@ -21,9 +21,9 @@ React + TypeScript + Vite frontend for the [SAFE-HAVEN](../contracts/) Soroban s
 |---|---|
 | 🔐 Wallet connect | Freighter wallet integration with session persistence |
 | 📊 Dashboard | Live view of all your deposits with countdown timers |
+| 🔑 Account recovery | Register a recovery contact and start a seven-day, verifiable recovery request |
 | 💰 Deposit | Lock any SEP-41 token with custom unlock time and penalty |
 | ⬆️ Withdraw | Claim unlocked tokens or cancel early with penalty |
-| 🛡️ Admin panel | Pause/unpause + emergency withdrawal (admin only) |
 | 🔗 Explorer links | Every address and tx links to Stellar Expert |
 
 ---
@@ -45,6 +45,7 @@ npm install
 
 ### 3. Configure environment
 
+│   └── recovery.ts       # Frontend-only recovery contacts and timelock state
 ```bash
 cp .env.example .env
 ```
@@ -55,6 +56,7 @@ Edit `.env` and set at minimum:
 VITE_CONTRACT_ID=C...   # Your deployed contract address
 ```
 
+    ├── SettingsPage.tsx  # Recovery contacts and account recovery
 ### 4. Run dev server
 
 ```bash

@@ -6,6 +6,7 @@ import { TabNav } from './components/TabNav'
 import { Dashboard } from './pages/Dashboard'
 import { DepositPage } from './pages/DepositPage'
 import { WithdrawPage } from './pages/WithdrawPage'
+import { SettingsPage } from './pages/SettingsPage'
 import { AdminPage } from './pages/AdminPage'
 import type { PageTab } from './types'
 
@@ -45,12 +46,14 @@ function AppInner() {
               {activeTab === 'dashboard' && 'My Vaults'}
               {activeTab === 'deposit'   && 'New Deposit'}
               {activeTab === 'withdraw'  && 'Withdraw'}
+              {activeTab === 'settings'  && 'Settings'}
               {activeTab === 'admin'     && 'Admin Panel'}
             </h1>
             <p className="text-slate-400 text-sm mt-0.5">
               {activeTab === 'dashboard' && 'View and manage all your time-locked deposits'}
               {activeTab === 'deposit'   && 'Lock tokens until a future date'}
               {activeTab === 'withdraw'  && 'Withdraw unlocked tokens or cancel early'}
+              {activeTab === 'settings'  && 'Manage recovery contacts and account protection'}
               {activeTab === 'admin'     && 'Contract administration controls'}
             </p>
           </div>
@@ -67,6 +70,9 @@ function AppInner() {
         )}
         {activeTab === 'withdraw' && (
           <WithdrawPage />
+        )}
+        {activeTab === 'settings' && (
+          <SettingsPage />
         )}
         {activeTab === 'admin' && (
           <AdminPage contractInfo={contractInfo} onContractInfoRefresh={contractInfo.refresh} />
