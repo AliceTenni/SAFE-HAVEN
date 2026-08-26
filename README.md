@@ -61,9 +61,17 @@ make build
 # Test
 make test
 
-# Deploy to testnet
+# Deploy to testnet (builds, optimizes, funds, deploys, initializes, and archives artifacts)
 export SOROBAN_SECRET_KEY=S...
 make deploy-testnet
+
+# Deploy to mainnet (the deployer must already be funded; no mainnet faucet exists)
+export SOROBAN_SECRET_KEY=S...
+make deploy-mainnet
+
+# Redeploy a retained immutable WASM as a new contract ID
+export SOROBAN_SECRET_KEY=S...
+make rollback NETWORK=testnet ARTIFACT_DIR=deployments/testnet/<timestamp>
 ```
 
 ### Frontend
@@ -76,6 +84,12 @@ npm run dev            # -> http://localhost:5173
 ```
 
 See [`frontend/README.md`](./frontend/README.md) for the full frontend guide.
+
+See [`DISASTER_RECOVERY.md`](./DISASTER_RECOVERY.md) for disaster scenarios, recovery procedures, roles, and escalation rules.
+
+See [`MONITORING.md`](./MONITORING.md) for contract health checks, alert thresholds, storage/TTL monitoring, and failed-transaction observability.
+
+Deployment artifacts are written to `deployments/<network>/<timestamp>/`, including raw and optimized WASM, contract ID, manifest, and checksum. Each deployment also updates `deploy_<network>.log` for CI compatibility. Soroban contracts are immutable, so rollback means deploying the retained previous WASM as a new contract and updating the frontend contract ID after verification.
 
 ---
 
