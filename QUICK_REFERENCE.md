@@ -1,163 +1,158 @@
-# Quick Reference: Emergency Withdrawal Per-Ledger Limit
+# Staker Registry - Quick Reference
 
-## TL;DR
-Added per-ledger tracking and enforcement of emergency withdrawals with a 100M limit per ledger, plus 11 comprehensive tests.
+## 🎯 What's New
 
-## Key Changes at a Glance
+A complete staker registry system with penalty splitting rewards mechanism for SAFE-HAVEN contract.
 
-```
-Feature:    Emergency Withdrawal Per-Ledger Limit
-Limit:      100,000,000,000,000 stroops (100M) per ledger
-Resets:     Automatically at ledger boundary
-Enforcement: In emergency_withdraw() function
-Error Code: EmergencyWithdrawalLimitExceeded (16)
-```
+## 💡 Core Concepts
 
-## Modified Files
-
-| File | Changes | Purpose |
-|------|---------|---------|
-| `types.rs` | +3 lines | Constant + storage key |
-| `errors.rs` | +3 lines | New error code |
-| `storage.rs` | +31 lines | Helper functions |
-| `contract.rs` | ~70 lines | Enforcement + query |
-| `test.rs` | +211 lines | 11 new tests |
-
-## New Constants
-
+### Staker Registration
 ```rust
-pub const MAX_EMERGENCY_WITHDRAWAL_PER_LEDGER: i128 = 100_000_000_000_000;
+vault.register_staker(&alice, &1000)?;  // Alice stakes 1000 tokens
+vault.register_staker(&alice, &2000)?;  // Alice updates to 2000 tokens
 ```
 
-## New Enums/Variants
+### Penalty Splitting
+When someone exits early with a penalty:
+- 30% → Fee Recipient (direct transfer)
+- 70% → Staker Rewards Pool (accumulated)
 
-```rust
-VaultKey::EmergencyWithdrawalPerLedger(u32)  // Storage key for per-ledger tracking
+### Reward Distribution
+Stakers claim proportional rewards based on their stake share:
+```
+staker_reward = (staker_stake / total_staked) * rewards_pool
 ```
 
-## New Error Codes
+## 📋 New API Functions
 
-```rust
-EmergencyWithdrawalLimitExceeded = 16
+### register_staker(staker, amount) → Result<(), VaultError>
+- Register or update staker's stake amount
+- Requires: `amount > 0`
+- Auth: Staker must sign
+- Error: `InvalidStakeAmount`, `Unauthorized`
+
+### claim_staker_rewards(staker) → Result<(), VaultError>
+- Claim accumulated rewards from pool
+- Requires: Staker registered, reward > 0
+- Auth: Staker must sign
+- Error: `StakerNotFound`, `NoRewardsToClaim`, `Unauthorized`
+
+## 📊 Storage Schema
+
+| Key | Type | Purpose |
+|-----|------|---------|
+| Staker(Address) | i128 | Staker's current stake |
+| StakerList | Vec<Address> | All registered stakers |
+| TotalStaked | i128 | Sum of all stakes |
+| RewardsPool | i128 | Accumulated penalty rewards |
+| StakerRewardsClaimed(Address) | i128 | Cumulative rewards claimed |
+
+## 📈 Example Flow
+
+```
+1. Alice registers with 1000 tokens
+   register_staker(&alice, &1000)
+
+2. Bob registers with 3000 tokens
+   register_staker(&bob, &3000)
+   
+3. Carol deposits 100 tokens with 10% penalty (1000 bps)
+   deposit(&carol, &token, &100, &unlock_time, &1000)
+   
+4. Carol cancels early → 10 token penalty
+   cancel_deposit(&carol, &deposit_id)
+   
+5. Penalty split: 3 to fee_recipient, 7 to rewards pool
+   RewardsPool = 7
+
+6. Alice claims (1000/4000 * 7 = 1.75 ≈ 1 token)
+   claim_staker_rewards(&alice)
+   
+7. Bob claims (3000/4000 * 6 = 4.5 ≈ 4 tokens)
+   claim_staker_rewards(&bob)
 ```
 
-## New Storage Functions
+## 🔍 Error Codes
 
-```rust
-pub fn add_emergency_withdrawal(env: &Env, amount: i128) -> i128
-pub fn get_emergency_withdrawal_per_ledger(env: &Env, ledger: u32) -> i128
-pub fn get_current_ledger_emergency_withdrawal(env: &Env) -> i128
-```
+| Code | Error | When |
+|------|-------|------|
+| 16 | InvalidStakeAmount | Stake amount ≤ 0 |
+| 17 | StakerNotFound | Staker not registered |
+| 18 | NoRewardsToClaim | Pool empty or reward rounds to 0 |
+| 19 | InsufficientStakeAmount | (Reserved for future use) |
 
-## New Contract Functions
+## 📡 Events
 
-```rust
-pub fn get_emergency_withdrawal_total(env: Env, ledger: u32) -> i128
-```
+### StakerRegistered
+- Emitted when staker registers or updates stake
+- Topics: staker address
+- Data: stake amount
 
-## Modified Contract Functions
+### PenaltySplit
+- Emitted when penalty is split on cancel
+- Topics: depositor address
+- Data: total_penalty, fee_recipient_share, stakers_share, deposit_id
 
-```rust
-pub fn emergency_withdraw(
-    env: Env,
-    admin: Address,
-    depositor: Address,
-    deposit_id: u32,
-) -> Result<(), VaultError>
-// Now checks: if new_total > MAX_EMERGENCY_WITHDRAWAL_PER_LEDGER { fail }
-```
+### RewardsClaimed
+- Emitted when staker claims rewards
+- Topics: staker address
+- Data: claimed amount
 
-## New Tests
+## 🧪 Test Coverage
 
-1. ✅ test_emergency_withdrawal_limit_single_withdrawal_succeeds
-2. ✅ test_emergency_withdrawal_limit_cumulative_tracking
-3. ✅ test_emergency_withdrawal_limit_exceeds_fails
-4. ✅ test_emergency_withdrawal_limit_at_boundary
-5. ✅ test_emergency_withdrawal_limit_resets_at_ledger_boundary
-6. ✅ test_emergency_withdrawal_multiple_deposits_same_ledger
-7. ✅ test_emergency_withdrawal_limit_multiple_depositors
-8. ✅ test_emergency_withdrawal_query_nonexistent_ledger
-9. ✅ test_emergency_withdrawal_ledger_based_deposit_limit
-10. ✅ test_emergency_withdrawal_mixed_deposit_types_same_ledger
-11. ✅ (11 tests total covering all scenarios)
+15 comprehensive tests covering:
+- ✅ Registration (valid/invalid)
+- ✅ Stake updates
+- ✅ Multiple stakers
+- ✅ Reward claiming
+- ✅ Penalty splitting
+- ✅ Proportional distribution
+- ✅ Event emission
+- ✅ Auth enforcement
+- ✅ Edge cases (empty pool, rounding)
 
-## Usage Examples
+## 🔒 Security
 
-### Query current ledger's withdrawal total
-```rust
-let total = vault.get_emergency_withdrawal_total(&env, env.ledger().sequence());
-// Returns i128 total for current ledger
-```
+- ✅ Auth-first: All mutations require staker signature
+- ✅ Input validation: All amounts checked > 0
+- ✅ TTL management: All storage has proper TTL extension
+- ✅ Integer safety: No arithmetic side effects
+- ✅ Backwards compatible: Old deposits unaffected
 
-### Query historical ledger
-```rust
-let total = vault.get_emergency_withdrawal_total(&env, 1234);
-// Returns i128 total for ledger 1234
-```
+## 📚 Documentation
 
-### Attempt emergency withdrawal (enforced)
-```rust
-let result = vault.emergency_withdraw(&admin, &depositor, &deposit_id);
-// If current_ledger_total + amount > 100M: returns EmergencyWithdrawalLimitExceeded
-// If would exceed limit: no state change (atomic)
-```
+- Full API docs in README.md
+- Implementation details in STAKER_REGISTRY_IMPLEMENTATION.md
+- Verification checklist in IMPLEMENTATION_CHECKLIST.md
 
-## Behavior Summary
+## 🚀 Getting Started
 
-| Scenario | Behavior |
-|----------|----------|
-| Single withdrawal < limit | ✅ Succeeds, tracked |
-| Multiple withdrawals, total < limit | ✅ All succeed, cumulative tracked |
-| Withdrawal would exceed limit | ❌ Fails, no state change |
-| New ledger arrives | ✓ Counter resets for new ledger |
-| Query any ledger | ✅ Returns total for that ledger |
+1. **Register as staker:**
+   ```
+   register_staker(my_address, 1000)
+   ```
 
-## Files for Review
+2. **Wait for penalties to accumulate** (from early withdrawals)
 
-1. **Feature Details:** `EMERGENCY_WITHDRAWAL_LIMIT_IMPLEMENTATION.md`
-2. **Testing Guide:** `CI_TESTING_GUIDE.md`
-3. **Changes Summary:** `IMPLEMENTATION_CHANGES.md`
-4. **Verification:** `VERIFICATION_CHECKLIST.md`
+3. **Claim your rewards:**
+   ```
+   claim_staker_rewards(my_address)
+   ```
 
-## Test Command
+4. **Check your claim history** via rewards_claimed tracking
 
-```bash
-# Run all emergency withdrawal tests
-cargo test --features testutils -- emergency_withdrawal
+## ⚙️ Constants
 
-# Run full test suite (including new tests)
-cargo test --features testutils
-```
+- STAKER_PENALTY_BPS = 7_000 (70%)
+- FEE_RECIPIENT_PENALTY_BPS = 3_000 (30%)
 
-## Security Highlights
+## 🔗 Related Functions
 
-- ✅ Saturating arithmetic (no overflow)
-- ✅ Atomic enforcement (check before modify)
-- ✅ No re-entrancy vectors
-- ✅ Auth checks preserved
-- ✅ Transparent auditing
+- `cancel_deposit()` - Now splits penalties (modified)
+- `deposit()` - Unchanged (works as before)
+- `withdraw()` - Unchanged (works as before)
+- `initialize()` - Unchanged (works as before)
 
-## Backward Compatibility
+---
 
-✅ **100% Compatible**
-- No breaking changes
-- No function signature changes
-- All existing tests pass
-- Ready for production
-
-## Summary
-
-**Status:** ✅ COMPLETE
-
-**What it does:**
-- Tracks cumulative emergency withdrawals per ledger
-- Prevents any single ledger from exceeding 100M stroops in emergency withdrawals
-- Allows admins to audit withdrawal activity
-- Resets automatically at ledger boundaries
-
-**Why it matters:**
-- Prevents admin abuse through excessive emergency withdrawals
-- Enables transparent governance oversight
-- Maintains system stability through per-ledger caps
-
-**Ready for:** CI/CD pipeline, code review, production deployment
+**More Details:** See README.md, STAKER_REGISTRY_IMPLEMENTATION.md, IMPLEMENTATION_CHECKLIST.md
