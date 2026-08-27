@@ -1,4 +1,4 @@
-use soroban_sdk::{symbol_short, Address, Env, Symbol};
+use soroban_sdk::{symbol_short, Address, Env, Symbol, Vec};
 
 pub fn contract_initialized(
     env: &Env,
@@ -22,9 +22,29 @@ pub fn deposit_by_ledger(env: &Env, depositor: &Address, token: &Address, amount
     env.events().publish(topics, (amount, unlock_ledger, deposit_id));
 }
 
+/// Emitted when a multi-token deposit is created (issue #330).
+/// `token_count` is the number of distinct tokens in the vault.
+pub fn multi_deposit(
+    env: &Env,
+    depositor: &Address,
+    token_count: u32,
+    unlock_time: u64,
+    deposit_id: u32,
+) {
+    let topics = (Symbol::new(env, "multi_deposit"), depositor.clone());
+    env.events()
+        .publish(topics, (token_count, unlock_time, deposit_id));
+}
+
 pub fn withdraw(env: &Env, depositor: &Address, token: &Address, amount: i128, deposit_id: u32) {
     let topics = (symbol_short!("withdraw"), depositor.clone(), token.clone());
     env.events().publish(topics, (amount, deposit_id));
+}
+
+/// Emitted when a multi-token deposit is withdrawn (issue #330).
+pub fn multi_withdraw(env: &Env, depositor: &Address, recipient: &Address, deposit_id: u32, token_count: u32) {
+    let topics = (Symbol::new(env, "multi_wdraw"), depositor.clone());
+    env.events().publish(topics, (recipient.clone(), deposit_id, token_count));
 }
 
 pub fn emergency_withdraw(
@@ -35,8 +55,6 @@ pub fn emergency_withdraw(
     amount: i128,
     deposit_id: u32,
 ) {
-    // admin is placed in the data payload rather than topics to avoid
-    // leaking the admin address in the publicly-indexed event topic stream.
     let topics = (Symbol::new(env, "emrg_wdraw"), depositor.clone());
     env.events()
         .publish(topics, (admin.clone(), token.clone(), amount, deposit_id));
@@ -109,24 +127,26 @@ pub fn withdraw_to(
     env.events().publish(topics, (recipient.clone(), amount));
 }
 
-pub fn staker_registered(env: &Env, staker: &Address, stake_amount: i128) {
-    let topics = (Symbol::new(env, "staker_reg"), staker.clone());
-    env.events().publish(topics, stake_amount);
-}
-
-pub fn penalty_split(
+/// Emitted when the withdrawal whitelist is set for a deposit (issue #331).
+pub fn whitelist_set(
     env: &Env,
     depositor: &Address,
-    total_penalty: i128,
-    fee_recipient_share: i128,
-    stakers_share: i128,
     deposit_id: u32,
+    whitelist: &Vec<Address>,
 ) {
-    let topics = (Symbol::new(env, "penalty_split"), depositor.clone());
-    env.events().publish(topics, (total_penalty, fee_recipient_share, stakers_share, deposit_id));
+    let topics = (Symbol::new(env, "wl_set"), depositor.clone());
+    env.events().publish(topics, (deposit_id, whitelist.len()));
 }
 
-pub fn rewards_claimed(env: &Env, staker: &Address, amount: i128) {
-    let topics = (Symbol::new(env, "rewards_claimed"), staker.clone());
-    env.events().publish(topics, amount);
+/// Emitted when compound interest is accrued (issue #332).
+pub fn interest_accrued(
+    env: &Env,
+    depositor: &Address,
+    deposit_id: u32,
+    old_amount: i128,
+    new_amount: i128,
+) {
+    let topics = (Symbol::new(env, "interest"), depositor.clone());
+    env.events()
+        .publish(topics, (deposit_id, old_amount, new_amount));
 }
