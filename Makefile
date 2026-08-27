@@ -8,7 +8,7 @@ OPTIMIZED    := target/safe_haven.optimized.wasm
 
 .PHONY: all build test fmt lint clean optimize deploy-testnet size check audit deny
 .PHONY: all build test watch fmt lint clean optimize deploy-testnet size check doc smoke-test-local
-.PHONY: install-tools dev dev-stop
+.PHONY: install-tools dev dev-stop migrate-contract
 
 ## Default: lint + test
 all: lint test
@@ -143,3 +143,8 @@ check-wasm-size: optimize
 ## Run smoke tests against a local Soroban standalone node (requires stellar CLI)
 smoke-test-local: build
 	bash scripts/smoke_test_local.sh
+
+## Run the legacy schema migration helper for an existing deployment
+migrate-contract:
+	@echo "==> Running legacy migration helper..."
+	@bash scripts/migrate_contract.sh
