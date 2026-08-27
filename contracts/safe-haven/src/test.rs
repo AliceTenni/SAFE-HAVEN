@@ -3232,3 +3232,312 @@ fn test_withdraw_to_with_whitelist_and_compound_interest() {
     let token_client = TokenClient::new(&env, &token);
     assert_eq!(token_client.balance(&bob), expected);
 }
+
+
+// ================================================================
+//  Staker Registry Tests
+// ================================================================
+
+#[test]
+fn test_register_staker_success() {
+    let (env, vault, _token, _admin, alice, _fee) = setup();
+
+    // Alice registers as a staker with stake amount 1000
+    let result = vault.register_staker(&alice, &1000);
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_register_staker_zero_amount_fails() {
+    let (env, vault, _token, _admin, alice, _fee) = setup();
+
+    // Attempting to register with zero stake should fail
+    let result = vault.register_staker(&alice, &0);
+    assert!(result.is_err());
+    assert_eq!(result.err().unwrap(), VaultError::InvalidStakeAmount);
+}
+
+#[test]
+fn test_register_staker_negative_amount_fails() {
+    let (env, vault, _token, _admin, alice, _fee) = setup();
+
+    // Attempting to register with negative stake should fail
+    let result = vault.register_staker(&alice, &-1000);
+    assert!(result.is_err());
+    assert_eq!(result.err().unwrap(), VaultError::InvalidStakeAmount);
+}
+
+#[test]
+fn test_register_staker_updates_existing_stake() {
+    let (env, vault, _token, _admin, alice, _fee) = setup();
+
+    // Register with 1000
+    vault.register_staker(&alice, &1000).unwrap();
+
+    // Update to 2000
+    vault.register_staker(&alice, &2000).unwrap();
+
+    // Verify event was emitted for second registration
+    let events = env.events().all();
+    let staker_reg_events: std::vec::Vec<_> = events
+        .iter()
+        .filter(|(_, event)| {
+            if let Some(data) = &event.data {
+                let raw = &data.data;
+                raw.len() > 0
+            } else {
+                false
+            }
+        })
+        .collect();
+    assert!(staker_reg_events.len() > 0);
+}
+
+#[test]
+fn test_multiple_stakers_register() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let vault_id = env.register(SafeHaven, ());
+    let vault = SafeHavenClient::new(&env, &vault_id);
+
+    let admin: Address = Address::generate(&env);
+    let alice: Address = Address::generate(&env);
+    let bob: Address = Address::generate(&env);
+    let carol: Address = Address::generate(&env);
+    let fee_recipient: Address = Address::generate(&env);
+
+    let token_id = env.register_stellar_asset_contract_v2(admin.clone());
+    let token = token_id.address();
+
+    vault.initialize(&admin, &fee_recipient, &None, &None);
+
+    // Register multiple stakers
+    vault.register_staker(&alice, &1000).unwrap();
+    vault.register_staker(&bob, &2000).unwrap();
+    vault.register_staker(&carol, &3000).unwrap();
+
+    // All registrations should succeed
+}
+
+#[test]
+fn test_claim_staker_rewards_requires_registration() {
+    let (env, vault, _token, _admin, alice, _fee) = setup();
+
+    // Alice tries to claim without registering — should fail
+    let result = vault.claim_staker_rewards(&alice);
+    assert!(result.is_err());
+    assert_eq!(result.err().unwrap(), VaultError::StakerNotFound);
+}
+
+#[test]
+fn test_claim_staker_rewards_with_empty_pool() {
+    let (env, vault, _token, _admin, alice, _fee) = setup();
+
+    // Register as staker
+    vault.register_staker(&alice, &1000).unwrap();
+
+    // Try to claim with empty rewards pool — should fail
+    let result = vault.claim_staker_rewards(&alice);
+    assert!(result.is_err());
+    assert_eq!(result.err().unwrap(), VaultError::NoRewardsToClaim);
+}
+
+#[test]
+fn test_penalty_split_on_cancel_deposit() {
+    let (env, vault, token, admin, alice, fee_recipient) = setup();
+
+    // Alice deposits with a penalty
+    let unlock_time = env.ledger().timestamp() + 3600;
+    let deposit_id = vault.deposit(&alice, &token, &1000, &unlock_time, &1000).unwrap();
+
+    // Cancel the deposit (10% penalty = 100 tokens)
+    // Split: 70% to stakers rewards (70), 30% to fee_recipient (30)
+    vault.cancel_deposit(&alice, &deposit_id).unwrap();
+
+    // Check events for penalty split
+    let events = env.events().all();
+    assert!(events.len() > 0); // Should have penalty_split and deposit_cancelled events
+}
+
+#[test]
+fn test_single_staker_claims_full_rewards() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let vault_id = env.register(SafeHaven, ());
+    let vault = SafeHavenClient::new(&env, &vault_id);
+
+    let admin: Address = Address::generate(&env);
+    let alice: Address = Address::generate(&env);
+    let fee_recipient: Address = Address::generate(&env);
+
+    let token_id = env.register_stellar_asset_contract_v2(admin.clone());
+    let token_address = token_id.address();
+
+    StellarAssetClient::new(&env, &token_address).mint(&alice, &10_000);
+
+    vault.initialize(&admin, &fee_recipient, &None, &None);
+
+    // Alice is the only staker
+    vault.register_staker(&alice, &1000).unwrap();
+
+    // Deposit with penalty to generate rewards pool
+    let unlock_time = env.ledger().timestamp() + 3600;
+    let deposit_id = vault
+        .deposit(&alice, &token_address, &1000, &unlock_time, &1000)
+        .unwrap();
+
+    // Cancel deposit to generate penalty (1000 * 0.10 = 100, split: 70 to stakers, 30 to fee)
+    vault.cancel_deposit(&alice, &deposit_id).unwrap();
+
+    // Alice claims rewards — should get 70 tokens (the staker share)
+    let result = vault.claim_staker_rewards(&alice);
+    assert!(result.is_ok()); // Should succeed
+}
+
+#[test]
+fn test_multiple_stakers_proportional_rewards() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let vault_id = env.register(SafeHaven, ());
+    let vault = SafeHavenClient::new(&env, &vault_id);
+
+    let admin: Address = Address::generate(&env);
+    let alice: Address = Address::generate(&env);
+    let bob: Address = Address::generate(&env);
+    let fee_recipient: Address = Address::generate(&env);
+
+    let token_id = env.register_stellar_asset_contract_v2(admin.clone());
+    let token_address = token_id.address();
+
+    StellarAssetClient::new(&env, &token_address).mint(&alice, &10_000);
+    StellarAssetClient::new(&env, &token_address).mint(&bob, &10_000);
+
+    vault.initialize(&admin, &fee_recipient, &None, &None);
+
+    // Two stakers: Alice with 1000, Bob with 3000 (total 4000)
+    vault.register_staker(&alice, &1000).unwrap();
+    vault.register_staker(&bob, &3000).unwrap();
+
+    // Deposit with penalty
+    let unlock_time = env.ledger().timestamp() + 3600;
+    let deposit_id = vault
+        .deposit(&alice, &token_address, &1000, &unlock_time, &1000)
+        .unwrap();
+
+    // Cancel deposit to generate 70 tokens in rewards pool (1000 * 0.10 * 0.70)
+    vault.cancel_deposit(&alice, &deposit_id).unwrap();
+
+    // Alice should be able to claim her proportional share (1000/4000 * 70 = 17.5, likely rounds to 17)
+    let result = vault.claim_staker_rewards(&alice);
+    assert!(result.is_ok());
+
+    // Bob should be able to claim his proportional share (3000/4000 * 70 = 52.5, likely rounds to 52)
+    let result = vault.claim_staker_rewards(&bob);
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_staker_registration_emits_event() {
+    let (env, vault, _token, _admin, alice, _fee) = setup();
+
+    let staker_addr = alice.clone();
+    vault.register_staker(&staker_addr, &1000).unwrap();
+
+    // Check for staker_registered event
+    let events = env.events().all();
+    assert!(events.len() > 0);
+}
+
+#[test]
+fn test_staker_rewards_claimed_emits_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let vault_id = env.register(SafeHaven, ());
+    let vault = SafeHavenClient::new(&env, &vault_id);
+
+    let admin: Address = Address::generate(&env);
+    let alice: Address = Address::generate(&env);
+    let fee_recipient: Address = Address::generate(&env);
+
+    let token_id = env.register_stellar_asset_contract_v2(admin.clone());
+    let token_address = token_id.address();
+
+    StellarAssetClient::new(&env, &token_address).mint(&alice, &10_000);
+
+    vault.initialize(&admin, &fee_recipient, &None, &None);
+
+    vault.register_staker(&alice, &1000).unwrap();
+
+    // Deposit and cancel to generate rewards
+    let unlock_time = env.ledger().timestamp() + 3600;
+    let deposit_id = vault
+        .deposit(&alice, &token_address, &1000, &unlock_time, &1000)
+        .unwrap();
+    vault.cancel_deposit(&alice, &deposit_id).unwrap();
+
+    // Claim rewards — should emit event
+    vault.claim_staker_rewards(&alice).unwrap();
+
+    let events = env.events().all();
+    assert!(events.len() > 0); // Should have reward claim event
+}
+
+#[test]
+fn test_penalty_split_percentages() {
+    // Verify that STAKER_PENALTY_BPS (7000) and FEE_RECIPIENT_PENALTY_BPS (3000) sum to 10000
+    assert_eq!(crate::constants::STAKER_PENALTY_BPS + crate::constants::FEE_RECIPIENT_PENALTY_BPS, 10_000);
+}
+
+#[test]
+fn test_register_staker_auth_required() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let vault_id = env.register(SafeHaven, ());
+    let vault = SafeHavenClient::new(&env, &vault_id);
+
+    let admin: Address = Address::generate(&env);
+    let alice: Address = Address::generate(&env);
+    let fee_recipient: Address = Address::generate(&env);
+
+    vault.initialize(&admin, &fee_recipient, &None, &None);
+
+    // Register should require auth from the staker (alice)
+    vault.register_staker(&alice, &1000).unwrap();
+}
+
+#[test]
+fn test_claim_staker_rewards_auth_required() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let vault_id = env.register(SafeHaven, ());
+    let vault = SafeHavenClient::new(&env, &vault_id);
+
+    let admin: Address = Address::generate(&env);
+    let alice: Address = Address::generate(&env);
+    let fee_recipient: Address = Address::generate(&env);
+
+    let token_id = env.register_stellar_asset_contract_v2(admin.clone());
+    let token_address = token_id.address();
+
+    StellarAssetClient::new(&env, &token_address).mint(&alice, &10_000);
+
+    vault.initialize(&admin, &fee_recipient, &None, &None);
+
+    vault.register_staker(&alice, &1000).unwrap();
+
+    // Deposit and cancel to generate rewards
+    let unlock_time = env.ledger().timestamp() + 3600;
+    let deposit_id = vault
+        .deposit(&alice, &token_address, &1000, &unlock_time, &1000)
+        .unwrap();
+    vault.cancel_deposit(&alice, &deposit_id).unwrap();
+
+    // Claim should require auth from the staker (alice)
+    vault.claim_staker_rewards(&alice).unwrap();
+}

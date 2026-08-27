@@ -42,6 +42,18 @@ pub enum VaultKey {
     /// Persists the schema version written by the last `migrate()` call (or 1
     /// for contracts that were initialized before versioning was introduced).
     StorageVersion,
+    /// Staker entry: maps staker address to their stake amount
+    Staker(Address),
+    /// List of all registered stakers
+    StakerList,
+    /// Flag to track if a staker is in the StakerList (prevents duplicates)
+    StakerInList(Address),
+    /// Total amount staked by all stakers
+    TotalStaked,
+    /// Rewards pool for stakers (accumulated from penalties)
+    RewardsPool,
+    /// Rewards claimed by a staker (track cumulative for auditing)
+    StakerRewardsClaimed(Address),
 }
 
 #[contracttype]
@@ -112,4 +124,20 @@ pub struct Page {
     pub items: soroban_sdk::Vec<Address>,
     /// Total number of active items across all pages
     pub total_count: u32,
+}
+
+/// Staker entry: tracks stake amount and optionally last claim timestamp
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StakerEntry {
+    pub staker: Address,
+    pub stake_amount: i128,
+}
+
+/// Deposit type indicator — distinguishes between timestamp-based and ledger-based deposits
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DepositType {
+    TimeBased,
+    LedgerBased,
 }
