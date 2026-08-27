@@ -174,6 +174,7 @@ fn test_deposit_success() {
     assert_eq!(entry.token, token);
     assert_eq!(entry.depositor, alice);
     assert_eq!(entry.penalty_bps, 0);
+    assert_eq!(entry.withdrawal_delay_secs, 0);
 
     let events = env.events().all();
     // Event emission is verified by test_deposit_for_event_emitted; the
@@ -188,6 +189,35 @@ fn test_deposit_transfers_tokens_to_contract() {
     let unlock_time = env.ledger().timestamp() + 3600;
     vault.deposit(&alice, &token, &1_000, &unlock_time, &0);
     assert_eq!(token_client.balance(&alice), 9_000);
+}
+
+#[test]
+fn test_deposit_with_delay_enforces_delay_after_unlock() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    let unlock_time = env.ledger().timestamp() + 3600;
+    let id = vault.deposit_with_delay(&alice, &token, &1_000, &unlock_time, &0, &600);
+
+    advance_time(&env, 3601);
+    assert_eq!(vault.time_to_withdrawal(&alice, &id), 599);
+    assert_eq!(
+        vault.try_withdraw(&alice, &id),
+        Err(Ok(VaultError::WithdrawalDelayActive))
+    );
+
+    advance_time(&env, 599);
+    vault.withdraw(&alice, &id);
+    assert_eq!(vault.time_to_withdrawal(&alice, &id), 0);
+}
+
+#[test]
+fn test_deposit_with_zero_delay_withdraws_at_unlock() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    let unlock_time = env.ledger().timestamp() + 3600;
+    let id = vault.deposit_with_delay(&alice, &token, &1_000, &unlock_time, &0, &0);
+
+    advance_time(&env, 3600);
+    assert_eq!(vault.time_to_withdrawal(&alice, &id), 0);
+    vault.withdraw(&alice, &id);
 }
 
 // ================================================================

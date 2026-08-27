@@ -367,6 +367,69 @@ impl SafeHaven {
         Ok(deposit_id)
     }
 
+    pub fn deposit_with_delay(
+        env: Env,
+        depositor: Address,
+        token: Address,
+        amount: i128,
+        unlock_time: u64,
+        penalty_bps: u32,
+        withdrawal_delay_secs: u64,
+    ) -> Result<u32, VaultError> {
+        depositor.require_auth();
+
+        if storage::is_paused(&env) {
+            return Err(VaultError::ContractPaused);
+        }
+        if amount <= 0 {
+            return Err(VaultError::InvalidAmount);
+        }
+        let max_deposit = storage::get_max_deposit(&env).unwrap_or(MAX_DEPOSIT_AMOUNT);
+        if amount > max_deposit {
+            return Err(VaultError::AmountTooLarge);
+        }
+        if penalty_bps > 10_000 {
+            return Err(VaultError::InvalidPenaltyBps);
+        }
+        if penalty_bps > 0 && storage::get_fee_recipient(&env).is_none() {
+            return Err(VaultError::MissingFeeRecipient);
+        }
+
+        let now = env.ledger().timestamp();
+        if unlock_time <= now {
+            return Err(VaultError::UnlockTimeNotInFuture);
+        }
+        let lock_duration = unlock_time.saturating_sub(now);
+        let max_lock = storage::get_max_lock_secs(&env).unwrap_or(MAX_LOCK_DURATION_SECS);
+        if lock_duration > max_lock {
+            return Err(VaultError::LockDurationTooLong);
+        }
+        if lock_duration < MIN_LOCK_DURATION_SECS {
+            return Err(VaultError::LockDurationTooShort);
+        }
+
+        let deposit_id = storage::next_deposit_id(&env, &depositor);
+        token::Client::new(&env, &token).transfer(
+            &depositor,
+            &env.current_contract_address(),
+            &amount,
+        );
+
+        let entry = VaultEntry {
+            token: token.clone(),
+            amount,
+            unlock_time,
+            depositor: depositor.clone(),
+            penalty_bps,
+            withdrawal_delay_secs,
+        };
+        storage::set_deposit(&env, &depositor, deposit_id, &entry);
+        storage::add_depositor(&env, &depositor);
+        events::deposit(&env, &depositor, &token, amount, unlock_time, deposit_id);
+
+        Ok(deposit_id)
+    }
+
     // ----------------------------------------------------------------
     //  Core: Deposit by Ledger Sequence
     // ----------------------------------------------------------------
@@ -836,6 +899,10 @@ impl SafeHaven {
             if now >= entry.unlock_time {
                 return Err(VaultError::VaultAlreadyUnlocked);
             }
+            let withdrawal_time = entry.unlock_time.saturating_add(entry.withdrawal_delay_secs);
+            if now < withdrawal_time {
+                return Err(VaultError::WithdrawalDelayActive);
+            }
 
             storage::remove_multi_deposit(&env, &depositor, deposit_id);
             storage::remove_withdrawal_whitelist(&env, &depositor, deposit_id);
@@ -1052,6 +1119,10 @@ impl SafeHaven {
             let now = env.ledger().timestamp();
             if now < entry.unlock_time {
                 return Err(VaultError::FundsStillLocked);
+            }
+            let withdrawal_time = entry.unlock_time.saturating_add(entry.withdrawal_delay_secs);
+            if now < withdrawal_time {
+                return Err(VaultError::WithdrawalDelayActive);
             }
 
             // #331: enforce whitelist.
@@ -1590,6 +1661,16 @@ impl SafeHaven {
             return entry.unlock_time.saturating_sub(now);
         }
 
+        0
+    }
+
+    pub fn time_to_withdrawal(env: Env, depositor: Address, deposit_id: u32) -> u64 {
+        if let Some(entry) = storage::get_deposit_readonly(&env, &depositor, deposit_id) {
+            return entry
+                .unlock_time
+                .saturating_add(entry.withdrawal_delay_secs)
+                .saturating_sub(env.ledger().timestamp());
+        }
         0
     }
 
