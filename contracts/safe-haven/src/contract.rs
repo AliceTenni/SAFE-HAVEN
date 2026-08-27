@@ -1674,6 +1674,12 @@ impl SafeHaven {
         0
     }
 
+    pub fn get_accrued_interest(env: Env, depositor: Address, deposit_id: u32) -> i128 {
+        storage::get_deposit_readonly(&env, &depositor, deposit_id)
+            .and_then(|entry| calculate_interest(&entry, env.ledger().timestamp()).ok())
+            .unwrap_or(0)
+    }
+
     pub fn get_admin(env: Env) -> Option<Address> {
         storage::get_admin(&env)
     }
