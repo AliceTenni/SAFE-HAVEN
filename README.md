@@ -88,6 +88,12 @@ npm run dev            # -> http://localhost:5173
 
 See [`frontend/README.md`](./frontend/README.md) for the full frontend guide.
 
+### Public documentation
+
+- [Development roadmap](./docs/ROADMAP.md) - quarterly priorities, status, and feedback links
+- [User onboarding guide](./docs/USER_ONBOARDING.md) - first deposit, lock rules, withdrawal, and troubleshooting
+- [Operator performance guide](./docs/OPERATOR_PERFORMANCE.md) - budgets, pagination, TTL, benchmarking, and scaling
+
 ---
 
 ## Overview

@@ -76,6 +76,12 @@ npm run dev
 
 Open [http://localhost:5173](http://localhost:5173).
 
+## Public documentation
+
+- [User onboarding guide](../docs/USER_ONBOARDING.md)
+- [Development roadmap](../docs/ROADMAP.md)
+- [Operator performance guide](../docs/OPERATOR_PERFORMANCE.md)
+
 ### 5. Build for production
 
 ```bash
