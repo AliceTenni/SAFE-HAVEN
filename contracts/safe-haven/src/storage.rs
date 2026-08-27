@@ -1,8 +1,24 @@
 use soroban_sdk::{Address, Env, Vec};
 
-use crate::types::{VaultEntry, VaultKey, LedgerVaultEntry, MAX_LOCK_DURATION_SECS, RecurringDeposit, InsuranceClaim};
+use crate::types::{MultiTokenVaultEntry, VaultEntry, VaultKey, LedgerVaultEntry, MAX_LOCK_DURATION_SECS};
 
-// Number of seconds per ledger — Soroban ledgers are ~5 seconds apart.
+// ================================================================
+// LEDGER_SECONDS: Average time between Stellar ledger closes
+// ================================================================
+// Stellar's consensus protocol produces a new ledger approximately every 5 seconds.
+// This constant is used to estimate wall-clock time remaining for ledger-based deposits
+// via the formula: estimated_seconds = remaining_ledgers × LEDGER_SECONDS
+//
+// Important: This is an APPROXIMATION, not a guarantee.
+// - Actual ledger close times vary by ±1-2 seconds due to network conditions
+// - The 5-second value is a Stellar network consensus target, not a hard limit
+// - Use this for UI display and rough estimates only, not for precise scheduling
+// - For exact time limits, prefer timestamp-based deposits instead
+//
+// Used by:
+// - contract.rs::time_remaining() — converts ledger count to estimated seconds for ledger-based deposits
+// - constants.rs::MIN_LOCK_LEDGERS — computes minimum lock duration in ledgers (60 seconds ÷ 5)
+// - storage.rs::BUMP_TARGET — ensures TTL coverage extends past maximum lock duration
 pub const LEDGER_SECONDS: u64 = 5;
 
 // How many ledgers to extend TTL to cover the maximum allowed lock duration.
@@ -29,7 +45,7 @@ pub const BUMP_THRESHOLD: u32 = BUMP_TARGET / 2;
 pub fn next_deposit_id(env: &Env, depositor: &Address) -> u32 {
     let key = VaultKey::DepositCounter(depositor.clone());
     let id: u32 = env.storage().persistent().get(&key).unwrap_or(0);
-    env.storage().persistent().set(&key, &(id + 1));
+    env.storage().persistent().set(&key, &(id.saturating_add(1)));
     env.storage()
         .persistent()
         .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
@@ -37,13 +53,7 @@ pub fn next_deposit_id(env: &Env, depositor: &Address) -> u32 {
 }
 
 // ----------------------------------------------------------------
-//  Active deposit ID list helpers (fixes https://github.com/kenedybok3/SAFE-HAVEN/issues/18 and https://github.com/kenedybok3/SAFE-HAVEN/issues/20)
-//
-//  A `Vec<u32>` stored under `ActiveDepositIds(depositor)` is the
-//  authoritative list of IDs that currently have either a timestamp-
-//  based or a ledger-based deposit entry. Maintained in O(1) on push
-//  and O(n-active) on removal (n-active is bounded by actual open
-//  deposits, not historical counter value).
+//  Active deposit ID list helpers
 // ----------------------------------------------------------------
 
 fn get_active_ids(env: &Env, depositor: &Address) -> Vec<u32> {
@@ -85,13 +95,13 @@ pub fn remove_active_deposit_id(env: &Env, depositor: &Address, deposit_id: u32)
 
 /// O(1) single storage read — returns all active deposit IDs for
 /// `depositor`, regardless of whether they are timestamp- or
-/// ledger-based (fixes https://github.com/kenedybok3/SAFE-HAVEN/issues/18 and https://github.com/kenedybok3/SAFE-HAVEN/issues/20).
+/// ledger-based.
 pub fn get_deposit_ids(env: &Env, depositor: &Address) -> Vec<u32> {
     get_active_ids(env, depositor)
 }
 
 // ----------------------------------------------------------------
-//  Deposit helpers
+//  Deposit helpers (single-token, timestamp-based)
 // ----------------------------------------------------------------
 
 pub fn set_deposit(env: &Env, depositor: &Address, deposit_id: u32, entry: &VaultEntry) {
@@ -147,6 +157,95 @@ pub fn remove_deposit_by_ledger(env: &Env, depositor: &Address, deposit_id: u32)
     let key = VaultKey::DepositByLedger(depositor.clone(), deposit_id);
     env.storage().persistent().remove(&key);
     remove_active_deposit_id(env, depositor, deposit_id);
+}
+
+// ----------------------------------------------------------------
+//  Multi-token deposit helpers (issue #330)
+// ----------------------------------------------------------------
+
+/// Write a `MultiTokenVaultEntry` to persistent storage.
+pub fn set_multi_deposit(
+    env: &Env,
+    depositor: &Address,
+    deposit_id: u32,
+    entry: &MultiTokenVaultEntry,
+) {
+    let key = VaultKey::MultiDeposit(depositor.clone(), deposit_id);
+    env.storage().persistent().set(&key, entry);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
+    add_active_deposit_id(env, depositor, deposit_id);
+}
+
+/// Read a `MultiTokenVaultEntry` (mutable path — extends TTL).
+pub fn get_multi_deposit(
+    env: &Env,
+    depositor: &Address,
+    deposit_id: u32,
+) -> Option<MultiTokenVaultEntry> {
+    let key = VaultKey::MultiDeposit(depositor.clone(), deposit_id);
+    let entry: Option<MultiTokenVaultEntry> = env.storage().persistent().get(&key);
+    if entry.is_some() {
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
+    }
+    entry
+}
+
+/// Read a `MultiTokenVaultEntry` (read-only — does not extend TTL).
+pub fn get_multi_deposit_readonly(
+    env: &Env,
+    depositor: &Address,
+    deposit_id: u32,
+) -> Option<MultiTokenVaultEntry> {
+    let key = VaultKey::MultiDeposit(depositor.clone(), deposit_id);
+    env.storage().persistent().get(&key)
+}
+
+/// Remove a `MultiTokenVaultEntry` from storage.
+pub fn remove_multi_deposit(env: &Env, depositor: &Address, deposit_id: u32) {
+    let key = VaultKey::MultiDeposit(depositor.clone(), deposit_id);
+    env.storage().persistent().remove(&key);
+    remove_active_deposit_id(env, depositor, deposit_id);
+}
+
+// ----------------------------------------------------------------
+//  Withdrawal whitelist helpers (issue #331)
+// ----------------------------------------------------------------
+
+/// Persist a whitelist for a specific deposit. An empty Vec means "no restriction".
+pub fn set_withdrawal_whitelist(
+    env: &Env,
+    depositor: &Address,
+    deposit_id: u32,
+    whitelist: &Vec<Address>,
+) {
+    let key = VaultKey::WithdrawalWhitelist(depositor.clone(), deposit_id);
+    env.storage().persistent().set(&key, whitelist);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
+}
+
+/// Read the whitelist for a deposit. Returns `None` if no whitelist has been configured.
+pub fn get_withdrawal_whitelist(
+    env: &Env,
+    depositor: &Address,
+    deposit_id: u32,
+) -> Option<Vec<Address>> {
+    let key = VaultKey::WithdrawalWhitelist(depositor.clone(), deposit_id);
+    env.storage().persistent().get(&key)
+}
+
+/// Remove the whitelist when a deposit is withdrawn / cancelled.
+pub fn remove_withdrawal_whitelist(env: &Env, depositor: &Address, deposit_id: u32) {
+    let key = VaultKey::WithdrawalWhitelist(depositor.clone(), deposit_id);
+    // Only remove if present (avoid a panic on missing key).
+    if env.storage().persistent().has(&key) {
+        env.storage().persistent().remove(&key);
+    }
 }
 
 // ----------------------------------------------------------------
@@ -254,14 +353,14 @@ pub fn get_fee_recipient(env: &Env) -> Option<Address> {
 //  Depositor list helpers
 // ----------------------------------------------------------------
 
-fn get_depositor_list(env: &Env) -> Vec<Address> {
+fn get_depositor_list(env: &Env) -> soroban_sdk::Vec<Address> {
     env.storage()
         .persistent()
         .get(&VaultKey::DepositorList)
-        .unwrap_or_else(|| Vec::new(env))
+        .unwrap_or_else(|| soroban_sdk::Vec::new(env))
 }
 
-fn save_depositor_list(env: &Env, list: &Vec<Address>) {
+fn save_depositor_list(env: &Env, list: &soroban_sdk::Vec<Address>) {
     env.storage()
         .persistent()
         .set(&VaultKey::DepositorList, list);
@@ -271,13 +370,9 @@ fn save_depositor_list(env: &Env, list: &Vec<Address>) {
 }
 
 pub fn add_depositor(env: &Env, depositor: &Address) {
-    // DepositorFlag tracks *current* active status (set here, cleared by remove_depositor).
-    // DepositorInList tracks *ever appended to list* (set-once, never cleared) so that
-    // re-deposits after a withdrawal don't create duplicate list entries.
     let flag_key = VaultKey::DepositorFlag(depositor.clone());
     let in_list_key = VaultKey::DepositorInList(depositor.clone());
 
-    // If already active, nothing to do at all.
     if env
         .storage()
         .persistent()
@@ -287,13 +382,11 @@ pub fn add_depositor(env: &Env, depositor: &Address) {
         return;
     }
 
-    // (Re-)mark as active.
     env.storage().persistent().set(&flag_key, &true);
     env.storage()
         .persistent()
         .extend_ttl(&flag_key, BUMP_THRESHOLD, BUMP_TARGET);
 
-    // Only append to the list the very first time this address is seen.
     if !env
         .storage()
         .persistent()
@@ -312,18 +405,11 @@ pub fn add_depositor(env: &Env, depositor: &Address) {
 }
 
 pub fn remove_depositor(env: &Env, depositor: &Address) {
-    // O(1): deleting the per-depositor flag is enough to logically remove the
-    // depositor.  The DepositorList is an append-only index used exclusively
-    // for page enumeration; stale addresses are skipped at read time when the
-    // flag is absent.  This avoids deserialising and re-serialising the entire
-    // list on every withdrawal that empties a depositor's last vault — which
-    // would exceed Soroban's per-transaction budget for large lists.
     let flag_key = VaultKey::DepositorFlag(depositor.clone());
     env.storage().persistent().remove(&flag_key);
 }
 
 pub fn get_depositor_count(env: &Env) -> u32 {
-    // Count only addresses that still have an active flag.
     let list = get_depositor_list(env);
     let mut count: u32 = 0;
     for addr in list.iter() {
@@ -361,12 +447,11 @@ pub fn is_paused(env: &Env) -> bool {
 /// Returns the raw append-only depositor list (may contain stale entries after
 /// O(1) removes).  Callers that need only *active* depositors should filter with
 /// `depositor_is_active`.
-pub fn get_all_depositors_raw(env: &Env) -> Vec<Address> {
+pub fn get_all_depositors_raw(env: &Env) -> soroban_sdk::Vec<Address> {
     get_depositor_list(env)
 }
 
-/// Returns `true` if `depositor` currently has an active existence flag,
-/// i.e. they have at least one open deposit and have not been O(1)-removed.
+/// Returns `true` if `depositor` currently has an active existence flag.
 pub fn depositor_is_active(env: &Env, depositor: &Address) -> bool {
     let flag_key = VaultKey::DepositorFlag(depositor.clone());
     env.storage()
@@ -375,13 +460,12 @@ pub fn depositor_is_active(env: &Env, depositor: &Address) -> bool {
         .unwrap_or(false)
 }
 
-pub fn get_depositors_page(env: &Env, offset: u32, limit: u32) -> (Vec<Address>, u32) {
+pub fn get_depositors_page(env: &Env, offset: u32, limit: u32) -> (soroban_sdk::Vec<Address>, u32) {
     let list = get_depositor_list(env);
-    let mut page: Vec<Address> = Vec::new(env);
+    let mut page: soroban_sdk::Vec<Address> = soroban_sdk::Vec::new(env);
     let mut active_seen: u32 = 0;
     let end_at = offset.saturating_add(limit);
-    
-    // Count total active depositors
+
     let mut total_count: u32 = 0;
     for addr in list.iter() {
         let flag_key = VaultKey::DepositorFlag(addr.clone());
@@ -394,8 +478,7 @@ pub fn get_depositors_page(env: &Env, offset: u32, limit: u32) -> (Vec<Address>,
             total_count = total_count.saturating_add(1);
         }
     }
-    
-    // Collect page items
+
     for addr in list.iter() {
         let flag_key = VaultKey::DepositorFlag(addr.clone());
         if !env
@@ -404,7 +487,7 @@ pub fn get_depositors_page(env: &Env, offset: u32, limit: u32) -> (Vec<Address>,
             .get::<VaultKey, bool>(&flag_key)
             .unwrap_or(false)
         {
-            continue; // stale entry left by O(1) remove — skip
+            continue;
         }
         if active_seen >= offset && active_seen < end_at {
             page.push_back(addr.clone());
@@ -430,11 +513,10 @@ pub fn require_admin(env: &Env, caller: &Address) -> Result<(), crate::errors::V
 }
 
 // ----------------------------------------------------------------
-//  Storage version helpers (Task 4)
+//  Storage version helpers
 // ----------------------------------------------------------------
 
 /// Write the current schema version into persistent storage.
-/// Called at the end of a successful `migrate()` invocation.
 pub fn set_storage_version(env: &Env, version: u32) {
     env.storage()
         .persistent()
@@ -452,159 +534,117 @@ pub fn get_storage_version(env: &Env) -> Option<u32> {
         .get(&VaultKey::StorageVersion)
 }
 
+
 // ----------------------------------------------------------------
-//  Issue #333: Recurring deposit subscription helpers
+//  Staker registry helpers
 // ----------------------------------------------------------------
 
-/// Allocates and returns the next subscription ID for `depositor` (monotonic).
-pub fn next_subscription_id(env: &Env, depositor: &Address) -> u32 {
-    let key = VaultKey::SubscriptionCounter(depositor.clone());
-    let id: u32 = env.storage().persistent().get(&key).unwrap_or(0);
-    env.storage().persistent().set(&key, &(id + 1));
+use crate::types::StakerEntry;
+
+/// Set a staker's stake amount. Creates or updates the entry.
+pub fn set_staker(env: &Env, staker: &Address, stake_amount: i128) {
+    let key = VaultKey::Staker(staker.clone());
+    env.storage().persistent().set(&key, &stake_amount);
     env.storage()
         .persistent()
         .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
-    id
 }
 
-/// Writes a `RecurringDeposit` and registers it in the active list.
-pub fn set_subscription(env: &Env, depositor: &Address, sub_id: u32, sub: &RecurringDeposit) {
-    let key = VaultKey::Subscription(depositor.clone(), sub_id);
-    env.storage().persistent().set(&key, sub);
-    env.storage()
-        .persistent()
-        .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
-    add_active_subscription_id(env, depositor, sub_id);
-}
-
-/// Reads a `RecurringDeposit` (bumps TTL — use on mutation paths).
-pub fn get_subscription(env: &Env, depositor: &Address, sub_id: u32) -> Option<RecurringDeposit> {
-    let key = VaultKey::Subscription(depositor.clone(), sub_id);
-    let sub: Option<RecurringDeposit> = env.storage().persistent().get(&key);
-    if sub.is_some() {
-        env.storage()
-            .persistent()
-            .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
-    }
-    sub
-}
-
-/// Reads a `RecurringDeposit` without bumping TTL (use on read-only paths).
-pub fn get_subscription_readonly(
-    env: &Env,
-    depositor: &Address,
-    sub_id: u32,
-) -> Option<RecurringDeposit> {
-    let key = VaultKey::Subscription(depositor.clone(), sub_id);
+/// Get a staker's stake amount. Returns `None` if not registered.
+pub fn get_staker(env: &Env, staker: &Address) -> Option<i128> {
+    let key = VaultKey::Staker(staker.clone());
     env.storage().persistent().get(&key)
 }
 
-fn get_active_subscription_ids(env: &Env, depositor: &Address) -> Vec<u32> {
-    let key = VaultKey::ActiveSubscriptionIds(depositor.clone());
+/// Get staker list (append-only, may contain stale entries after removes).
+fn get_staker_list(env: &Env) -> Vec<Address> {
+    let key = VaultKey::StakerList;
     env.storage()
         .persistent()
         .get(&key)
         .unwrap_or_else(|| Vec::new(env))
 }
 
-fn save_active_subscription_ids(env: &Env, depositor: &Address, ids: &Vec<u32>) {
-    let key = VaultKey::ActiveSubscriptionIds(depositor.clone());
-    env.storage().persistent().set(&key, ids);
+/// Save the staker list.
+fn save_staker_list(env: &Env, stakers: &Vec<Address>) {
+    let key = VaultKey::StakerList;
+    env.storage().persistent().set(&key, stakers);
     env.storage()
         .persistent()
         .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
 }
 
-fn add_active_subscription_id(env: &Env, depositor: &Address, sub_id: u32) {
-    let mut ids = get_active_subscription_ids(env, depositor);
-    ids.push_back(sub_id);
-    save_active_subscription_ids(env, depositor, &ids);
-}
-
-/// Returns all active (non-cancelled, not fully-executed) subscription IDs for
-/// a depositor.  The list is append-only; cancelled / completed subscriptions
-/// remain in storage so their history is preserved.
-pub fn get_subscription_ids(env: &Env, depositor: &Address) -> Vec<u32> {
-    get_active_subscription_ids(env, depositor)
-}
-
-// ----------------------------------------------------------------
-//  Issue #334: Insurance pool helpers
-// ----------------------------------------------------------------
-
-/// Returns the insurance pool balance for a specific token.
-pub fn get_insurance_pool_balance(env: &Env, token: &Address) -> i128 {
-    let key = VaultKey::InsurancePoolBalance(token.clone());
-    env.storage().persistent().get(&key).unwrap_or(0_i128)
-}
-
-/// Adds `amount` to the insurance pool balance for `token`.
-pub fn add_insurance_pool_balance(env: &Env, token: &Address, amount: i128) {
-    let key = VaultKey::InsurancePoolBalance(token.clone());
-    let current: i128 = env.storage().persistent().get(&key).unwrap_or(0);
-    env.storage()
+/// Add a staker to the staker list (O(1) if not already in list).
+pub fn add_staker_to_list(env: &Env, staker: &Address) {
+    // Check if already in list using StakerInList flag
+    let in_list_key = VaultKey::StakerInList(staker.clone());
+    if env
+        .storage()
         .persistent()
-        .set(&key, &current.saturating_add(amount));
-    env.storage()
-        .persistent()
-        .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
-}
-
-/// Subtracts `amount` from the insurance pool balance for `token`.
-/// Panics with `InsufficientInsurancePool` if balance would go negative.
-pub fn deduct_insurance_pool_balance(
-    env: &Env,
-    token: &Address,
-    amount: i128,
-) -> Result<(), crate::errors::VaultError> {
-    let key = VaultKey::InsurancePoolBalance(token.clone());
-    let current: i128 = env.storage().persistent().get(&key).unwrap_or(0);
-    if amount > current {
-        return Err(crate::errors::VaultError::InsufficientInsurancePool);
+        .get::<VaultKey, bool>(&in_list_key)
+        .unwrap_or(false)
+    {
+        return; // Already in list, skip
     }
+
+    // Add to list
+    let mut list = get_staker_list(env);
+    list.push_back(staker.clone());
+    save_staker_list(env, &list);
+
+    // Mark as in list
+    env.storage().persistent().set(&in_list_key, &true);
     env.storage()
         .persistent()
-        .set(&key, &(current - amount));
+        .extend_ttl(&in_list_key, BUMP_THRESHOLD, BUMP_TARGET);
+}
+
+/// Get the total amount staked by all stakers.
+pub fn get_total_staked(env: &Env) -> i128 {
+    let key = VaultKey::TotalStaked;
+    env.storage().persistent().get(&key).unwrap_or(0)
+}
+
+/// Update the total staked amount.
+pub fn set_total_staked(env: &Env, total: i128) {
+    let key = VaultKey::TotalStaked;
+    env.storage().persistent().set(&key, &total);
     env.storage()
         .persistent()
         .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
-    Ok(())
 }
 
-/// Allocates and returns the next global claim ID (monotonic).
-pub fn next_claim_id(env: &Env) -> u32 {
-    let key = VaultKey::InsuranceClaimCounter;
-    let id: u32 = env.storage().persistent().get(&key).unwrap_or(0);
-    env.storage().persistent().set(&key, &(id + 1));
-    env.storage()
-        .persistent()
-        .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
-    id
+/// Get the rewards pool (accumulated penalties for stakers).
+pub fn get_rewards_pool(env: &Env) -> i128 {
+    let key = VaultKey::RewardsPool;
+    env.storage().persistent().get(&key).unwrap_or(0)
 }
 
-/// Persists an `InsuranceClaim`.
-pub fn set_claim(env: &Env, claim_id: u32, claim: &InsuranceClaim) {
-    let key = VaultKey::InsuranceClaim(claim_id);
-    env.storage().persistent().set(&key, claim);
+/// Update the rewards pool.
+pub fn set_rewards_pool(env: &Env, amount: i128) {
+    let key = VaultKey::RewardsPool;
+    env.storage().persistent().set(&key, &amount);
     env.storage()
         .persistent()
         .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
 }
 
-/// Reads an `InsuranceClaim` (bumps TTL — use on mutation paths).
-pub fn get_claim(env: &Env, claim_id: u32) -> Option<InsuranceClaim> {
-    let key = VaultKey::InsuranceClaim(claim_id);
-    let claim: Option<InsuranceClaim> = env.storage().persistent().get(&key);
-    if claim.is_some() {
-        env.storage()
-            .persistent()
-            .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
-    }
-    claim
+/// Get the rewards claimed by a staker (cumulative).
+pub fn get_staker_rewards_claimed(env: &Env, staker: &Address) -> i128 {
+    let key = VaultKey::StakerRewardsClaimed(staker.clone());
+    env.storage().persistent().get(&key).unwrap_or(0)
 }
 
-/// Reads an `InsuranceClaim` without bumping TTL (read-only queries).
-pub fn get_claim_readonly(env: &Env, claim_id: u32) -> Option<InsuranceClaim> {
-    let key = VaultKey::InsuranceClaim(claim_id);
-    env.storage().persistent().get(&key)
+/// Update the rewards claimed by a staker.
+pub fn set_staker_rewards_claimed(env: &Env, staker: &Address, amount: i128) {
+    let key = VaultKey::StakerRewardsClaimed(staker.clone());
+    env.storage().persistent().set(&key, &amount);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
+}
+
+/// Get the staker list (may contain stale entries). Active check via `get_staker`.
+pub fn get_stakers_list(env: &Env) -> Vec<Address> {
+    get_staker_list(env)
 }

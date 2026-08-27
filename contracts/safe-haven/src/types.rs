@@ -1,8 +1,11 @@
-use soroban_sdk::{contracttype, Address, String};
+use soroban_sdk::{contracttype, Address, Vec};
 
 pub const MAX_DEPOSIT_AMOUNT: i128 = 1_000_000_000_000_000;
 pub const MAX_LOCK_DURATION_SECS: u64 = 157_788_000;
 pub const MIN_LOCK_DURATION_SECS: u64 = 60;
+
+/// Maximum number of tokens allowed in a single multi-token deposit (issue #330).
+pub const MAX_TOKENS_PER_DEPOSIT: u32 = 5;
 
 /// Current storage schema version. Bump this constant when the on-chain
 /// layout of a `contracttype` struct changes so `migrate()` can detect
@@ -17,6 +20,10 @@ pub const INSURANCE_POOL_BPS: u32 = 500; // 5% in basis points
 pub enum VaultKey {
     Deposit(Address, u32),
     DepositByLedger(Address, u32),
+    /// Multi-token deposit entry (issue #330).
+    MultiDeposit(Address, u32),
+    /// Withdrawal whitelist for a deposit (issue #331).
+    WithdrawalWhitelist(Address, u32),
     DepositCounter(Address),
     /// Stores a `Vec<u32>` of active deposit IDs for a depositor (both timestamp- and
     /// ledger-based). Maintained alongside the counter so `get_deposit_ids` is O(1).
@@ -38,23 +45,18 @@ pub enum VaultKey {
     /// Persists the schema version written by the last `migrate()` call (or 1
     /// for contracts that were initialized before versioning was introduced).
     StorageVersion,
-
-    // ── Issue #333: Recurring deposit subscriptions ──────────────────────
-    /// The recurring deposit entry for `(depositor, subscription_id)`.
-    Subscription(Address, u32),
-    /// Monotonic counter for subscription IDs per depositor.
-    SubscriptionCounter(Address),
-    /// `Vec<u32>` of active subscription IDs for a depositor.
-    ActiveSubscriptionIds(Address),
-
-    // ── Issue #334: Insurance pool ────────────────────────────────────────
-    /// Total token-agnostic balance held in the insurance pool (i128).
-    /// Stored per-token so multi-token pools are supported.
-    InsurancePoolBalance(Address),
-    /// An individual insurance claim keyed by global claim ID.
-    InsuranceClaim(u32),
-    /// Global monotonic claim ID counter.
-    InsuranceClaimCounter,
+    /// Staker entry: maps staker address to their stake amount
+    Staker(Address),
+    /// List of all registered stakers
+    StakerList,
+    /// Flag to track if a staker is in the StakerList (prevents duplicates)
+    StakerInList(Address),
+    /// Total amount staked by all stakers
+    TotalStaked,
+    /// Rewards pool for stakers (accumulated from penalties)
+    RewardsPool,
+    /// Rewards claimed by a staker (track cumulative for auditing)
+    StakerRewardsClaimed(Address),
 }
 
 #[contracttype]
@@ -65,6 +67,10 @@ pub struct VaultEntry {
     pub unlock_time: u64,
     pub depositor: Address,
     pub penalty_bps: u32,
+    /// Compound interest accrual frequency in seconds (0 = no compounding). (issue #332)
+    pub compound_frequency_secs: u64,
+    /// Timestamp of last compound accrual (issue #332).
+    pub last_accrual_timestamp: u64,
 }
 
 #[contracttype]
@@ -77,9 +83,45 @@ pub struct LedgerVaultEntry {
     pub penalty_bps: u32,
 }
 
-/// Paginated query result for depositor addresses.
+/// A single token+amount pair used in multi-token deposits (issue #330).
 #[contracttype]
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TokenDeposit {
+    pub token: Address,
+    pub amount: i128,
+}
+
+/// Vault entry that holds multiple token deposits (issue #330).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MultiTokenVaultEntry {
+    /// Each element is a (token, amount) pair. Length ≤ MAX_TOKENS_PER_DEPOSIT.
+    pub tokens: Vec<TokenDeposit>,
+    pub unlock_time: u64,
+    pub depositor: Address,
+    pub penalty_bps: u32,
+    /// Compound interest accrual frequency in seconds (0 = no compounding). (issue #332)
+    pub compound_frequency_secs: u64,
+    /// Timestamp of last compound accrual (issue #332).
+    pub last_accrual_timestamp: u64,
+}
+
+/// The deposit type discriminant returned by `get_deposit_type`.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DepositType {
+    /// Timestamp-based (`VaultEntry`) single-token deposit.
+    TimeBased,
+    /// Ledger-sequence-based (`LedgerVaultEntry`) deposit.
+    LedgerBased,
+    /// Multi-token timestamp-based deposit (`MultiTokenVaultEntry`). (issue #330)
+    MultiToken,
+}
+
+/// Paginated query result for depositor addresses.
+/// (Soroban `#[contracttype]` does not support generics.)
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Page {
     /// The items in this page
     pub items: soroban_sdk::Vec<Address>,
@@ -87,78 +129,18 @@ pub struct Page {
     pub total_count: u32,
 }
 
-// ────────────────────────────────────────────────────────────────
-//  Issue #333 — Recurring deposit subscriptions
-// ────────────────────────────────────────────────────────────────
-
-/// A recurring deposit subscription.  Once created, anyone can call
-/// `execute_subscription` on behalf of the depositor as long as
-/// `executed_count < total_count` and the current timestamp is at or
-/// past `next_execution_time`.
-///
-/// Each execution creates a fresh `VaultEntry` via the normal deposit
-/// path (same validation rules apply).  The subscription ID is
-/// independent of deposit IDs — a single subscription may produce many
-/// individual deposit entries.
+/// Staker entry: tracks stake amount and optionally last claim timestamp
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RecurringDeposit {
-    /// The account that authorised the subscription and whose balance is
-    /// debited on each execution.
-    pub depositor: Address,
-    /// SAC-compatible token to lock on every execution.
-    pub token: Address,
-    /// Amount to lock per execution (in token base units).
-    pub amount: i128,
-    /// Seconds between successive executions.
-    pub interval_secs: u64,
-    /// Total number of executions requested.  Use `u32::MAX` for
-    /// open-ended subscriptions (not recommended for production).
-    pub total_count: u32,
-    /// Number of executions already performed.
-    pub executed_count: u32,
-    /// Lock duration per individual deposit, in seconds from execution
-    /// time.  Must satisfy `MIN_LOCK_DURATION_SECS` and the contract's
-    /// `max_lock_secs`.
-    pub lock_duration_secs: u64,
-    /// Early-exit penalty in basis points for each produced deposit.
-    pub penalty_bps: u32,
-    /// Ledger timestamp after which the *next* execution is permitted.
-    pub next_execution_time: u64,
-    /// Whether the subscription has been cancelled by the depositor.
-    pub cancelled: bool,
+pub struct StakerEntry {
+    pub staker: Address,
+    pub stake_amount: i128,
 }
 
-// ────────────────────────────────────────────────────────────────
-//  Issue #334 — Deposit insurance pool
-// ────────────────────────────────────────────────────────────────
-
-/// Status of an insurance claim.
+/// Deposit type indicator — distinguishes between timestamp-based and ledger-based deposits
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum ClaimStatus {
-    /// Submitted but not yet reviewed.
-    Pending,
-    /// Approved by admin; funds disbursed.
-    Approved,
-    /// Rejected by admin; no funds disbursed.
-    Denied,
-}
-
-/// An insurance claim filed by a depositor.
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct InsuranceClaim {
-    /// Unique monotonic claim identifier.
-    pub claim_id: u32,
-    /// Address that filed the claim.
-    pub claimant: Address,
-    /// The token the claim is denominated in.
-    pub token: Address,
-    /// Amount requested from the insurance pool.
-    pub amount_requested: i128,
-    /// Free-form evidence string (e.g. incident description or tx hash).
-    pub incident_evidence: String,
-    /// Current state of the claim.
-    pub status: ClaimStatus,
+pub enum DepositType {
+    TimeBased,
+    LedgerBased,
 }
