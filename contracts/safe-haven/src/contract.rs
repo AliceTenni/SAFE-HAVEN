@@ -144,7 +144,13 @@ impl SafeHaven {
 
         let effective_max_deposit = storage::get_max_deposit(&env).unwrap_or(MAX_DEPOSIT_AMOUNT);
         let effective_max_lock = storage::get_max_lock_secs(&env).unwrap_or(MAX_LOCK_DURATION_SECS);
-        events::contract_initialized(&env, &admin, &fee_recipient, effective_max_deposit, effective_max_lock);
+        events::contract_initialized(
+            &env,
+            &admin,
+            &fee_recipient,
+            effective_max_deposit,
+            effective_max_lock,
+        );
 
         Ok(())
     }
@@ -896,6 +902,11 @@ impl SafeHaven {
             let token_client = token::Client::new(&env, &entry.token);
             token_client.transfer(&env.current_contract_address(), &depositor, &entry.amount);
 
+            // Increment withdrawal count and clean up old epochs
+            let current_epoch = storage::get_current_epoch(&env);
+            storage::increment_withdrawal_count(&env, &depositor, current_epoch);
+            storage::cleanup_old_epochs(&env, &depositor, current_epoch);
+
             events::withdraw(&env, &depositor, &entry.token, entry.amount, deposit_id);
             return Ok(());
         }
@@ -915,6 +926,11 @@ impl SafeHaven {
 
             let token_client = token::Client::new(&env, &entry.token);
             token_client.transfer(&env.current_contract_address(), &depositor, &entry.amount);
+
+            // Increment withdrawal count and clean up old epochs
+            let current_epoch = storage::get_current_epoch(&env);
+            storage::increment_withdrawal_count(&env, &depositor, current_epoch);
+            storage::cleanup_old_epochs(&env, &depositor, current_epoch);
 
             events::withdraw(&env, &depositor, &entry.token, entry.amount, deposit_id);
             return Ok(());
@@ -987,6 +1003,11 @@ impl SafeHaven {
             let token_client = token::Client::new(&env, &entry.token);
             token_client.transfer(&env.current_contract_address(), &recipient, &entry.amount);
 
+            // Increment withdrawal count and clean up old epochs
+            let current_epoch = storage::get_current_epoch(&env);
+            storage::increment_withdrawal_count(&env, &depositor, current_epoch);
+            storage::cleanup_old_epochs(&env, &depositor, current_epoch);
+
             events::withdraw_to(&env, &depositor, &recipient, &entry.token, entry.amount);
             return Ok(());
         }
@@ -1009,6 +1030,11 @@ impl SafeHaven {
 
             let token_client = token::Client::new(&env, &entry.token);
             token_client.transfer(&env.current_contract_address(), &recipient, &entry.amount);
+
+            // Increment withdrawal count and clean up old epochs
+            let current_epoch = storage::get_current_epoch(&env);
+            storage::increment_withdrawal_count(&env, &depositor, current_epoch);
+            storage::cleanup_old_epochs(&env, &depositor, current_epoch);
 
             events::withdraw_to(&env, &depositor, &recipient, &entry.token, entry.amount);
             return Ok(());
@@ -1068,7 +1094,14 @@ impl SafeHaven {
             let token_client = token::Client::new(&env, &entry.token);
             token_client.transfer(&env.current_contract_address(), &depositor, &entry.amount);
 
-            events::emergency_withdraw(&env, &admin, &depositor, &entry.token, entry.amount, deposit_id);
+            events::emergency_withdraw(
+                &env,
+                &admin,
+                &depositor,
+                &entry.token,
+                entry.amount,
+                deposit_id,
+            );
             return Ok(());
         }
 
@@ -1083,7 +1116,14 @@ impl SafeHaven {
             let token_client = token::Client::new(&env, &entry.token);
             token_client.transfer(&env.current_contract_address(), &depositor, &entry.amount);
 
-            events::emergency_withdraw(&env, &admin, &depositor, &entry.token, entry.amount, deposit_id);
+            events::emergency_withdraw(
+                &env,
+                &admin,
+                &depositor,
+                &entry.token,
+                entry.amount,
+                deposit_id,
+            );
             return Ok(());
         }
 

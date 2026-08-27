@@ -845,15 +845,15 @@ fn test_cancel_transfer_admin_by_non_admin_fails() {
 
 #[test]
 fn test_accept_admin_by_admin_with_no_pending_fails() {
-    let (env, vault, _token, admin, _alice, _fee) = setup();
+    let (_env, vault, _token, admin, _alice, _fee) = setup();
     let result = vault.try_accept_admin(&admin);
     assert_eq!(result, Err(Ok(VaultError::Unauthorized)));
 }
 
 #[test]
 fn test_accept_admin_after_cancel_fails() {
-    let (env, vault, _token, admin, _alice, _fee) = setup();
-    let new_admin: Address = Address::generate(&env);
+    let (_env, vault, _token, admin, _alice, _fee) = setup();
+    let new_admin: Address = Address::generate(&_env);
 
     vault.transfer_admin(&admin, &new_admin);
     vault.cancel_transfer_admin(&admin);
@@ -2124,8 +2124,11 @@ fn test_get_deposits_page_excludes_withdrawn() {
 fn test_bump_threshold_derived_from_bump_target() {
     use crate::storage::{BUMP_TARGET, BUMP_THRESHOLD};
     assert!(BUMP_TARGET > 0, "BUMP_TARGET must be positive");
-    assert_eq!(BUMP_THRESHOLD, BUMP_TARGET / 2,
-        "BUMP_THRESHOLD must be derived as BUMP_TARGET / 2");
+    assert_eq!(
+        BUMP_THRESHOLD,
+        BUMP_TARGET / 2,
+        "BUMP_THRESHOLD must be derived as BUMP_TARGET / 2"
+    );
 }
 
 // ================================================================
@@ -2161,7 +2164,7 @@ fn test_migrate_idempotent() {
 /// migrate() must fail when called by a non-admin.
 #[test]
 fn test_migrate_non_admin_fails() {
-    let (env, vault, _token, _admin, alice, _fee) = setup();
+    let (_env, vault, _token, _admin, alice, _fee) = setup();
     let result = vault.try_migrate(&alice);
     assert_eq!(result, Err(Ok(VaultError::Unauthorized)));
 }
@@ -2195,7 +2198,6 @@ fn test_remove_depositor_o1_no_duplicate_on_redeposit() {
     assert_eq!(page.items.get(0).unwrap(), alice);
 }
 
-
 // ================================================================
 //  #88 Full deposit_by_ledger → withdraw lifecycle
 // ================================================================
@@ -2220,7 +2222,9 @@ fn test_deposit_by_ledger_withdraw_lifecycle() {
     // Verify the deposit was created (ledger-based deposit, so get_vault returns None)
     assert_eq!(id, 0);
     assert!(vault.get_vault(&alice, &id).is_none());
-    let ledger_entry = vault.get_ledger_vault(&alice, &id).expect("ledger deposit should exist");
+    let ledger_entry = vault
+        .get_ledger_vault(&alice, &id)
+        .expect("ledger deposit should exist");
     assert_eq!(ledger_entry.amount, 5_000);
     assert_eq!(ledger_entry.unlock_ledger, unlock_ledger);
     assert_eq!(ledger_entry.depositor, alice);
@@ -2400,7 +2404,7 @@ mod penalty_property_tests {
         ) {
             let penalty = (amount * penalty_bps as i128) / 10_000;
             let refund = amount - penalty;
-            
+
             prop_assert_eq!(
                 penalty + refund,
                 amount,

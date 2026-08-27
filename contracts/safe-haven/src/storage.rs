@@ -24,7 +24,8 @@ pub const LEDGER_SECONDS: u64 = 5;
 // How many ledgers to extend TTL to cover the maximum allowed lock duration.
 // BUMP_THRESHOLD is derived from BUMP_TARGET so both stay in sync automatically
 // when MAX_LOCK_DURATION_SECS changes — no silent inconsistency.
-pub const BUMP_TARGET: u32 = ((MAX_LOCK_DURATION_SECS + LEDGER_SECONDS - 1) / LEDGER_SECONDS) as u32;
+pub const BUMP_TARGET: u32 =
+    ((MAX_LOCK_DURATION_SECS + LEDGER_SECONDS - 1) / LEDGER_SECONDS) as u32;
 pub const BUMP_THRESHOLD: u32 = BUMP_TARGET / 2;
 
 // ----------------------------------------------------------------
@@ -139,7 +140,12 @@ pub fn remove_deposit(env: &Env, depositor: &Address, deposit_id: u32) {
 //  Ledger-based deposit helpers
 // ----------------------------------------------------------------
 
-pub fn set_deposit_by_ledger(env: &Env, depositor: &Address, deposit_id: u32, entry: &LedgerVaultEntry) {
+pub fn set_deposit_by_ledger(
+    env: &Env,
+    depositor: &Address,
+    deposit_id: u32,
+    entry: &LedgerVaultEntry,
+) {
     let key = VaultKey::DepositByLedger(depositor.clone(), deposit_id);
     env.storage().persistent().set(&key, entry);
     env.storage()
@@ -148,7 +154,11 @@ pub fn set_deposit_by_ledger(env: &Env, depositor: &Address, deposit_id: u32, en
     add_active_deposit_id(env, depositor, deposit_id);
 }
 
-pub fn get_deposit_by_ledger_readonly(env: &Env, depositor: &Address, deposit_id: u32) -> Option<LedgerVaultEntry> {
+pub fn get_deposit_by_ledger_readonly(
+    env: &Env,
+    depositor: &Address,
+    deposit_id: u32,
+) -> Option<LedgerVaultEntry> {
     let key = VaultKey::DepositByLedger(depositor.clone(), deposit_id);
     env.storage().persistent().get(&key)
 }
@@ -529,9 +539,77 @@ pub fn set_storage_version(env: &Env, version: u32) {
 /// Read the schema version that was last written by `migrate()`.
 /// Returns `None` for contracts deployed before versioning was introduced.
 pub fn get_storage_version(env: &Env) -> Option<u32> {
+    env.storage().persistent().get(&VaultKey::StorageVersion)
+}
+
+// ----------------------------------------------------------------
+//  Withdrawal limit per epoch helpers
+// ----------------------------------------------------------------
+
+/// Calculate the current epoch number based on the ledger sequence.
+/// Each epoch spans EPOCH_SIZE_LEDGERS ledgers.
+pub fn get_current_epoch(env: &Env) -> u32 {
+    let current_ledger = env.ledger().sequence();
+    current_ledger / EPOCH_SIZE_LEDGERS
+}
+
+/// Get the withdrawal count for a depositor in a given epoch.
+pub fn get_withdrawal_count(env: &Env, depositor: &Address, epoch: u32) -> u32 {
+    let key = VaultKey::WithdrawalCountPerEpoch(depositor.clone(), epoch);
     env.storage()
         .persistent()
-        .get(&VaultKey::StorageVersion)
+        .get::<VaultKey, u32>(&key)
+        .unwrap_or(0)
+}
+
+/// Increment the withdrawal count for a depositor in the current epoch.
+/// Returns the new count after incrementing.
+pub fn increment_withdrawal_count(env: &Env, depositor: &Address, epoch: u32) -> u32 {
+    let key = VaultKey::WithdrawalCountPerEpoch(depositor.clone(), epoch);
+    let current_count: u32 = env.storage().persistent().get(&key).unwrap_or(0);
+    let new_count = current_count.saturating_add(1);
+
+    env.storage().persistent().set(&key, &new_count);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
+
+    new_count
+}
+
+/// Check if a depositor has exceeded the withdrawal limit for the current epoch.
+/// Returns `Ok(())` if within limit, `Err(WithdrawalLimitExceeded)` if exceeded.
+pub fn check_withdrawal_limit(
+    env: &Env,
+    depositor: &Address,
+) -> Result<(), crate::errors::VaultError> {
+    let current_epoch = get_current_epoch(env);
+    let current_count = get_withdrawal_count(env, depositor, current_epoch);
+
+    if current_count >= WITHDRAWAL_LIMIT_PER_EPOCH {
+        Err(crate::errors::VaultError::WithdrawalLimitExceeded)
+    } else {
+        Ok(())
+    }
+}
+
+/// Clean up old epoch counters to prevent unbounded storage growth.
+/// Removes withdrawal counters for epochs older than `num_epochs_to_keep`.
+/// This is called after a withdrawal to remove the counter from the previous epoch.
+pub fn cleanup_old_epochs(env: &Env, depositor: &Address, current_epoch: u32) {
+    // Keep withdrawal counts for the current epoch and the previous epoch only.
+    // Earlier epochs are cleaned up to prevent unbounded storage growth.
+    if current_epoch > 1 {
+        let previous_epoch = current_epoch.saturating_sub(1);
+        // Remove counters from epochs before the previous one
+        let epoch_to_remove = previous_epoch.saturating_sub(1);
+        if epoch_to_remove > 0 {
+            for epoch in 0..epoch_to_remove {
+                let key = VaultKey::WithdrawalCountPerEpoch(depositor.clone(), epoch);
+                env.storage().persistent().remove(&key);
+            }
+        }
+    }
 }
 
 
