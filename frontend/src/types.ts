@@ -39,7 +39,17 @@ export interface WalletInfo {
 }
 
 /** Tab pages */
-export type PageTab = 'dashboard' | 'deposit' | 'withdraw' | 'admin'
+export type PageTab = 'dashboard' | 'deposit' | 'withdraw' | 'faucet' | 'admin'
+
+export type FaucetAsset = 'Usdc' | 'Eth' | 'Btc'
+
+export interface FaucetStatus {
+  token: string | null
+  balance: bigint
+  maxAmount: bigint
+  requestCount: number
+  distributed: bigint
+}
 
 /** Loading states for async operations */
 export type TxStatus = 'idle' | 'signing' | 'submitting' | 'confirming' | 'success' | 'error'

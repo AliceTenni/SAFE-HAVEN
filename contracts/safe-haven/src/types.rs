@@ -1,4 +1,4 @@
-use soroban_sdk::{contracttype, Address};
+use soroban_sdk::{contracttype, Address, BytesN, String};
 
 pub const MAX_DEPOSIT_AMOUNT: i128 = 1_000_000_000_000_000;
 pub const MAX_LOCK_DURATION_SECS: u64 = 157_788_000;
@@ -35,6 +35,55 @@ pub enum VaultKey {
     /// Persists the schema version written by the last `migrate()` call (or 1
     /// for contracts that were initialized before versioning was introduced).
     StorageVersion,
+    FaucetToken(FaucetAsset),
+    FaucetMaxAmount(FaucetAsset),
+    FaucetLastRequest(Address),
+    FaucetRequestCount(FaucetAsset),
+    FaucetDistributed(FaucetAsset),
+    NextUpgradeId,
+    UpgradeProposal(u32),
+    UpgradeVote(u32, Address),
+    UpgradeVeto(u32, Address),
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum UpgradeStatus { Review, Voting, Approved, Vetoed, Executed }
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UpgradeProposal {
+    pub id: u32,
+    pub proposer: Address,
+    pub old_version: String,
+    pub new_version: String,
+    pub diff_url: String,
+    pub audit_url: String,
+    pub review_url: String,
+    pub wasm_hash: BytesN<32>,
+    pub status: UpgradeStatus,
+    pub approval_votes: u32,
+    pub rejection_votes: u32,
+    pub veto_votes: u32,
+    pub approved_at: Option<u64>,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum FaucetAsset {
+    Usdc,
+    Eth,
+    Btc,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FaucetStatus {
+    pub token: Option<Address>,
+    pub balance: i128,
+    pub max_amount: i128,
+    pub request_count: u32,
+    pub distributed: i128,
 }
 
 #[contracttype]

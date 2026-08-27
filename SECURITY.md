@@ -1,5 +1,7 @@
 # Security Policy
 
+For handling and documenting confirmed incidents, see [INCIDENT_RESPONSE.md](./INCIDENT_RESPONSE.md).
+
 ## Supported Versions
 
 | Version | Supported |

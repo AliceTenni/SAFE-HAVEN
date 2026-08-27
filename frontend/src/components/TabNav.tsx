@@ -42,6 +42,13 @@ const tabs: TabDef[] = [
     ),
   },
   {
+    id: 'faucet',
+    label: 'Faucet',
+    icon: (
+      <svg viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4"><path d="M10 2a2 2 0 012 2v1h1a3 3 0 013 3v6a3 3 0 01-3 3H7a3 3 0 01-3-3V8a3 3 0 013-3h1V4a2 2 0 012-2zm0 2a.5.5 0 00-.5.5V5h1V4.5A.5.5 0 0010 4zm-1 7v2h2v-2H9z" /></svg>
+    ),
+  },
+  {
     id: 'admin',
     label: 'Admin',
     adminOnly: true,

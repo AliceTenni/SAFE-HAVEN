@@ -1,4 +1,5 @@
 use soroban_sdk::{symbol_short, Address, Env, Symbol};
+use crate::types::FaucetAsset;
 
 pub fn contract_initialized(
     env: &Env,
@@ -107,4 +108,9 @@ pub fn withdraw_to(
 ) {
     let topics = (Symbol::new(env, "withdraw_to"), depositor.clone(), token.clone());
     env.events().publish(topics, (recipient.clone(), amount));
+}
+
+pub fn faucet_claim(env: &Env, account: &Address, asset: FaucetAsset, amount: i128) {
+    let topics = (symbol_short!("faucet"), account.clone());
+    env.events().publish(topics, (asset, amount));
 }

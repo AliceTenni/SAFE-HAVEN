@@ -1,6 +1,6 @@
-use soroban_sdk::{Address, Env, Vec};
+use soroban_sdk::{token, Address, Env, Vec};
 
-use crate::types::{VaultEntry, VaultKey, LedgerVaultEntry, MAX_LOCK_DURATION_SECS};
+use crate::types::{FaucetAsset, FaucetStatus, VaultEntry, VaultKey, LedgerVaultEntry, MAX_LOCK_DURATION_SECS};
 
 // Number of seconds per ledger — Soroban ledgers are ~5 seconds apart.
 pub const LEDGER_SECONDS: u64 = 5;
@@ -450,4 +450,36 @@ pub fn get_storage_version(env: &Env) -> Option<u32> {
     env.storage()
         .persistent()
         .get(&VaultKey::StorageVersion)
+}
+
+pub fn set_faucet_asset(env: &Env, asset: &FaucetAsset, token: &Address, max_amount: i128) {
+    env.storage().persistent().set(&VaultKey::FaucetToken(asset.clone()), token);
+    env.storage().persistent().set(&VaultKey::FaucetMaxAmount(asset.clone()), &max_amount);
+    env.storage().persistent().extend_ttl(&VaultKey::FaucetToken(asset.clone()), BUMP_THRESHOLD, BUMP_TARGET);
+    env.storage().persistent().extend_ttl(&VaultKey::FaucetMaxAmount(asset.clone()), BUMP_THRESHOLD, BUMP_TARGET);
+}
+
+pub fn get_faucet_status(env: &Env, asset: &FaucetAsset) -> FaucetStatus {
+    let token = env.storage().persistent().get(&VaultKey::FaucetToken(asset.clone()));
+    let max_amount = env.storage().persistent().get(&VaultKey::FaucetMaxAmount(asset.clone())).unwrap_or(0);
+    let request_count = env.storage().persistent().get(&VaultKey::FaucetRequestCount(asset.clone())).unwrap_or(0);
+    let distributed = env.storage().persistent().get(&VaultKey::FaucetDistributed(asset.clone())).unwrap_or(0);
+    let balance = token.as_ref().map(|address: &Address| token::Client::new(env, address).balance(&env.current_contract_address())).unwrap_or(0);
+    FaucetStatus { token, balance, max_amount, request_count, distributed }
+}
+
+pub fn get_faucet_last_request(env: &Env, account: &Address) -> Option<u64> {
+    env.storage().persistent().get(&VaultKey::FaucetLastRequest(account.clone()))
+}
+
+pub fn record_faucet_request(env: &Env, account: &Address, asset: &FaucetAsset, amount: i128, now: u64) {
+    let last_key = VaultKey::FaucetLastRequest(account.clone());
+    env.storage().persistent().set(&last_key, &now);
+    env.storage().persistent().extend_ttl(&last_key, BUMP_THRESHOLD, BUMP_TARGET);
+    let count_key = VaultKey::FaucetRequestCount(asset.clone());
+    let count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);
+    env.storage().persistent().set(&count_key, &count.saturating_add(1));
+    let total_key = VaultKey::FaucetDistributed(asset.clone());
+    let total: i128 = env.storage().persistent().get(&total_key).unwrap_or(0);
+    env.storage().persistent().set(&total_key, &total.saturating_add(amount));
 }
