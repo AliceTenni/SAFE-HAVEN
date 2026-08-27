@@ -810,3 +810,34 @@ pub fn remove_archived_deposit_by_ledger(env: &Env, depositor: &Address, deposit
     let key = VaultKey::ArchivedDepositByLedger(depositor.clone(), deposit_id);
     env.storage().persistent().remove(&key);
 }
+
+
+// ----------------------------------------------------------------
+//  Emergency withdrawal per-ledger tracking helpers
+// ----------------------------------------------------------------
+
+/// Add `amount` to the cumulative emergency withdrawal total for the current ledger.
+/// Returns the new total after adding.
+pub fn add_emergency_withdrawal(env: &Env, amount: i128) -> i128 {
+    let ledger = env.ledger().sequence();
+    let key = crate::types::VaultKey::EmergencyWithdrawalPerLedger(ledger);
+    let current: i128 = env.storage().persistent().get(&key).unwrap_or(0);
+    let new_total = current.saturating_add(amount);
+    env.storage().persistent().set(&key, &new_total);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
+    new_total
+}
+
+/// Get the cumulative emergency withdrawal amount for a specific ledger.
+/// Returns 0 if no withdrawals have been made in that ledger.
+pub fn get_emergency_withdrawal_per_ledger(env: &Env, ledger: u32) -> i128 {
+    let key = crate::types::VaultKey::EmergencyWithdrawalPerLedger(ledger);
+    env.storage().persistent().get(&key).unwrap_or(0)
+}
+
+/// Get the cumulative emergency withdrawal amount for the current ledger.
+pub fn get_current_ledger_emergency_withdrawal(env: &Env) -> i128 {
+    get_emergency_withdrawal_per_ledger(env, env.ledger().sequence())
+}

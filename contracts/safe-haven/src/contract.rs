@@ -1555,6 +1555,16 @@ impl SafeHaven {
         soroban_sdk::String::from_slice(&_env, env!("CARGO_PKG_VERSION"))
     }
 
+    /// Admin-readable query: returns the cumulative emergency withdrawal amount
+    /// for a specific ledger sequence number.
+    /// 
+    /// This allows admins to audit emergency withdrawal activity and ensure
+    /// the per-ledger limit is being respected. Returns 0 if no emergency
+    /// withdrawals have occurred in that ledger.
+    pub fn get_emergency_withdrawal_total(env: Env, ledger: u32) -> i128 {
+        storage::get_emergency_withdrawal_per_ledger(&env, ledger)
+    }
+
     // ----------------------------------------------------------------
     //  Read-only: Paginated flat deposits view
     // ----------------------------------------------------------------
