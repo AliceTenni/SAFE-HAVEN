@@ -24,6 +24,8 @@ pub const MIN_LOCK_LEDGERS: u32 = (MIN_LOCK_DURATION_SECS / LEDGER_SECONDS) as u
 /// 25 leaves comfortable headroom for the common migration use-case.
 pub const MAX_BATCH_SIZE: u32 = 25;
 
-/// Upgrade timelock period: 7 days in seconds (604,800 seconds).
-/// Provides a safety review window before an upgrade is executed.
-pub const UPGRADE_TIMELOCK_SECS: u64 = 7 * 24 * 60 * 60; // 604,800 seconds
+/// Staker penalty split: percentage of penalties allocated to stakers (70% = 7000 basis points)
+pub const STAKER_PENALTY_BPS: u32 = 7_000;
+
+/// Fee recipient penalty split: percentage of penalties allocated to fee recipient (30% = 3000 basis points)
+pub const FEE_RECIPIENT_PENALTY_BPS: u32 = 3_000;
