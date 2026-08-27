@@ -65,7 +65,7 @@ extern crate std;
 use soroban_sdk::{
     testutils::{Address as _, Events, Ledger, LedgerInfo},
     token::{Client as TokenClient, StellarAssetClient},
-    Address, Env,
+    Address, Env, Vec,
 };
 
 use crate::{
@@ -2504,6 +2504,79 @@ mod penalty_property_tests {
             prop_assert_eq!(penalty + refund, amount);
         }
     }
+}
+
+// ================================================================
+//  batch_deposit
+// ================================================================
+
+#[test]
+fn test_batch_deposit_returns_ids_and_creates_all_entries() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    StellarAssetClient::new(&env, &token).mint(&alice, &2_000);
+    let mut deposits = Vec::new(&env);
+    deposits.push_back(DepositRequest {
+        token: token.clone(),
+        amount: 1_000,
+        unlock_time: env.ledger().timestamp() + 3600,
+        penalty_bps: 0,
+    });
+    deposits.push_back(DepositRequest {
+        token: token.clone(),
+        amount: 1_000,
+        unlock_time: env.ledger().timestamp() + 7200,
+        penalty_bps: 0,
+    });
+
+    let ids = vault.batch_deposit(&alice, &deposits);
+    assert_eq!(ids.len(), 2);
+    assert_eq!(ids.get(0), Some(0));
+    assert_eq!(ids.get(1), Some(1));
+    assert_eq!(vault.get_vault(&alice, &0).unwrap().amount, 1_000);
+    assert_eq!(vault.get_vault(&alice, &1).unwrap().amount, 1_000);
+}
+
+#[test]
+fn test_batch_deposit_is_atomic_when_one_request_is_invalid() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    let mut deposits = Vec::new(&env);
+    deposits.push_back(DepositRequest {
+        token: token.clone(),
+        amount: 1_000,
+        unlock_time: env.ledger().timestamp() + 3600,
+        penalty_bps: 0,
+    });
+    deposits.push_back(DepositRequest {
+        token,
+        amount: 0,
+        unlock_time: env.ledger().timestamp() + 7200,
+        penalty_bps: 0,
+    });
+
+    assert_eq!(
+        vault.try_batch_deposit(&alice, &deposits),
+        Err(Ok(VaultError::InvalidAmount))
+    );
+    assert_eq!(vault.get_deposit_ids(&alice).len(), 0);
+}
+
+#[test]
+fn test_batch_deposit_rejects_more_than_max_batch_size() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    let mut deposits = Vec::new(&env);
+    for _ in 0..26 {
+        deposits.push_back(DepositRequest {
+            token: token.clone(),
+            amount: 1,
+            unlock_time: env.ledger().timestamp() + 3600,
+            penalty_bps: 0,
+        });
+    }
+
+    assert_eq!(
+        vault.try_batch_deposit(&alice, &deposits),
+        Err(Ok(VaultError::BatchTooLarge))
+    );
 }
 
 // ================================================================
