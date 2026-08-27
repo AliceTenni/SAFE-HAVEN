@@ -22,7 +22,9 @@ pub use constants::{
     MIN_LOCK_DURATION_SECS, WITHDRAWAL_LIMIT_PER_EPOCH,
 };
 
-pub use types::STORAGE_VERSION;
+pub use types::{
+    DepositType, MultiTokenVaultEntry, Page, TokenDeposit, STORAGE_VERSION, MAX_TOKENS_PER_DEPOSIT,
+};
 
 pub use contract::SafeHaven;
 pub use contract::SafeHavenClient;

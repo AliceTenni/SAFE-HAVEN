@@ -24,8 +24,8 @@ pub const MIN_LOCK_LEDGERS: u32 = (MIN_LOCK_DURATION_SECS / LEDGER_SECONDS) as u
 /// 25 leaves comfortable headroom for the common migration use-case.
 pub const MAX_BATCH_SIZE: u32 = 25;
 
-/// Withdrawal limit per epoch: maximum number of withdrawals allowed per depositor per epoch.
-pub const WITHDRAWAL_LIMIT_PER_EPOCH: u32 = 10;
+/// Staker penalty split: percentage of penalties allocated to stakers (70% = 7000 basis points)
+pub const STAKER_PENALTY_BPS: u32 = 7_000;
 
-/// Epoch size in ledgers: each epoch spans 5 ledgers (~25 seconds at 5 seconds per ledger).
-pub const EPOCH_SIZE_LEDGERS: u32 = 5;
+/// Fee recipient penalty split: percentage of penalties allocated to fee recipient (30% = 3000 basis points)
+pub const FEE_RECIPIENT_PENALTY_BPS: u32 = 3_000;
