@@ -42,6 +42,15 @@ const tabs: TabDef[] = [
     ),
   },
   {
+    id: 'explorer',
+    label: 'Explorer',
+    icon: (
+      <svg viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4">
+        <path fillRule="evenodd" d="M10 2a8 8 0 100 16 8 8 0 000-16zm1 3a1 1 0 10-2 0v4.586L6.293 12.293a1 1 0 101.414 1.414l3-3A1 1 0 0011 10V5z" clipRule="evenodd" />
+      </svg>
+    ),
+  },
+  {
     id: 'admin',
     label: 'Admin',
     adminOnly: true,

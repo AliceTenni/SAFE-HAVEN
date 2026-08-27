@@ -254,6 +254,19 @@ export async function getConstants(): Promise<{ maxDeposit: bigint; maxLockSecs:
   )
 }
 
+/** Fetch the contract storage schema version */
+export async function getStorageVersion(): Promise<number | null> {
+  const result = await simulateReadOnly(
+    'get_storage_version',
+    [],
+    (v) => {
+      if (v.switch() === xdr.ScValType.scvVoid()) return null
+      return Number(scValToNative(v))
+    },
+  )
+  return result ?? null
+}
+
 /** Fetch depositor count */
 export async function getDepositorCount(): Promise<number> {
   const result = await simulateReadOnly(

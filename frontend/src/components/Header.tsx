@@ -1,12 +1,15 @@
+import { useState } from 'react'
 import { useWallet } from '../context/WalletContext'
 import { shortAddr } from '../lib/format'
+import { FeedbackModal } from './FeedbackModal'
 
 interface HeaderProps {
   isPaused: boolean
 }
 
 export function Header({ isPaused }: HeaderProps) {
-  const { wallet, isConnecting, connect, disconnect } = useWallet()
+  const { wallet, wallets, isConnecting, connect, disconnect, switchWallet } = useWallet()
+  const [feedbackOpen, setFeedbackOpen] = useState(false)
 
   return (
     <header className="sticky top-0 z-30 border-b border-slate-800/80 bg-slate-950/80 backdrop-blur-md">
@@ -35,13 +38,42 @@ export function Header({ isPaused }: HeaderProps) {
             </span>
           )}
 
+          <button
+            onClick={() => setFeedbackOpen(true)}
+            className="btn-secondary text-xs px-3 py-2"
+          >
+            Feedback
+          </button>
+
           {/* Wallet button */}
           {wallet ? (
             <div className="flex items-center gap-2">
               <div className="hidden sm:block text-right">
-                <p className="text-xs text-slate-400">Connected</p>
+                <p className="text-xs text-slate-400">Active wallet</p>
                 <p className="text-sm font-mono text-slate-200">{shortAddr(wallet.address)}</p>
               </div>
+              {wallets.length > 1 && (
+                <select
+                  aria-label="Switch wallet"
+                  value={wallet.address}
+                  onChange={(event) => switchWallet(event.target.value)}
+                  className="input max-w-32 text-xs py-2"
+                >
+                  {wallets.map((connectedWallet) => (
+                    <option key={connectedWallet.address} value={connectedWallet.address}>
+                      {connectedWallet.displayAddress}
+                    </option>
+                  ))}
+                </select>
+              )}
+              <button
+                onClick={connect}
+                disabled={isConnecting}
+                className="btn-secondary text-xs px-3 py-2"
+                title="Add the currently selected wallet"
+              >
+                {isConnecting ? 'Connecting…' : 'Add wallet'}
+              </button>
               <button
                 onClick={disconnect}
                 className="btn-secondary text-xs px-3 py-2"
@@ -74,6 +106,7 @@ export function Header({ isPaused }: HeaderProps) {
           )}
         </div>
       </div>
+      {feedbackOpen && <FeedbackModal onClose={() => setFeedbackOpen(false)} />}
     </header>
   )
 }

@@ -4,7 +4,7 @@ import { useWallet } from '../context/WalletContext'
 import { TxStatusBadge } from '../components/TxStatusBadge'
 import { buildWithdraw, buildCancelDeposit, submitTx, getVault, getTimeRemaining } from '../lib/stellar'
 import { stroopsToXlm, formatUnlockDate, formatCountdown, formatBps } from '../lib/format'
-import type { TxStatus, VaultEntry } from '../types'
+import type { TxStatus, VaultEntry, WithdrawalStrategy } from '../types'
 import { CONFIG } from '../config'
 
 export function WithdrawPage() {
@@ -197,4 +197,46 @@ export function WithdrawPage() {
       )}
     </div>
   )
+}
+
+function StrategyOption({
+  value,
+  label,
+  description,
+  selected,
+  onSelect,
+  disabled,
+}: {
+  value: WithdrawalStrategy
+  label: string
+  description: string
+  selected: boolean
+  onSelect: (value: WithdrawalStrategy) => void
+  disabled: boolean
+}) {
+  return (
+    <label className={`cursor-pointer rounded-lg border p-3 transition-colors ${selected ? 'border-sky-400 bg-sky-400/10' : 'border-slate-700 hover:border-slate-500'} ${disabled ? 'cursor-not-allowed opacity-60' : ''}`}>
+      <input
+        className="sr-only"
+        type="radio"
+        name="withdrawal-strategy"
+        value={value}
+        checked={selected}
+        onChange={() => onSelect(value)}
+        disabled={disabled}
+      />
+      <span className="block text-sm font-medium">{label}</span>
+      <span className="block text-xs text-slate-500 mt-1">{description}</span>
+    </label>
+  )
+}
+
+function buildLinearSchedule(amount: bigint, unlockTime: number) {
+  const now = Math.floor(Date.now() / 1000)
+  const start = Math.min(now, unlockTime)
+  const duration = Math.max(unlockTime - start, 0)
+  return [1, 2, 3, 4].map((step) => ({
+    date: start + Math.floor(duration * step / 4),
+    amount: amount * BigInt(step) / 4n - amount * BigInt(step - 1) / 4n,
+  }))
 }

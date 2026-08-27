@@ -7,6 +7,7 @@ import { Dashboard } from './pages/Dashboard'
 import { DepositPage } from './pages/DepositPage'
 import { WithdrawPage } from './pages/WithdrawPage'
 import { AdminPage } from './pages/AdminPage'
+import { ContractExplorer } from './pages/ContractExplorer'
 import type { PageTab } from './types'
 
 // Re-export ContractInfo shape so pages can import it from App
@@ -16,6 +17,7 @@ export interface ContractInfo {
   paused: boolean
   maxDeposit: bigint
   maxLockSecs: number
+  version: number | null
   depositorCount: number
   feeRecipient: string | null
   loading: boolean
@@ -45,12 +47,14 @@ function AppInner() {
               {activeTab === 'dashboard' && 'My Vaults'}
               {activeTab === 'deposit'   && 'New Deposit'}
               {activeTab === 'withdraw'  && 'Withdraw'}
+              {activeTab === 'explorer'  && 'Contract Explorer'}
               {activeTab === 'admin'     && 'Admin Panel'}
             </h1>
             <p className="text-slate-400 text-sm mt-0.5">
               {activeTab === 'dashboard' && 'View and manage all your time-locked deposits'}
               {activeTab === 'deposit'   && 'Lock tokens until a future date'}
               {activeTab === 'withdraw'  && 'Withdraw unlocked tokens or cancel early'}
+              {activeTab === 'explorer'  && 'Inspect live contract configuration and state'}
               {activeTab === 'admin'     && 'Contract administration controls'}
             </p>
           </div>
@@ -67,6 +71,9 @@ function AppInner() {
         )}
         {activeTab === 'withdraw' && (
           <WithdrawPage />
+        )}
+        {activeTab === 'explorer' && (
+          <ContractExplorer contractInfo={contractInfo} />
         )}
         {activeTab === 'admin' && (
           <AdminPage contractInfo={contractInfo} onContractInfoRefresh={contractInfo.refresh} />
