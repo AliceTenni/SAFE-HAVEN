@@ -24,6 +24,8 @@ pub const MIN_LOCK_LEDGERS: u32 = (MIN_LOCK_DURATION_SECS / LEDGER_SECONDS) as u
 /// 25 leaves comfortable headroom for the common migration use-case.
 pub const MAX_BATCH_SIZE: u32 = 25;
 
-/// Minimum age (in seconds) for an archived deposit before it can be deleted.
-/// Set to 1 year (365 days × 24 hours × 60 minutes × 60 seconds).
-pub const ARCHIVED_DEPOSIT_MIN_AGE_SECS: u64 = 31_536_000;
+/// Staker penalty split: percentage of penalties allocated to stakers (70% = 7000 basis points)
+pub const STAKER_PENALTY_BPS: u32 = 7_000;
+
+/// Fee recipient penalty split: percentage of penalties allocated to fee recipient (30% = 3000 basis points)
+pub const FEE_RECIPIENT_PENALTY_BPS: u32 = 3_000;
