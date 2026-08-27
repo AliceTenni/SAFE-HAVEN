@@ -12,6 +12,9 @@ pub const MAX_TOKENS_PER_DEPOSIT: u32 = 5;
 /// and upgrade stale entries.
 pub const STORAGE_VERSION: u32 = 1;
 
+/// Fraction of the penalty fee reserved for the insurance pool (5 = 5%).
+pub const INSURANCE_POOL_BPS: u32 = 500; // 5% in basis points
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum VaultKey {
