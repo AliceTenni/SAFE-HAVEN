@@ -726,3 +726,87 @@ pub fn set_staker_rewards_claimed(env: &Env, staker: &Address, amount: i128) {
 pub fn get_stakers_list(env: &Env) -> Vec<Address> {
     get_staker_list(env)
 }
+
+// ----------------------------------------------------------------
+//  Archived deposit helpers
+// ----------------------------------------------------------------
+
+/// Archive a timestamp-based deposit by moving it to archived storage
+/// and recording the archive timestamp.
+pub fn set_archived_deposit(
+    env: &Env,
+    depositor: &Address,
+    deposit_id: u32,
+    entry: &VaultEntry,
+    archive_timestamp: u64,
+) {
+    let key = VaultKey::ArchivedDeposit(depositor.clone(), deposit_id);
+    let archived = ArchivedVaultEntry {
+        token: entry.token.clone(),
+        amount: entry.amount,
+        unlock_time: entry.unlock_time,
+        depositor: depositor.clone(),
+        penalty_bps: entry.penalty_bps,
+        archive_timestamp,
+    };
+    env.storage().persistent().set(&key, &archived);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
+}
+
+/// Retrieve an archived timestamp-based deposit without bumping TTL.
+pub fn get_archived_deposit_readonly(
+    env: &Env,
+    depositor: &Address,
+    deposit_id: u32,
+) -> Option<ArchivedVaultEntry> {
+    let key = VaultKey::ArchivedDeposit(depositor.clone(), deposit_id);
+    env.storage().persistent().get(&key)
+}
+
+/// Delete an archived timestamp-based deposit from storage.
+pub fn remove_archived_deposit(env: &Env, depositor: &Address, deposit_id: u32) {
+    let key = VaultKey::ArchivedDeposit(depositor.clone(), deposit_id);
+    env.storage().persistent().remove(&key);
+}
+
+/// Archive a ledger-based deposit by moving it to archived storage
+/// and recording the archive timestamp.
+pub fn set_archived_deposit_by_ledger(
+    env: &Env,
+    depositor: &Address,
+    deposit_id: u32,
+    entry: &LedgerVaultEntry,
+    archive_timestamp: u64,
+) {
+    let key = VaultKey::ArchivedDepositByLedger(depositor.clone(), deposit_id);
+    let archived = ArchivedLedgerVaultEntry {
+        token: entry.token.clone(),
+        amount: entry.amount,
+        unlock_ledger: entry.unlock_ledger,
+        depositor: depositor.clone(),
+        penalty_bps: entry.penalty_bps,
+        archive_timestamp,
+    };
+    env.storage().persistent().set(&key, &archived);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
+}
+
+/// Retrieve an archived ledger-based deposit without bumping TTL.
+pub fn get_archived_deposit_by_ledger_readonly(
+    env: &Env,
+    depositor: &Address,
+    deposit_id: u32,
+) -> Option<ArchivedLedgerVaultEntry> {
+    let key = VaultKey::ArchivedDepositByLedger(depositor.clone(), deposit_id);
+    env.storage().persistent().get(&key)
+}
+
+/// Delete an archived ledger-based deposit from storage.
+pub fn remove_archived_deposit_by_ledger(env: &Env, depositor: &Address, deposit_id: u32) {
+    let key = VaultKey::ArchivedDepositByLedger(depositor.clone(), deposit_id);
+    env.storage().persistent().remove(&key);
+}
