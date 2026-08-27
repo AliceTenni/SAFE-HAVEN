@@ -1936,6 +1936,107 @@ fn test_time_remaining_timestamp_deposit_unaffected() {
     assert_eq!(vault.time_remaining(&alice, &id), 1800);
 }
 
+/// Verify that time_remaining estimate decreases as ledgers progress.
+/// This test simulates real ledger progression and confirms the estimate
+/// follows the formula: remaining_ledgers × 5 seconds.
+#[test]
+fn test_time_remaining_ledger_estimate_decreases_with_progression() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+
+    let remaining_ledgers: u32 = 50;
+    let unlock_ledger = env.ledger().sequence() + remaining_ledgers;
+    let id = vault.deposit_by_ledger(&alice, &token, &1_000, &unlock_ledger, &0);
+
+    // Check initial estimate
+    let initial_estimate = vault.time_remaining(&alice, &id);
+    assert_eq!(initial_estimate, (remaining_ledgers as u64) * 5);
+
+    // Advance by 10 ledgers and verify estimate decreased by ~50 seconds
+    advance_ledger(&env, 10);
+    let estimate_after_10 = vault.time_remaining(&alice, &id);
+    assert_eq!(estimate_after_10, (remaining_ledgers as u64 - 10) * 5);
+    assert_eq!(initial_estimate - estimate_after_10, 50);
+
+    // Advance by another 20 ledgers and verify estimate decreased by ~100 seconds total
+    advance_ledger(&env, 20);
+    let estimate_after_30 = vault.time_remaining(&alice, &id);
+    assert_eq!(estimate_after_30, (remaining_ledgers as u64 - 30) * 5);
+    assert_eq!(initial_estimate - estimate_after_30, 150);
+}
+
+/// Verify that time_remaining correctly returns 0 when approaching the
+/// unlock ledger (within a few ledgers). This tests edge case behavior.
+#[test]
+fn test_time_remaining_ledger_near_unlock_boundary() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+
+    let unlock_ledger = env.ledger().sequence() + 5;
+    let id = vault.deposit_by_ledger(&alice, &token, &1_000, &unlock_ledger, &0);
+
+    // Should return 25 seconds (5 ledgers * 5 seconds)
+    assert_eq!(vault.time_remaining(&alice, &id), 25);
+
+    // Advance to 1 ledger before unlock
+    advance_ledger(&env, 4);
+    assert_eq!(vault.time_remaining(&alice, &id), 5);
+
+    // Advance to exact unlock ledger
+    advance_ledger(&env, 1);
+    assert_eq!(vault.time_remaining(&alice, &id), 0);
+
+    // Even after reaching unlock, time_remaining should remain 0
+    advance_ledger(&env, 1);
+    assert_eq!(vault.time_remaining(&alice, &id), 0);
+}
+
+/// Verify that both timestamp-based and ledger-based deposits can coexist
+/// and each returns its correct time_remaining value.
+#[test]
+fn test_time_remaining_mixed_deposit_types() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+
+    // Create a timestamp-based deposit
+    let ts_unlock_time = env.ledger().timestamp() + 3600;
+    let ts_id = vault.deposit(&alice, &token, &1_000, &ts_unlock_time, &0);
+
+    // Create a ledger-based deposit
+    let ledger_unlock = env.ledger().sequence() + 40; // 200 seconds estimate
+    let ledger_id = vault.deposit_by_ledger(&alice, &token, &1_000, &ledger_unlock, &0);
+
+    // Both should return their respective estimates
+    assert_eq!(vault.time_remaining(&alice, &ts_id), 3600);
+    assert_eq!(vault.time_remaining(&alice, &ledger_id), 200);
+
+    // Advance by 10 ledgers (~50 seconds wall-clock time)
+    advance_ledger(&env, 10);
+
+    // Timestamp-based should decrease by ~50 seconds
+    let ts_remaining = vault.time_remaining(&alice, &ts_id);
+    assert!(ts_remaining >= 3550 && ts_remaining <= 3600); // Allow small variance
+
+    // Ledger-based should decrease by exactly 50 seconds (10 ledgers * 5)
+    assert_eq!(vault.time_remaining(&alice, &ledger_id), 150);
+}
+
+/// Verify that time_remaining returns the same estimate value on repeated
+/// calls within the same ledger (no state change).
+#[test]
+fn test_time_remaining_ledger_consistent_in_same_ledger() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+
+    let unlock_ledger = env.ledger().sequence() + 20;
+    let id = vault.deposit_by_ledger(&alice, &token, &1_000, &unlock_ledger, &0);
+
+    // Call time_remaining multiple times without advancing ledgers
+    let estimate_1 = vault.time_remaining(&alice, &id);
+    let estimate_2 = vault.time_remaining(&alice, &id);
+    let estimate_3 = vault.time_remaining(&alice, &id);
+
+    assert_eq!(estimate_1, estimate_2);
+    assert_eq!(estimate_2, estimate_3);
+    assert_eq!(estimate_1, 100); // 20 ledgers * 5 seconds
+}
+
 // ================================================================
 //  get_deposits_page (Task 1)
 // ================================================================

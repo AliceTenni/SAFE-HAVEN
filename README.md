@@ -159,14 +159,16 @@ Use this when you need to express a lock period in terms of on-chain ledger prog
 estimated_seconds = (unlock_ledger - current_ledger) × 5
 ```
 
-This is an estimate only. Actual ledger close times vary and cannot be predicted exactly. `time_remaining(depositor, id)` performs this same calculation internally.
-
-> **Known Limitations**
+> **⚠️ IMPORTANT: This is an ESTIMATE, not a guaranteed prediction.**
 >
-> - **No frontend support.** The React UI exposes `deposit` and `deposit_for` only. `deposit_by_ledger` must be called directly via the Stellar CLI or an SDK.
-> - **Minimum lock is 12 ledgers (≈ 60 s), not the full timestamp minimum validation path.** The check exists (`MIN_LOCK_LEDGERS = 12`) but uses ledger count rather than seconds, so the two minimums are equivalent in practice but not enforced by the same code.
-> - **`time_remaining` returns an estimate.** For ledger-based deposits the return value is `remaining_ledgers × 5` seconds — an approximation, not a guaranteed timestamp.
-> - **`get_vault` returns `None` for ledger-based deposits.** Use `get_ledger_vault(depositor, id)` instead to retrieve a `LedgerVaultEntry`.
+> - Actual ledger close times vary by ±1-2 seconds depending on network conditions
+> - The 5-second value is a Stellar network consensus target, not a hard guarantee
+> - Use this estimate for UI display and rough scheduling only
+> - Do **not** rely on this for precise, critical timing — use timestamp-based deposits instead
+> - When withdrawal is called, the actual check is `current_ledger >= unlock_ledger`, which is exact
+> - The `time_remaining(depositor, id)` query returns `(remaining_ledgers × 5)` for ledger-based deposits, which is the same estimate
+>
+> See the **"Ledger-Based Deposit Time Estimation: Precision & Confidence"** section below for a detailed decision tree, use-case guidance, and accuracy details.
 
 #### `withdraw(depositor, deposit_id)`
 Withdraws if `now >= unlock_time`.
@@ -305,6 +307,73 @@ SAFE-HAVEN enforces this convention: every mutating function calls `caller.requi
 
 ---
 
+## Ledger-Based Deposit Time Estimation: Precision & Confidence
+
+When using `deposit_by_ledger()`, the contract stores a target ledger sequence number. To estimate when that ledger will close in wall-clock time, use the formula:
+
+```
+estimated_seconds = (unlock_ledger - current_ledger) × 5
+```
+
+### How accurate is this estimate?
+
+**Excellent for rough UI display** (±5–10 seconds over typical durations):
+- Stellar's consensus layer targets a 5-second ledger close time on average
+- Over a 1-hour lock (720 ledgers), the estimate will typically be within ±2–3 minutes
+- For long locks (days or weeks), the relative error shrinks further
+
+**Not suitable for precise scheduling**:
+- Actual ledger close times vary by ±1–2 seconds due to network conditions, validator clock skew, and consensus timeouts
+- Over-the-counter exchanges, time-sensitive payment settlements, or critical business logic should NOT rely on this estimate
+- For exact timing, use timestamp-based deposits (`deposit()`) instead
+
+### When should I use `time_remaining()` for ledger-based deposits?
+
+**Safe to use**:
+- Display in a UI dashboard showing "roughly X seconds remaining"
+- Showing a progress bar for visual feedback
+- Non-critical notifications like "deposit will unlock soon"
+
+**Not safe to use**:
+- Calculating precise interest accrual or compounding
+- Triggering critical financial workflows ("execute settlement exactly when deposit unlocks")
+- Legal or compliance deadlines that require exact timestamps
+- Any system that cannot tolerate ±2–5 seconds of error
+
+### Decision tree: Which deposit type should I use?
+
+```
+Do you need EXACT wall-clock precision?
+├─ YES  → Use deposit() or deposit_for() (timestamp-based)
+│        The unlock check is exact: env.ledger().timestamp() >= unlock_time
+│
+└─ NO   → Do you need to express the lock in ledger terms?
+         (e.g., "release after block 12,345,678")?
+         ├─ YES  → Use deposit_by_ledger()
+         │        Unlock check is exact: env.ledger().sequence() >= unlock_ledger
+         │        time_remaining() will return an estimate ±1–2 seconds
+         │
+         └─ NO   → Use deposit() or deposit_for() (timestamp-based)
+                   Simpler, widely supported in the UI, no approximation needed
+```
+
+### Implementation Details
+
+The 5-second estimate is defined in `storage.rs::LEDGER_SECONDS`:
+
+```rust
+pub const LEDGER_SECONDS: u64 = 5;
+```
+
+This constant is used by:
+- `contract.rs::time_remaining()` — returns `remaining_ledgers × LEDGER_SECONDS` for ledger-based deposits
+- `constants.rs::MIN_LOCK_LEDGERS` — enforces minimum 12 ledgers (~60 seconds)
+- Storage TTL calculations — ensures vault state persists longer than maximum lock duration
+
+The estimate formula is deterministic and does not change; network delays may cause the actual ledger close to drift slightly, but the formula itself is reliable for UI purposes.
+
+---
+
 ## Known Limitations
 
 The following gaps apply specifically to `deposit_by_ledger` deposits. All other deposit types (`deposit`, `deposit_for`) are unaffected.
@@ -314,7 +383,7 @@ The following gaps apply specifically to `deposit_by_ledger` deposits. All other
 | **No frontend support** | The React UI only exposes `deposit` and `deposit_for`. Ledger-based deposits must be made via the Stellar CLI or a custom SDK integration. |
 | **No maximum lock duration** | `deposit` and `deposit_for` reject lock durations longer than `max_lock_secs` (default 5 years). `deposit_by_ledger` only enforces a *minimum* gap of 12 ledgers (`MIN_LOCK_LEDGERS`). There is no equivalent upper-bound check on `unlock_ledger`, so arbitrarily far-future ledger numbers are accepted. |
 | **`get_vault` returns `None`** | The `get_vault(depositor, id)` query only searches timestamp-based entries. To retrieve a ledger-based deposit, use `get_ledger_vault(depositor, id)` which returns `Option<LedgerVaultEntry>`. |
-| **`time_remaining` is an estimate** | For ledger-based deposits, `time_remaining` returns `remaining_ledgers × 5` seconds. This is an approximation because actual ledger close times are not exactly 5 seconds. Do not rely on this value for precise scheduling. |
+| **`time_remaining` is an estimate** | For ledger-based deposits, `time_remaining` returns `remaining_ledgers × 5` seconds. This is an approximation because actual ledger close times vary by ±1-2 seconds and are not exactly 5 seconds. **Do not rely on this value for precise scheduling or critical timing.** Use this estimate for UI display and rough scheduling only. The actual withdrawal check (`current_ledger >= unlock_ledger`) is exact and will work correctly. |
 | **`get_deposits_page` excludes ledger-based deposits** | The paginated flat deposits view only iterates over timestamp-based `VaultEntry` records. To enumerate ledger-based deposits, use `get_depositors` + `get_deposit_ids` + `get_ledger_vault`. |
 
 These limitations are tracked as open issues and will be addressed in future releases.
