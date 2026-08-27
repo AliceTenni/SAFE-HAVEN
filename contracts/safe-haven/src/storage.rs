@@ -1,6 +1,6 @@
 use soroban_sdk::{Address, Env, Vec};
 
-use crate::types::{VaultEntry, VaultKey, LedgerVaultEntry, MAX_LOCK_DURATION_SECS};
+use crate::types::{GovernanceProposal, LedgerVaultEntry, TokenVetting, VaultEntry, VaultKey, MAX_LOCK_DURATION_SECS};
 
 // Number of seconds per ledger — Soroban ledgers are ~5 seconds apart.
 pub const LEDGER_SECONDS: u64 = 5;
@@ -88,6 +88,18 @@ pub fn remove_active_deposit_id(env: &Env, depositor: &Address, deposit_id: u32)
 /// ledger-based (fixes #18 and #20).
 pub fn get_deposit_ids(env: &Env, depositor: &Address) -> Vec<u32> {
     get_active_ids(env, depositor)
+}
+
+pub fn get_voting_power(env: &Env, voter: &Address) -> i128 {
+    let mut total = 0i128;
+    for deposit_id in get_active_ids(env, voter).iter() {
+        if let Some(entry) = get_deposit_readonly(env, voter, deposit_id) {
+            total = total.saturating_add(entry.amount);
+        } else if let Some(entry) = get_deposit_by_ledger_readonly(env, voter, deposit_id) {
+            total = total.saturating_add(entry.amount);
+        }
+    }
+    total
 }
 
 // ----------------------------------------------------------------
@@ -356,6 +368,89 @@ pub fn is_paused(env: &Env) -> bool {
         .persistent()
         .get::<VaultKey, bool>(&VaultKey::Paused)
         .unwrap_or(false)
+}
+
+// ----------------------------------------------------------------
+//  Token allowlist helpers
+// ----------------------------------------------------------------
+
+pub fn set_token_allowed(env: &Env, token: &Address, allowed: bool) {
+    let key = VaultKey::AllowedToken(token.clone());
+    if allowed {
+        env.storage().persistent().set(&key, &true);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
+    } else {
+        env.storage().persistent().remove(&key);
+    }
+}
+
+pub fn is_token_allowed(env: &Env, token: &Address) -> bool {
+    env.storage()
+        .persistent()
+        .get::<VaultKey, bool>(&VaultKey::AllowedToken(token.clone()))
+        .unwrap_or(false)
+}
+
+pub fn set_strict_token_allowlist(env: &Env, strict: bool) {
+    let key = VaultKey::StrictTokenAllowlist;
+    env.storage().persistent().set(&key, &strict);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
+}
+
+pub fn is_strict_token_allowlist(env: &Env) -> bool {
+    env.storage()
+        .persistent()
+        .get::<VaultKey, bool>(&VaultKey::StrictTokenAllowlist)
+        .unwrap_or(false)
+}
+
+// ----------------------------------------------------------------
+//  Token vetting workflow helpers
+// ----------------------------------------------------------------
+
+pub fn set_token_vetting(env: &Env, token: &Address, vetting: &TokenVetting) {
+    let key = VaultKey::TokenVetting(token.clone());
+    env.storage().persistent().set(&key, vetting);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
+}
+
+pub fn get_token_vetting(env: &Env, token: &Address) -> Option<TokenVetting> {
+    env.storage()
+        .persistent()
+        .get(&VaultKey::TokenVetting(token.clone()))
+}
+
+pub fn next_proposal_id(env: &Env) -> u32 {
+    let id: u32 = env.storage().persistent().get(&VaultKey::ProposalCounter).unwrap_or(0);
+    env.storage().persistent().set(&VaultKey::ProposalCounter, &(id + 1));
+    env.storage().persistent().extend_ttl(&VaultKey::ProposalCounter, BUMP_THRESHOLD, BUMP_TARGET);
+    id
+}
+
+pub fn set_governance_proposal(env: &Env, id: u32, proposal: &GovernanceProposal) {
+    let key = VaultKey::GovernanceProposal(id);
+    env.storage().persistent().set(&key, proposal);
+    env.storage().persistent().extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
+}
+
+pub fn get_governance_proposal(env: &Env, id: u32) -> Option<GovernanceProposal> {
+    env.storage().persistent().get(&VaultKey::GovernanceProposal(id))
+}
+
+pub fn has_governance_vote(env: &Env, id: u32, voter: &Address) -> bool {
+    env.storage().persistent().get::<VaultKey, bool>(&VaultKey::GovernanceVote(id, voter.clone())).unwrap_or(false)
+}
+
+pub fn set_governance_vote(env: &Env, id: u32, voter: &Address) {
+    let key = VaultKey::GovernanceVote(id, voter.clone());
+    env.storage().persistent().set(&key, &true);
+    env.storage().persistent().extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
 }
 
 /// Returns the raw append-only depositor list (may contain stale entries after

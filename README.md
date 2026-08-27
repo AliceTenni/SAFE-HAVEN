@@ -77,6 +77,8 @@ npm run dev            # -> http://localhost:5173
 
 See [`frontend/README.md`](./frontend/README.md) for the full frontend guide.
 
+See [`GAS_PROFILING.md`](./GAS_PROFILING.md) for the contract gas profile, simulation methodology, and optimization recommendations.
+
 ---
 
 ## Overview

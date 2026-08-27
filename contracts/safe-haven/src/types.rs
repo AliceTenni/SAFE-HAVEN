@@ -32,6 +32,15 @@ pub enum VaultKey {
     MaxDeposit,
     MaxLockSecs,
     Paused,
+    /// Boolean membership flag for the token allowlist.
+    AllowedToken(Address),
+    /// When true, deposits may use only tokens in the allowlist.
+    StrictTokenAllowlist,
+    /// Stores the token vetting workflow state.
+    TokenVetting(Address),
+    ProposalCounter,
+    GovernanceProposal(u32),
+    GovernanceVote(u32, Address),
     /// Persists the schema version written by the last `migrate()` call (or 1
     /// for contracts that were initialized before versioning was introduced).
     StorageVersion,
@@ -55,4 +64,43 @@ pub struct LedgerVaultEntry {
     pub unlock_ledger: u32,
     pub depositor: Address,
     pub penalty_bps: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TokenVetting {
+    pub proposer: Address,
+    pub proposed_at: u64,
+    pub reviewed: bool,
+    pub review_passed: bool,
+    pub reviewer: Option<Address>,
+    pub reviewed_at: Option<u64>,
+    pub approved: bool,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum GovernanceMode {
+    AdminVote,
+    CommunityVote,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum GovernanceAction {
+    Pause,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GovernanceProposal {
+    pub proposer: Address,
+    pub action: GovernanceAction,
+    pub mode: GovernanceMode,
+    pub created_at: u64,
+    pub voting_ends_at: u64,
+    pub executable_at: u64,
+    pub for_votes: i128,
+    pub against_votes: i128,
+    pub executed: bool,
 }

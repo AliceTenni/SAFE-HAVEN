@@ -37,3 +37,41 @@ export interface ContractResult<T> {
   error?: string
   txHash?: string
 }
+
+export interface TokenMetadata {
+  assetCode: string
+  issuer: string
+  name: string | null
+  description: string | null
+  image: string | null
+  totalSupply: bigint
+  holders: number
+  issuerCreatedAt: string | null
+  issuerTransactionCount: number | null
+  stellarExpertUrl: string
+}
+
+export interface TokenVettingChecks {
+  contractVerified: boolean
+  tvlAboveThreshold: boolean
+  noKnownVulnerabilities: boolean
+  creatorReputable: boolean
+  ageAboveThreshold: boolean
+}
+
+export interface TokenVettingResult {
+  metadata: TokenMetadata
+  checks: TokenVettingChecks
+  passed: boolean
+  reasons: string[]
+}
+
+export interface TokenVettingRecord {
+  proposer: string
+  proposedAt: number
+  reviewed: boolean
+  reviewPassed: boolean
+  reviewer: string | null
+  reviewedAt: number | null
+  approved: boolean
+}

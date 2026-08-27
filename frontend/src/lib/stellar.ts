@@ -15,7 +15,7 @@ import {
   type SorobanDataBuilder,
 } from '@stellar/stellar-sdk'
 import { CONFIG } from '../config'
-import type { VaultEntry, ContractResult } from '../types'
+import type { VaultEntry, ContractResult, TokenVettingRecord } from '../types'
 
 // ----------------------------------------------------------------
 //  RPC client (singleton)
@@ -242,6 +242,46 @@ export async function getFeeRecipient(): Promise<string | null> {
   return result ?? null
 }
 
+export async function isTokenAllowed(token: string): Promise<boolean> {
+  const result = await simulateReadOnly(
+    'is_token_allowed',
+    [new Address(token).toScVal()],
+    (v) => scValToNative(v) as boolean,
+  )
+  return result ?? false
+}
+
+export async function getTokenVetting(token: string): Promise<TokenVettingRecord | null> {
+  return simulateReadOnly(
+    'get_token_vetting',
+    [new Address(token).toScVal()],
+    (v) => {
+      if (v.switch() === xdr.ScValType.scvVoid()) return null
+      const raw = scValToNative(v) as Record<string, unknown>
+      return {
+        proposer: raw['proposer'] as string,
+        proposedAt: Number(raw['proposed_at']),
+        reviewed: raw['reviewed'] as boolean,
+        reviewPassed: raw['review_passed'] as boolean,
+        reviewer: (raw['reviewer'] as string | null) ?? null,
+        reviewedAt: raw['reviewed_at'] == null ? null : Number(raw['reviewed_at']),
+        approved: raw['approved'] as boolean,
+      }
+    },
+  )
+}
+
+export async function getProposal(proposalId: number): Promise<Record<string, unknown> | null> {
+  return simulateReadOnly(
+    'get_proposal',
+    [nativeToScVal(proposalId, { type: 'u32' })],
+    (v) => {
+      if (v.switch() === xdr.ScValType.scvVoid()) return null
+      return scValToNative(v) as Record<string, unknown>
+    },
+  )
+}
+
 /** Fetch contract constants */
 export async function getConstants(): Promise<{ maxDeposit: bigint; maxLockSecs: number } | null> {
   return simulateReadOnly(
@@ -383,6 +423,57 @@ export async function buildPause(admin: string): Promise<string | null> {
 
 export async function buildUnpause(admin: string): Promise<string | null> {
   return buildTx(admin, 'unpause', [new Address(admin).toScVal()])
+}
+
+export async function buildProposeToken(proposer: string, token: string): Promise<string | null> {
+  return buildTx(proposer, 'propose_token', [
+    new Address(proposer).toScVal(),
+    new Address(token).toScVal(),
+  ])
+}
+
+export async function buildReviewToken(admin: string, token: string, passed: boolean): Promise<string | null> {
+  return buildTx(admin, 'review_token', [
+    new Address(admin).toScVal(),
+    new Address(token).toScVal(),
+    nativeToScVal(passed, { type: 'bool' }),
+  ])
+}
+
+export async function buildApproveToken(admin: string, token: string): Promise<string | null> {
+  return buildTx(admin, 'approve_token', [
+    new Address(admin).toScVal(),
+    new Address(token).toScVal(),
+  ])
+}
+
+export async function buildProposePause(
+  proposer: string,
+  mode: 'AdminVote' | 'CommunityVote',
+): Promise<string | null> {
+  return buildTx(proposer, 'propose_pause', [
+    new Address(proposer).toScVal(),
+    nativeToScVal(mode, { type: 'symbol' }),
+  ])
+}
+
+export async function buildGovernanceVote(
+  voter: string,
+  proposalId: number,
+  support: boolean,
+): Promise<string | null> {
+  return buildTx(voter, 'vote', [
+    nativeToScVal(proposalId, { type: 'u32' }),
+    new Address(voter).toScVal(),
+    nativeToScVal(support, { type: 'bool' }),
+  ])
+}
+
+export async function buildExecuteProposal(
+  caller: string,
+  proposalId: number,
+): Promise<string | null> {
+  return buildTx(caller, 'execute_proposal', [nativeToScVal(proposalId, { type: 'u32' })])
 }
 
 export async function buildEmergencyWithdraw(
