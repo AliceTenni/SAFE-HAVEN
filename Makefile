@@ -123,8 +123,17 @@ optimize: build
 	@ls -lh $(OPTIMIZED)
 
 ## Deploy to Stellar Testnet (requires SOROBAN_SECRET_KEY env var)
-deploy-testnet: optimize
+deploy-testnet:
 	bash scripts/deploy_testnet.sh
+
+## Deploy to Stellar mainnet (requires a pre-funded deployer and explicit secret key)
+deploy-mainnet:
+	bash scripts/deploy_mainnet.sh
+
+## Redeploy a previous immutable contract WASM (ARTIFACT_DIR must be provided)
+rollback:
+	@test -n "$(ARTIFACT_DIR)" || (echo "ARTIFACT_DIR is required"; exit 1)
+	bash scripts/deploy.sh rollback $(NETWORK) --artifact-dir "$(ARTIFACT_DIR)"
 
 ## Show raw WASM size
 size: build
