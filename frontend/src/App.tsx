@@ -103,6 +103,30 @@ function AppInner() {
               GitHub
             </a>
             <a
+              href="https://github.com/shortheartone/SAFE-HAVEN/blob/main/docs/USER_ONBOARDING.md"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="hover:text-slate-300 transition-colors"
+            >
+              User Guide
+            </a>
+            <a
+              href="https://github.com/shortheartone/SAFE-HAVEN/blob/main/docs/ROADMAP.md"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="hover:text-slate-300 transition-colors"
+            >
+              Roadmap
+            </a>
+            <a
+              href="https://github.com/shortheartone/SAFE-HAVEN/blob/main/docs/OPERATOR_PERFORMANCE.md"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="hover:text-slate-300 transition-colors"
+            >
+              Operator Guide
+            </a>
+            <a
               href="https://developers.stellar.org/docs/smart-contracts"
               target="_blank"
               rel="noopener noreferrer"
