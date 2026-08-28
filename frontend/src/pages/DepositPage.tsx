@@ -1,12 +1,17 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import toast from 'react-hot-toast'
 import { useWallet } from '../context/WalletContext'
 import { TxStatusBadge } from '../components/TxStatusBadge'
+import { GasCostBreakdown } from '../components/GasCostBreakdown'
+import { BatchSuggestions } from '../components/BatchSuggestions'
 import { buildDeposit, submitTx } from '../lib/stellar'
 import { xlmToStroops, stroopsToXlm, formatBps } from '../lib/format'
+import { useGasEstimator } from '../hooks/useGasEstimator'
+import { useDeposits } from '../hooks/useDeposits'
 import type { TxStatus } from '../types'
 import type { ContractInfo } from '../App'
 import { CONFIG } from '../config'
+import { Address, nativeToScVal } from '@stellar/stellar-sdk'
 
 interface DepositPageProps {
   contractInfo: ContractInfo
@@ -15,6 +20,8 @@ interface DepositPageProps {
 
 export function DepositPage({ contractInfo, onSuccess }: DepositPageProps) {
   const { wallet, signTransaction } = useWallet()
+  const { estimateGas } = useGasEstimator()
+  const deposits = useDeposits(wallet?.address ?? null)
 
   const [tokenAddress, setTokenAddress] = useState(CONFIG.NATIVE_TOKEN)
   const [amount,       setAmount]       = useState('')
@@ -24,6 +31,9 @@ export function DepositPage({ contractInfo, onSuccess }: DepositPageProps) {
   const [txStatus, setTxStatus] = useState<TxStatus>('idle')
   const [txHash,   setTxHash]   = useState<string | undefined>()
   const [txError,  setTxError]  = useState<string | undefined>()
+
+  const [gasEstimate, setGasEstimate] = useState<any>(null)
+  const [isEstimating, setIsEstimating] = useState(false)
 
   // Derived validation
   const amountNum       = parseFloat(amount)
@@ -41,6 +51,39 @@ export function DepositPage({ contractInfo, onSuccess }: DepositPageProps) {
     penalty:   isNaN(penaltyBpsNum) || penaltyBpsNum < 0 || penaltyBpsNum > 10_000 ? '0–10000 only' : '',
   }
   const isValid = amount && unlockDate && !errors.amount && !errors.unlock && !errors.penalty && !contractInfo.paused
+
+  // Estimate gas when inputs change
+  useEffect(() => {
+    if (!wallet || !isValid) {
+      setGasEstimate(null)
+      return
+    }
+
+    const estimateAsync = async () => {
+      setIsEstimating(true)
+      try {
+        const amountStroops = xlmToStroops(amount)
+        const args = [
+          new Address(wallet.address).toScVal(),
+          new Address(tokenAddress).toScVal(),
+          nativeToScVal(amountStroops, { type: 'i128' }),
+          nativeToScVal(unlockTimestamp, { type: 'u64' }),
+          nativeToScVal(penaltyBpsNum, { type: 'u32' }),
+        ]
+        const result = await estimateGas(wallet.address, 'deposit', args)
+        setGasEstimate(result)
+      } catch (e) {
+        console.error('Gas estimation failed:', e)
+        setGasEstimate({ success: false })
+      } finally {
+        setIsEstimating(false)
+      }
+    }
+
+    // Debounce estimation
+    const timer = setTimeout(() => void estimateAsync(), 500)
+    return () => clearTimeout(timer)
+  }, [wallet, amount, tokenAddress, unlockTimestamp, penaltyBpsNum, isValid, estimateGas])
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -93,7 +136,7 @@ export function DepositPage({ contractInfo, onSuccess }: DepositPageProps) {
   }
 
   return (
-    <div className="max-w-lg">
+    <div className="max-w-lg space-y-5">
       <div className="card p-6">
         <h2 className="font-semibold text-lg mb-1">Lock tokens in a vault</h2>
         <p className="text-sm text-slate-400 mb-6">
@@ -188,6 +231,17 @@ export function DepositPage({ contractInfo, onSuccess }: DepositPageProps) {
             </div>
           )}
 
+          {/* Gas cost breakdown */}
+          {isEstimating && (
+            <div className="flex items-center gap-2 text-slate-400 text-sm">
+              <span className="w-3 h-3 border-2 border-slate-500/30 border-t-slate-400 rounded-full animate-spin" />
+              Estimating gas costs...
+            </div>
+          )}
+          {gasEstimate?.success && gasEstimate.breakdown && (
+            <GasCostBreakdown breakdown={gasEstimate.breakdown} threshold={10_000_000} />
+          )}
+
           <TxStatusBadge status={txStatus} txHash={txHash} error={txError} />
 
           <button
@@ -206,6 +260,15 @@ export function DepositPage({ contractInfo, onSuccess }: DepositPageProps) {
           </button>
         </form>
       </div>
+
+      {/* Batch suggestions */}
+      {deposits.deposits && (
+        <BatchSuggestions
+          depositCount={deposits.deposits.length}
+          readyToWithdraw={deposits.deposits.filter(d => d.timeRemaining === 0).length}
+          smallDepositsUnder={deposits.deposits.filter(d => d.amount < 100_000_000n).length}
+        />
+      )}
     </div>
   )
 }

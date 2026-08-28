@@ -2,13 +2,16 @@ import { useState } from 'react'
 import toast from 'react-hot-toast'
 import { useWallet } from '../context/WalletContext'
 import { TxStatusBadge } from '../components/TxStatusBadge'
+import { TwoFAVerification } from '../components/TwoFAVerification'
 import { buildWithdraw, buildCancelDeposit, submitTx, getVault, getTimeRemaining } from '../lib/stellar'
 import { stroopsToXlm, formatUnlockDate, formatCountdown, formatBps } from '../lib/format'
+import { use2FA } from '../hooks/use2FA'
 import type { TxStatus, VaultEntry } from '../types'
 import { CONFIG } from '../config'
 
 export function WithdrawPage() {
   const { wallet, signTransaction } = useWallet()
+  const { twoFAState } = use2FA()
 
   const [depositId, setDepositId] = useState('')
   const [lookedUp,  setLookedUp]  = useState<(VaultEntry & { timeRemaining: number }) | null>(null)
@@ -18,6 +21,9 @@ export function WithdrawPage() {
   const [txStatus, setTxStatus] = useState<TxStatus>('idle')
   const [txHash,   setTxHash]   = useState<string | undefined>()
   const [txError,  setTxError]  = useState<string | undefined>()
+
+  const [show2FA, setShow2FA] = useState(false)
+  const [pendingMethod, setPendingMethod] = useState<'withdraw' | 'cancel' | null>(null)
 
   const isPending = txStatus === 'signing' || txStatus === 'submitting' || txStatus === 'confirming'
 
@@ -50,14 +56,28 @@ export function WithdrawPage() {
     if (!wallet || !lookedUp) return
     const id = parseInt(depositId, 10)
 
+    // Check if 2FA is required
+    if (twoFAState.enabled) {
+      setPendingMethod(method)
+      setShow2FA(true)
+      return
+    }
+
+    // Proceed without 2FA
+    await executeTransaction(method, id)
+  }
+
+  async function executeTransaction(method: 'withdraw' | 'cancel', depositId: number) {
+    if (!wallet) return
+
     setTxStatus('signing')
     setTxError(undefined)
     setTxHash(undefined)
 
     try {
       const xdr = method === 'withdraw'
-        ? await buildWithdraw(wallet.address, id)
-        : await buildCancelDeposit(wallet.address, id)
+        ? await buildWithdraw(wallet.address, depositId)
+        : await buildCancelDeposit(wallet.address, depositId)
 
       if (!xdr) throw new Error('Failed to build transaction')
 
@@ -84,6 +104,15 @@ export function WithdrawPage() {
       setTxError(msg)
       toast.error(msg)
     }
+  }
+
+  const handle2FAVerified = () => {
+    setShow2FA(false)
+    if (pendingMethod && lookedUp) {
+      const id = parseInt(depositId, 10)
+      void executeTransaction(pendingMethod, id)
+    }
+    setPendingMethod(null)
   }
 
   if (!wallet) {
@@ -194,6 +223,18 @@ export function WithdrawPage() {
             )}
           </div>
         </div>
+      )}
+
+      {/* 2FA verification modal */}
+      {show2FA && (
+        <TwoFAVerification
+          onVerified={handle2FAVerified}
+          onCancel={() => {
+            setShow2FA(false)
+            setPendingMethod(null)
+            setTxStatus('idle')
+          }}
+        />
       )}
     </div>
   )

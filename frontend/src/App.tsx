@@ -3,6 +3,7 @@ import { WalletProvider, useWallet } from './context/WalletContext'
 import { useContractInfo } from './hooks/useContractInfo'
 import { Header } from './components/Header'
 import { TabNav } from './components/TabNav'
+import { PausedNotice } from './components/PausedNotice'
 import { Dashboard } from './pages/Dashboard'
 import { DepositPage } from './pages/DepositPage'
 import { WithdrawPage } from './pages/WithdrawPage'
@@ -35,6 +36,7 @@ function AppInner() {
   return (
     <div className="min-h-screen flex flex-col">
       <Header isPaused={contractInfo.paused} />
+      <PausedNotice />
 
       <main className="flex-1 max-w-6xl mx-auto w-full px-4 py-8">
         {/* Page header */}

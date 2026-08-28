@@ -2,8 +2,10 @@ import { useState } from 'react'
 import toast from 'react-hot-toast'
 import { useWallet } from '../context/WalletContext'
 import { TxStatusBadge } from '../components/TxStatusBadge'
+import { TwoFAVerification } from '../components/TwoFAVerification'
 import { buildPause, buildUnpause, buildEmergencyWithdraw, submitTx } from '../lib/stellar'
 import { shortAddr, explorerAddrUrl } from '../lib/format'
+import { use2FA } from '../hooks/use2FA'
 import type { TxStatus } from '../types'
 import type { ContractInfo } from '../App'
 
@@ -14,6 +16,7 @@ interface AdminPageProps {
 
 export function AdminPage({ contractInfo, onContractInfoRefresh }: AdminPageProps) {
   const { wallet, signTransaction } = useWallet()
+  const { twoFAState } = use2FA()
 
   // Pause/unpause
   const [pauseTxStatus, setPauseTxStatus] = useState<TxStatus>('idle')
@@ -27,11 +30,29 @@ export function AdminPage({ contractInfo, onContractInfoRefresh }: AdminPageProp
   const [emrgTxHash,     setEmrgTxHash]     = useState<string | undefined>()
   const [emrgTxError,    setEmrgTxError]    = useState<string | undefined>()
 
+  // 2FA states
+  const [show2FA, setShow2FA] = useState(false)
+  const [pendingAction, setPendingAction] = useState<'pause' | 'unpause' | 'emergency' | null>(null)
+
   const isAdmin = wallet?.address === contractInfo.admin
   const pausePending = pauseTxStatus === 'signing' || pauseTxStatus === 'submitting' || pauseTxStatus === 'confirming'
   const emrgPending  = emrgTxStatus  === 'signing' || emrgTxStatus  === 'submitting' || emrgTxStatus  === 'confirming'
 
   async function handleTogglePause() {
+    if (!wallet) return
+
+    // Check if 2FA is required
+    if (twoFAState.enabled) {
+      setPendingAction(contractInfo.paused ? 'unpause' : 'pause')
+      setShow2FA(true)
+      return
+    }
+
+    // Proceed without 2FA
+    await executePauseToggle()
+  }
+
+  async function executePauseToggle() {
     if (!wallet) return
     setPauseTxStatus('signing')
     setPauseTxError(undefined)
@@ -70,6 +91,20 @@ export function AdminPage({ contractInfo, onContractInfoRefresh }: AdminPageProp
     e.preventDefault()
     if (!wallet || !emrgDepositor || !emrgDepositId) return
 
+    // Check if 2FA is required
+    if (twoFAState.enabled) {
+      setPendingAction('emergency')
+      setShow2FA(true)
+      return
+    }
+
+    // Proceed without 2FA
+    await executeEmergencyWithdraw()
+  }
+
+  async function executeEmergencyWithdraw() {
+    if (!wallet || !emrgDepositor || !emrgDepositId) return
+
     setEmrgTxStatus('signing')
     setEmrgTxError(undefined)
     setEmrgTxHash(undefined)
@@ -100,6 +135,16 @@ export function AdminPage({ contractInfo, onContractInfoRefresh }: AdminPageProp
       setEmrgTxError(msg)
       toast.error(msg)
     }
+  }
+
+  const handle2FAVerified = () => {
+    setShow2FA(false)
+    if (pendingAction === 'pause' || pendingAction === 'unpause') {
+      void executePauseToggle()
+    } else if (pendingAction === 'emergency') {
+      void executeEmergencyWithdraw()
+    }
+    setPendingAction(null)
   }
 
   if (!wallet) {
@@ -244,6 +289,17 @@ export function AdminPage({ contractInfo, onContractInfoRefresh }: AdminPageProp
           </button>
         </form>
       </div>
+
+      {/* 2FA verification modal */}
+      {show2FA && (
+        <TwoFAVerification
+          onVerified={handle2FAVerified}
+          onCancel={() => {
+            setShow2FA(false)
+            setPendingAction(null)
+          }}
+        />
+      )}
     </div>
   )
 }
