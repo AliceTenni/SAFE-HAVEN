@@ -1,11 +1,15 @@
 import { useState } from 'react'
 import { WalletProvider, useWallet } from './context/WalletContext'
+import { NetworkProvider } from './context/NetworkContext'
+import { SecurityProvider } from './context/SecurityContext'
 import { useContractInfo } from './hooks/useContractInfo'
 import { Header } from './components/Header'
 import { TabNav } from './components/TabNav'
+import { WalletInfoModal } from './components/WalletInfoModal'
 import { Dashboard } from './pages/Dashboard'
 import { DepositPage } from './pages/DepositPage'
 import { WithdrawPage } from './pages/WithdrawPage'
+import { SettingsPage } from './pages/SettingsPage'
 import { AdminPage } from './pages/AdminPage'
 import { ContractExplorer } from './pages/ContractExplorer'
 import type { PageTab } from './types'
@@ -47,14 +51,14 @@ function AppInner() {
               {activeTab === 'dashboard' && 'My Vaults'}
               {activeTab === 'deposit'   && 'New Deposit'}
               {activeTab === 'withdraw'  && 'Withdraw'}
-              {activeTab === 'explorer'  && 'Contract Explorer'}
+              {activeTab === 'settings'  && 'Settings'}
               {activeTab === 'admin'     && 'Admin Panel'}
             </h1>
             <p className="text-slate-400 text-sm mt-0.5">
               {activeTab === 'dashboard' && 'View and manage all your time-locked deposits'}
               {activeTab === 'deposit'   && 'Lock tokens until a future date'}
               {activeTab === 'withdraw'  && 'Withdraw unlocked tokens or cancel early'}
-              {activeTab === 'explorer'  && 'Inspect live contract configuration and state'}
+              {activeTab === 'settings'  && 'Manage recovery contacts and account protection'}
               {activeTab === 'admin'     && 'Contract administration controls'}
             </p>
           </div>
@@ -72,8 +76,8 @@ function AppInner() {
         {activeTab === 'withdraw' && (
           <WithdrawPage />
         )}
-        {activeTab === 'explorer' && (
-          <ContractExplorer contractInfo={contractInfo} />
+        {activeTab === 'settings' && (
+          <SettingsPage />
         )}
         {activeTab === 'admin' && (
           <AdminPage contractInfo={contractInfo} onContractInfoRefresh={contractInfo.refresh} />
@@ -107,14 +111,21 @@ function AppInner() {
           </div>
         </div>
       </footer>
+
+      {/* Wallet info modal */}
+      <WalletInfoModal />
     </div>
   )
 }
 
 export default function App() {
   return (
-    <WalletProvider>
-      <AppInner />
-    </WalletProvider>
+    <SecurityProvider>
+      <NetworkProvider>
+        <WalletProvider>
+          <AppInner />
+        </WalletProvider>
+      </NetworkProvider>
+    </SecurityProvider>
   )
 }
