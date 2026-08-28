@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import toast from 'react-hot-toast'
 import { useWallet } from '../context/WalletContext'
+import { useContractLogs } from '../context/ContractLogsContext'
 import { TxStatusBadge } from '../components/TxStatusBadge'
 import { buildWithdraw, buildCancelDeposit, submitTx, getVault, getTimeRemaining } from '../lib/stellar'
 import { stroopsToXlm, formatUnlockDate, formatCountdown, formatBps } from '../lib/format'
@@ -15,6 +16,7 @@ type LookedUpEntry = VaultEntry & {
 
 export function WithdrawPage() {
   const { wallet, isRestoringSession, signTransaction } = useWallet()
+  const { addLog, updateLog } = useContractLogs()
 
   const [depositId, setDepositId] = useState('')
   const [lookedUp,  setLookedUp]  = useState<LookedUpEntry | null>(null)
@@ -133,6 +135,14 @@ export function WithdrawPage() {
     setTxError(undefined)
     setTxHash(undefined)
 
+    // Add pending log entry
+    const logId = addLog({
+      operation: method === 'withdraw' ? 'withdraw' : 'cancel_deposit',
+      status: 'pending',
+      initiator: wallet.address,
+      parameters: { depositId: id },
+    })
+
     try {
       const xdr = method === 'withdraw'
         ? await buildWithdraw(wallet.address, id)
@@ -141,7 +151,14 @@ export function WithdrawPage() {
       if (!xdr) throw new Error('Failed to build transaction')
 
       const signed = await signTransaction(xdr)
-      if (!signed) { setTxStatus('idle'); return }
+      if (!signed) { 
+        setTxStatus('idle')
+        updateLog(logId, {
+          status: 'error',
+          errorMessage: 'User rejected the transaction',
+        })
+        return
+      }
 
       setTxStatus('submitting')
       const result = await submitTx(signed)
@@ -149,6 +166,10 @@ export function WithdrawPage() {
       if (result.success) {
         setTxStatus('success')
         setTxHash(result.txHash)
+        updateLog(logId, {
+          status: 'success',
+          txHash: result.txHash,
+        })
         toast.success(method === 'withdraw' ? 'Withdrawal successful!' : 'Deposit cancelled.')
         // Clear the deposit card, but intentionally leave txStatus/txHash set so
         // the TxStatusBadge rendered below the card remains visible with the
@@ -158,11 +179,19 @@ export function WithdrawPage() {
       } else {
         // Signing error: already toasted, but still reset state
         setTxStatus('idle')
+        updateLog(logId, {
+          status: 'error',
+          errorMessage: result.error,
+        })
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Unexpected error'
       setTxStatus('error')
       setTxError(msg)
+      updateLog(logId, {
+        status: 'error',
+        errorMessage: msg,
+      })
       toast.error(msg)
     } finally {
       executing.current = false
@@ -312,4 +341,46 @@ export function WithdrawPage() {
       )}
     </div>
   )
+}
+
+function StrategyOption({
+  value,
+  label,
+  description,
+  selected,
+  onSelect,
+  disabled,
+}: {
+  value: WithdrawalStrategy
+  label: string
+  description: string
+  selected: boolean
+  onSelect: (value: WithdrawalStrategy) => void
+  disabled: boolean
+}) {
+  return (
+    <label className={`cursor-pointer rounded-lg border p-3 transition-colors ${selected ? 'border-sky-400 bg-sky-400/10' : 'border-slate-700 hover:border-slate-500'} ${disabled ? 'cursor-not-allowed opacity-60' : ''}`}>
+      <input
+        className="sr-only"
+        type="radio"
+        name="withdrawal-strategy"
+        value={value}
+        checked={selected}
+        onChange={() => onSelect(value)}
+        disabled={disabled}
+      />
+      <span className="block text-sm font-medium">{label}</span>
+      <span className="block text-xs text-slate-500 mt-1">{description}</span>
+    </label>
+  )
+}
+
+function buildLinearSchedule(amount: bigint, unlockTime: number) {
+  const now = Math.floor(Date.now() / 1000)
+  const start = Math.min(now, unlockTime)
+  const duration = Math.max(unlockTime - start, 0)
+  return [1, 2, 3, 4].map((step) => ({
+    date: start + Math.floor(duration * step / 4),
+    amount: amount * BigInt(step) / 4n - amount * BigInt(step - 1) / 4n,
+  }))
 }
