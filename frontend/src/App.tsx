@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { WalletProvider, useWallet } from './context/WalletContext'
-import { ContractLogsProvider } from './context/ContractLogsContext'
+import { NetworkProvider } from './context/NetworkContext'
+import { SecurityProvider } from './context/SecurityContext'
 import { useContractInfo } from './hooks/useContractInfo'
 import { Header } from './components/Header'
 import { TabNav } from './components/TabNav'
@@ -8,8 +9,9 @@ import { WalletInfoModal } from './components/WalletInfoModal'
 import { Dashboard } from './pages/Dashboard'
 import { DepositPage } from './pages/DepositPage'
 import { WithdrawPage } from './pages/WithdrawPage'
+import { SettingsPage } from './pages/SettingsPage'
 import { AdminPage } from './pages/AdminPage'
-import { ContractLogsPage } from './pages/ContractLogsPage'
+import { ContractExplorer } from './pages/ContractExplorer'
 import type { PageTab } from './types'
 
 // Re-export ContractInfo shape so pages can import it from App
@@ -19,6 +21,7 @@ export interface ContractInfo {
   paused: boolean
   maxDeposit: bigint
   maxLockSecs: number
+  version: number | null
   depositorCount: number
   feeRecipient: string | null
   loading: boolean
@@ -48,6 +51,7 @@ function AppInner() {
               {activeTab === 'dashboard' && 'My Vaults'}
               {activeTab === 'deposit'   && 'New Deposit'}
               {activeTab === 'withdraw'  && 'Withdraw'}
+              {activeTab === 'settings'  && 'Settings'}
               {activeTab === 'admin'     && 'Admin Panel'}
               {activeTab === 'logs'      && 'Contract Operations Log'}
             </h1>
@@ -55,6 +59,7 @@ function AppInner() {
               {activeTab === 'dashboard' && 'View and manage all your time-locked deposits'}
               {activeTab === 'deposit'   && 'Lock tokens until a future date'}
               {activeTab === 'withdraw'  && 'Withdraw unlocked tokens or cancel early'}
+              {activeTab === 'settings'  && 'Manage recovery contacts and account protection'}
               {activeTab === 'admin'     && 'Contract administration controls'}
               {activeTab === 'logs'      && 'Track all contract operations and transactions'}
             </p>
@@ -73,8 +78,8 @@ function AppInner() {
         {activeTab === 'withdraw' && (
           <WithdrawPage />
         )}
-        {activeTab === 'logs' && (
-          <ContractLogsPage />
+        {activeTab === 'settings' && (
+          <SettingsPage />
         )}
         {activeTab === 'admin' && (
           <AdminPage contractInfo={contractInfo} onContractInfoRefresh={contractInfo.refresh} />
@@ -117,10 +122,12 @@ function AppInner() {
 
 export default function App() {
   return (
-    <WalletProvider>
-      <ContractLogsProvider>
-        <AppInner />
-      </ContractLogsProvider>
-    </WalletProvider>
+    <SecurityProvider>
+      <NetworkProvider>
+        <WalletProvider>
+          <AppInner />
+        </WalletProvider>
+      </NetworkProvider>
+    </SecurityProvider>
   )
 }
