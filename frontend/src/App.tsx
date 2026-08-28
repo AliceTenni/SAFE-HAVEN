@@ -1,5 +1,7 @@
 import { useState } from 'react'
 import { WalletProvider, useWallet } from './context/WalletContext'
+import { NetworkProvider } from './context/NetworkContext'
+import { SecurityProvider } from './context/SecurityContext'
 import { useContractInfo } from './hooks/useContractInfo'
 import { Header } from './components/Header'
 import { TabNav } from './components/TabNav'
@@ -110,8 +112,12 @@ function AppInner() {
 
 export default function App() {
   return (
-    <WalletProvider>
-      <AppInner />
-    </WalletProvider>
+    <SecurityProvider>
+      <NetworkProvider>
+        <WalletProvider>
+          <AppInner />
+        </WalletProvider>
+      </NetworkProvider>
+    </SecurityProvider>
   )
 }
