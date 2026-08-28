@@ -15,7 +15,7 @@ import {
   type SorobanDataBuilder,
 } from '@stellar/stellar-sdk'
 import { CONFIG } from '../config'
-import type { VaultEntry, ContractResult } from '../types'
+import type { FaucetAsset, FaucetStatus, VaultEntry, ContractResult } from '../types'
 
 // ----------------------------------------------------------------
 //  RPC client (singleton)
@@ -297,6 +297,26 @@ export async function getDepositorCount(): Promise<number> {
     (v) => Number(scValToNative(v)),
   )
   return result ?? 0
+}
+
+export async function getFaucetStatus(asset: FaucetAsset): Promise<FaucetStatus | null> {
+  return simulateReadOnly('get_faucet_status', [nativeToScVal(asset, { type: 'symbol' })], (v) => {
+    const raw = scValToNative(v) as Record<string, unknown>
+    return {
+      token: raw.token ? String(raw.token) : null,
+      balance: BigInt(raw.balance as string | number),
+      maxAmount: BigInt(raw.max_amount as string | number),
+      requestCount: Number(raw.request_count),
+      distributed: BigInt(raw.distributed as string | number),
+    }
+  })
+}
+
+export async function getFaucetLastRequest(account: string): Promise<number | null> {
+  return simulateReadOnly('get_faucet_last_request', [new Address(account).toScVal()], (v) => {
+    if (v.switch() === xdr.ScValType.scvVoid()) return null
+    return Number(scValToNative(v))
+  }, account)
 }
 
 // ----------------------------------------------------------------

@@ -8,7 +8,7 @@ OPTIMIZED    := target/safe_haven.optimized.wasm
 
 .PHONY: all build test fmt lint clean optimize deploy-testnet size check audit deny
 .PHONY: all build test watch fmt lint clean optimize deploy-testnet size check doc smoke-test-local
-.PHONY: install-tools dev dev-stop
+.PHONY: install-tools dev dev-stop backup
 
 ## Default: lint + test
 all: lint test
@@ -152,3 +152,7 @@ check-wasm-size: optimize
 ## Run smoke tests against a local Soroban standalone node (requires stellar CLI)
 smoke-test-local: build
 	bash scripts/smoke_test_local.sh
+
+## Export current contract state and upload a backup (requires backup env vars)
+backup:
+	bash scripts/backup_contract.sh
