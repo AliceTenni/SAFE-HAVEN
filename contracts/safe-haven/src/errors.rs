@@ -21,15 +21,12 @@ pub enum VaultError {
     /// `initialize` was called on an already-initialized contract.
     /// The `is_initialized` flag is the sole re-initialization guard (closes #46).
     AlreadyInitialized = 15,
-    FaucetNotConfigured = 16,
-    FaucetRateLimited = 17,
-    FaucetInsufficientFunds = 18,
-    FaucetAmountTooLarge = 19,
-    UpgradeEvidenceRequired = 20,
-    UpgradeNotFound = 21,
-    UpgradeReviewRequired = 22,
-    UpgradeNotVoting = 23,
-    UpgradeAlreadyVoted = 24,
-    UpgradeNotApproved = 25,
-    UpgradeTimelocked = 26,
+    /// Too many tokens in a multi-token deposit — exceeds MAX_TOKENS_PER_DEPOSIT (issue #330).
+    TooManyTokens = 16,
+    /// A multi-token deposit must contain at least one token (issue #330).
+    EmptyTokenList = 17,
+    /// Recipient is not on the withdrawal whitelist (issue #331).
+    RecipientNotWhitelisted = 18,
+    /// Compound frequency must be >= 60 seconds if non-zero (issue #332).
+    InvalidCompoundFrequency = 19,
 }

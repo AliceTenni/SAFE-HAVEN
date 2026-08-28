@@ -206,6 +206,18 @@ export async function getLedgerTime(): Promise<number> {
   return result ?? Math.floor(Date.now() / 1000)
 }
 
+/** Fetch current ledger sequence number */
+export async function getLedgerSequence(): Promise<number> {
+  try {
+    const rpc = getRpc()
+    const latestLedger = await rpc.getLatestLedger()
+    return latestLedger.sequence
+  } catch (e) {
+    console.error('Failed to fetch ledger sequence:', e)
+    return 0
+  }
+}
+
 /** Fetch contract version */
 export async function getContractVersion(): Promise<string> {
   const result = await simulateReadOnly(
@@ -262,6 +274,19 @@ export async function getConstants(): Promise<{ maxDeposit: bigint; maxLockSecs:
       return { maxDeposit: BigInt(maxDeposit), maxLockSecs: Number(maxLockSecs) }
     },
   )
+}
+
+/** Fetch the contract storage schema version */
+export async function getStorageVersion(): Promise<number | null> {
+  const result = await simulateReadOnly(
+    'get_storage_version',
+    [],
+    (v) => {
+      if (v.switch() === xdr.ScValType.scvVoid()) return null
+      return Number(scValToNative(v))
+    },
+  )
+  return result ?? null
 }
 
 /** Fetch depositor count */
@@ -387,15 +412,19 @@ export async function buildDeposit(
   ])
 }
 
-export async function buildRequestFaucet(
-  account: string,
-  asset: FaucetAsset,
+export async function buildDepositByLedger(
+  depositor: string,
+  tokenAddress: string,
   amount: bigint,
+  unlockLedger: number,
+  penaltyBps: number,
 ): Promise<string | null> {
-  return buildTx(account, 'request_faucet', [
-    new Address(account).toScVal(),
-    nativeToScVal(asset, { type: 'symbol' }),
+  return buildTx(depositor, 'deposit_by_ledger', [
+    new Address(depositor).toScVal(),
+    new Address(tokenAddress).toScVal(),
     nativeToScVal(amount, { type: 'i128' }),
+    nativeToScVal(unlockLedger, { type: 'u32' }),
+    nativeToScVal(penaltyBps, { type: 'u32' }),
   ])
 }
 
@@ -535,6 +564,18 @@ export async function getTokenDecimals(tokenAddress: string): Promise<number | n
     console.warn(`Failed to fetch decimals for ${tokenAddress}:`, e)
     return null
   }
+}
+
+/**
+ * Fetch the symbol of a token.
+ * For native XLM returns "XLM", for SAC tokens calls the contract's symbol() method.
+ *
+ * @param tokenAddress - Stellar token contract address
+ * @returns Symbol string, or null if fetch fails
+ */
+export async function getTokenSymbol(tokenAddress: string): Promise<string | null> {
+  const metadata = await getTokenMetadata(tokenAddress)
+  return metadata?.symbol ?? null
 }
 
 /**

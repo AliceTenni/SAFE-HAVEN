@@ -24,6 +24,8 @@ We will acknowledge receipt within 72 hours and aim to release a fix within 14 d
 
 ## Scope
 
+For operational response to contract vulnerabilities, state mismatches, and admin-key incidents, see the [Disaster Recovery Runbook](DISASTER_RECOVERY.md).
+
 The following are considered in-scope vulnerabilities:
 
 - Smart contract logic bugs that could result in fund loss or theft
