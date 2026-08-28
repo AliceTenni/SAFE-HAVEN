@@ -53,6 +53,7 @@ function AppInner() {
               {activeTab === 'withdraw'  && 'Withdraw'}
               {activeTab === 'settings'  && 'Settings'}
               {activeTab === 'admin'     && 'Admin Panel'}
+              {activeTab === 'logs'      && 'Contract Operations Log'}
             </h1>
             <p className="text-slate-400 text-sm mt-0.5">
               {activeTab === 'dashboard' && 'View and manage all your time-locked deposits'}
@@ -60,6 +61,7 @@ function AppInner() {
               {activeTab === 'withdraw'  && 'Withdraw unlocked tokens or cancel early'}
               {activeTab === 'settings'  && 'Manage recovery contacts and account protection'}
               {activeTab === 'admin'     && 'Contract administration controls'}
+              {activeTab === 'logs'      && 'Track all contract operations and transactions'}
             </p>
           </div>
 
