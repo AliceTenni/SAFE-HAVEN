@@ -116,6 +116,66 @@ fn advance_time(env: &Env, seconds: u64) {
     });
 }
 
+struct UpgradeHarness {
+    env: Env,
+    vault: SafeHavenClient<'static>,
+    admin: Address,
+    alice: Address,
+    fee_recipient: Address,
+    token: Address,
+}
+
+impl UpgradeHarness {
+    fn new() -> Self {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let vault_id = env.register(SafeHaven, ());
+        let vault = SafeHavenClient::new(&env, &vault_id);
+        let admin: Address = Address::generate(&env);
+        let alice: Address = Address::generate(&env);
+        let fee_recipient: Address = Address::generate(&env);
+        let token_id = env.register_stellar_asset_contract_v2(admin.clone());
+        let token = token_id.address();
+
+        StellarAssetClient::new(&env, &token).mint(&alice, &10_000);
+        vault.initialize(&admin, &fee_recipient, &None, &None);
+
+        Self {
+            env,
+            vault,
+            admin,
+            alice,
+            fee_recipient,
+            token,
+        }
+    }
+
+    fn simulate_legacy_state(&self) {
+        self.env.storage().persistent().remove(&VaultKey::StorageVersion);
+    }
+
+    fn assert_legacy_state(&self) {
+        assert_eq!(self.vault.get_storage_version(), None);
+    }
+
+    fn assert_upgrade_applied(&self) {
+        assert!(self.vault.migrate(&self.admin), "first migrate call should return true");
+        assert_eq!(self.vault.get_storage_version(), Some(1));
+    }
+
+    fn assert_upgrade_idempotent(&self) {
+        let migrated_again = self.vault.migrate(&self.admin);
+        assert!(!migrated_again, "second migrate call should return false");
+        assert_eq!(self.vault.get_storage_version(), Some(1));
+    }
+
+    fn deposit_legacy_entry(&self, amount: i128, unlock_time: u64) -> u32 {
+        self.vault
+            .deposit(&self.alice, &self.token, &amount, &unlock_time, &0)
+    }
+}
+
 // ================================================================
 //  Initialization
 // ================================================================
@@ -2334,6 +2394,29 @@ fn test_bump_threshold_derived_from_bump_target() {
 fn test_get_storage_version_unset() {
     let (_env, vault, _token, _admin, _alice, _fee) = setup();
     assert_eq!(vault.get_storage_version(), None);
+}
+
+/// The upgrade harness simulates a legacy deployment with no stored version key,
+/// then verifies the migration path writes version 1 and remains idempotent.
+#[test]
+fn test_upgrade_harness_handles_legacy_deploy() {
+    let harness = UpgradeHarness::new();
+    let unlock_time = harness.env.ledger().timestamp() + 3600;
+    let deposit_id = harness.deposit_legacy_entry(1_000, unlock_time);
+
+    harness.simulate_legacy_state();
+    harness.assert_legacy_state();
+
+    let legacy_entry = harness.vault.get_vault(&harness.alice, &deposit_id).expect("legacy deposit should remain readable");
+    assert_eq!(legacy_entry.amount, 1_000);
+    assert_eq!(legacy_entry.unlock_time, unlock_time);
+
+    harness.assert_upgrade_applied();
+    harness.assert_upgrade_idempotent();
+
+    let migrated_entry = harness.vault.get_vault(&harness.alice, &deposit_id).expect("deposit should survive migration");
+    assert_eq!(migrated_entry.amount, 1_000);
+    assert_eq!(migrated_entry.unlock_time, unlock_time);
 }
 
 /// migrate() sets the version to STORAGE_VERSION and returns true.
