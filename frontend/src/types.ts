@@ -39,7 +39,7 @@ export interface WalletInfo {
 }
 
 /** Tab pages */
-export type PageTab = 'dashboard' | 'deposit' | 'withdraw' | 'admin'
+export type PageTab = 'dashboard' | 'deposit' | 'withdraw' | 'admin' | 'logs'
 
 /** Loading states for async operations */
 export type TxStatus = 'idle' | 'signing' | 'submitting' | 'confirming' | 'success' | 'error'

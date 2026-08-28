@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import toast from 'react-hot-toast'
 import { useWallet } from '../context/WalletContext'
+import { useContractLogs } from '../context/ContractLogsContext'
 import { TxStatusBadge } from '../components/TxStatusBadge'
 import { LockByLedgerForm } from '../components/LockByLedgerForm'
 import { buildDeposit, submitTx, getTokenDecimals, getTokenMetadata } from '../lib/stellar'
@@ -18,6 +19,7 @@ interface DepositPageProps {
 
 export function DepositPage({ contractInfo, onSuccess }: DepositPageProps) {
   const { wallet, isRestoringSession, signTransaction } = useWallet()
+  const { addLog, updateLog } = useContractLogs()
 
   // Deposit tab state
   const [depositTab, setDepositTab] = useState<DepositTab>('timestamp')
@@ -110,6 +112,19 @@ export function DepositPage({ contractInfo, onSuccess }: DepositPageProps) {
     setTxError(undefined)
     setTxHash(undefined)
 
+    // Add pending log entry
+    const logId = addLog({
+      operation: 'deposit',
+      status: 'pending',
+      initiator: wallet.address,
+      parameters: {
+        token: tokenAddress,
+        amount: amount,
+        unlockTime: unlockTimestamp,
+        penaltyBps: penaltyBpsNum,
+      },
+    })
+
     try {
       const amountBaseUnits = amountToBaseUnits(amount, tokenDecimals)
       const xdr = await buildDeposit(wallet.address, tokenAddress, amountBaseUnits, unlockTimestamp, penaltyBpsNum)
@@ -126,6 +141,10 @@ export function DepositPage({ contractInfo, onSuccess }: DepositPageProps) {
         if (result.success) {
           setTxStatus('success')
           setTxHash(result.txHash)
+          updateLog(logId, {
+            status: 'success',
+            txHash: result.txHash,
+          })
           toast.success('Deposit successful! Your tokens are locked.')
           setAmount('')
           setUnlockDate('')
@@ -134,20 +153,36 @@ export function DepositPage({ contractInfo, onSuccess }: DepositPageProps) {
         } else {
           setTxStatus('error')
           setTxError(result.error)
+          updateLog(logId, {
+            status: 'error',
+            errorMessage: result.error,
+          })
           toast.error(result.error ?? 'Deposit failed')
         }
       } else if (sigResult.rejected) {
         // User rejected: silently reset state
         setTxStatus('idle')
+        updateLog(logId, {
+          status: 'error',
+          errorMessage: 'User rejected the transaction',
+        })
         return
       } else {
         // Signing error: already toasted, but still reset state
         setTxStatus('idle')
+        updateLog(logId, {
+          status: 'error',
+          errorMessage: sigResult.error,
+        })
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Unexpected error'
       setTxStatus('error')
       setTxError(msg)
+      updateLog(logId, {
+        status: 'error',
+        errorMessage: msg,
+      })
       toast.error(msg)
     }
   }

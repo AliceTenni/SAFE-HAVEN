@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { WalletProvider, useWallet } from './context/WalletContext'
+import { ContractLogsProvider } from './context/ContractLogsContext'
 import { useContractInfo } from './hooks/useContractInfo'
 import { Header } from './components/Header'
 import { TabNav } from './components/TabNav'
@@ -8,6 +9,7 @@ import { Dashboard } from './pages/Dashboard'
 import { DepositPage } from './pages/DepositPage'
 import { WithdrawPage } from './pages/WithdrawPage'
 import { AdminPage } from './pages/AdminPage'
+import { ContractLogsPage } from './pages/ContractLogsPage'
 import type { PageTab } from './types'
 
 // Re-export ContractInfo shape so pages can import it from App
@@ -47,12 +49,14 @@ function AppInner() {
               {activeTab === 'deposit'   && 'New Deposit'}
               {activeTab === 'withdraw'  && 'Withdraw'}
               {activeTab === 'admin'     && 'Admin Panel'}
+              {activeTab === 'logs'      && 'Contract Operations Log'}
             </h1>
             <p className="text-slate-400 text-sm mt-0.5">
               {activeTab === 'dashboard' && 'View and manage all your time-locked deposits'}
               {activeTab === 'deposit'   && 'Lock tokens until a future date'}
               {activeTab === 'withdraw'  && 'Withdraw unlocked tokens or cancel early'}
               {activeTab === 'admin'     && 'Contract administration controls'}
+              {activeTab === 'logs'      && 'Track all contract operations and transactions'}
             </p>
           </div>
 
@@ -68,6 +72,9 @@ function AppInner() {
         )}
         {activeTab === 'withdraw' && (
           <WithdrawPage />
+        )}
+        {activeTab === 'logs' && (
+          <ContractLogsPage />
         )}
         {activeTab === 'admin' && (
           <AdminPage contractInfo={contractInfo} onContractInfoRefresh={contractInfo.refresh} />
@@ -111,7 +118,9 @@ function AppInner() {
 export default function App() {
   return (
     <WalletProvider>
-      <AppInner />
+      <ContractLogsProvider>
+        <AppInner />
+      </ContractLogsProvider>
     </WalletProvider>
   )
 }
