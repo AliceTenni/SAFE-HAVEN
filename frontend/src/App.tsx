@@ -11,6 +11,7 @@ import { DepositPage } from './pages/DepositPage'
 import { WithdrawPage } from './pages/WithdrawPage'
 import { SettingsPage } from './pages/SettingsPage'
 import { AdminPage } from './pages/AdminPage'
+import { ContractExplorer } from './pages/ContractExplorer'
 import type { PageTab } from './types'
 
 // Re-export ContractInfo shape so pages can import it from App
@@ -20,6 +21,7 @@ export interface ContractInfo {
   paused: boolean
   maxDeposit: bigint
   maxLockSecs: number
+  version: number | null
   depositorCount: number
   feeRecipient: string | null
   loading: boolean

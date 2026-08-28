@@ -148,7 +148,7 @@ export function Header({ isPaused }: HeaderProps) {
           ) : wallet ? (
             <div className="flex items-center gap-2">
               <div className="hidden sm:block text-right">
-                <p className="text-xs text-slate-400">Connected</p>
+                <p className="text-xs text-slate-400">Active wallet</p>
                 <p className="text-sm font-mono text-slate-200">{shortAddr(wallet.address)}</p>
               </div>
               <div className="relative group">
@@ -192,6 +192,7 @@ export function Header({ isPaused }: HeaderProps) {
           )}
         </div>
       </div>
+      {feedbackOpen && <FeedbackModal onClose={() => setFeedbackOpen(false)} />}
     </header>
 
     {/* Buy Tokens Modal */}

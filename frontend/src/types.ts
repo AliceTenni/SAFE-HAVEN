@@ -11,6 +11,9 @@ export interface VaultEntry {
   penaltyBps: number  // 0–10_000 (basis points)
 }
 
+/** Available ways to plan a withdrawal */
+export type WithdrawalStrategy = 'lump-sum' | 'linear' | 'cliff'
+
 /** A deposit with its ID attached */
 export interface Deposit extends VaultEntry {
   depositId: number
