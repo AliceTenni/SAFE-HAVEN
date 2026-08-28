@@ -157,6 +157,170 @@ fn test_is_initialized() {
     assert!(vault.is_initialized());
 }
 
+#[test]
+fn test_token_allowlist_is_permissive_by_default() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    let unlock_time = env.ledger().timestamp() + 3600;
+
+    assert!(!vault.is_strict_mode());
+    assert!(!vault.is_token_allowed(&token));
+    assert!(vault.deposit(&alice, &token, &1_000, &unlock_time, &0) == 0);
+}
+
+#[test]
+fn test_admin_can_manage_allowed_tokens() {
+    let (env, vault, token, admin, _alice, _fee) = setup();
+    let other_token: Address = Address::generate(&env);
+
+    assert!(!vault.is_token_allowed(&token));
+    vault.add_allowed_token(&admin, &token);
+    assert!(vault.is_token_allowed(&token));
+    assert!(!vault.is_token_allowed(&other_token));
+
+    vault.remove_allowed_token(&admin, &token);
+    assert!(!vault.is_token_allowed(&token));
+}
+
+#[test]
+fn test_strict_mode_rejects_tokens_outside_allowlist() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    let unlock_time = env.ledger().timestamp() + 3600;
+
+    vault.set_strict_mode(&admin, &true);
+    assert!(vault.is_strict_mode());
+    assert_eq!(
+        vault.try_deposit(&alice, &token, &1_000, &unlock_time, &0),
+        Err(Ok(VaultError::TokenNotAllowed))
+    );
+
+    vault.add_allowed_token(&admin, &token);
+    assert!(vault.deposit(&alice, &token, &1_000, &unlock_time, &0) == 0);
+    assert_eq!(vault.toggle_strict_mode(&admin), false);
+    assert!(!vault.is_strict_mode());
+}
+
+#[test]
+fn test_strict_mode_rejects_all_deposit_entrypoints() {
+    let (env, vault, _token, admin, alice, _fee) = setup();
+    let rejected_token: Address = Address::generate(&env);
+    let unlock_time = env.ledger().timestamp() + 3600;
+    let unlock_ledger = env.ledger().sequence() + MIN_LOCK_LEDGERS;
+
+    vault.set_strict_mode(&admin, &true);
+    assert_eq!(
+        vault.try_deposit_for(&alice, &alice, &rejected_token, &1_000, &unlock_time, &0),
+        Err(Ok(VaultError::TokenNotAllowed))
+    );
+    assert_eq!(
+        vault.try_deposit_by_ledger(&alice, &rejected_token, &1_000, &unlock_ledger, &0),
+        Err(Ok(VaultError::TokenNotAllowed))
+    );
+}
+
+#[test]
+fn test_allowlist_controls_require_admin() {
+    let (env, vault, token, _admin, _alice, _fee) = setup();
+    let non_admin: Address = Address::generate(&env);
+
+    assert_eq!(
+        vault.try_add_allowed_token(&non_admin, &token),
+        Err(Ok(VaultError::Unauthorized))
+    );
+    assert_eq!(
+        vault.try_set_strict_mode(&non_admin, &true),
+        Err(Ok(VaultError::Unauthorized))
+    );
+}
+
+#[test]
+fn test_token_vetting_propose_review_approve_workflow() {
+    let (env, vault, _token, admin, alice, _fee) = setup();
+    let token: Address = Address::generate(&env);
+
+    vault.propose_token(&alice, &token);
+    let proposal = vault.get_token_vetting(&token).expect("proposal should exist");
+    assert_eq!(proposal.proposer, alice);
+    assert!(!proposal.reviewed);
+    assert!(!proposal.approved);
+
+    assert_eq!(
+        vault.try_approve_token(&admin, &token),
+        Err(Ok(VaultError::TokenReviewRequired))
+    );
+    vault.review_token(&admin, &token, &true);
+    assert!(!vault.get_token_vetting(&token).unwrap().approved);
+
+    vault.approve_token(&admin, &token);
+    assert!(vault.is_token_allowed(&token));
+    assert!(vault.get_token_vetting(&token).unwrap().approved);
+}
+
+#[test]
+fn test_token_vetting_failed_review_cannot_be_approved() {
+    let (env, vault, _token, admin, alice, _fee) = setup();
+    let token: Address = Address::generate(&env);
+
+    vault.propose_token(&alice, &token);
+    vault.review_token(&admin, &token, &false);
+    assert_eq!(
+        vault.try_approve_token(&admin, &token),
+        Err(Ok(VaultError::TokenReviewRequired))
+    );
+    assert!(!vault.is_token_allowed(&token));
+}
+
+#[test]
+fn test_community_governance_uses_deposit_weight_and_timelock() {
+    let (env, vault, token, admin, alice, _fee) = setup();
+    let bob: Address = Address::generate(&env);
+    StellarAssetClient::new(&env, &token).mint(&alice, &1_000);
+    StellarAssetClient::new(&env, &token).mint(&bob, &2_000);
+    let unlock_time = env.ledger().timestamp() + 3600;
+    vault.deposit(&alice, &token, &1_000, &unlock_time, &0);
+    vault.deposit(&bob, &token, &2_000, &unlock_time, &0);
+
+    let proposal_id = vault.propose_pause(&alice, &GovernanceMode::CommunityVote);
+    assert_eq!(vault.get_voting_power(&alice), 1_000);
+    assert_eq!(vault.vote(&proposal_id, &alice, &true), 1_000);
+    assert_eq!(vault.vote(&proposal_id, &bob, &false), 2_000);
+    assert!(!vault.proposal_passed(&proposal_id));
+    assert_eq!(
+        vault.try_execute_proposal(&proposal_id),
+        Err(Ok(VaultError::VotingStillOpen))
+    );
+
+    advance_time(&env, 86_400 + 86_400);
+    assert_eq!(
+        vault.try_execute_proposal(&proposal_id),
+        Err(Ok(VaultError::ProposalRejected))
+    );
+    assert!(!vault.is_paused());
+}
+
+#[test]
+fn test_admin_governance_requires_admin_and_prevents_double_vote() {
+    let (env, vault, _token, admin, alice, _fee) = setup();
+    let proposal_id = vault.propose_pause(&admin, &GovernanceMode::AdminVote);
+
+    assert_eq!(vault.vote(&proposal_id, &admin, &true), 1);
+    assert_eq!(
+        vault.try_vote(&proposal_id, &admin, &true),
+        Err(Ok(VaultError::AlreadyVoted))
+    );
+    assert_eq!(
+        vault.try_vote(&proposal_id, &alice, &true),
+        Err(Ok(VaultError::Unauthorized))
+    );
+
+    advance_time(&env, 86_400 + 86_400);
+    vault.execute_proposal(&proposal_id);
+    assert!(vault.is_paused());
+    assert_eq!(
+        vault.try_execute_proposal(&proposal_id),
+        Err(Ok(VaultError::ProposalAlreadyExecuted))
+    );
+}
+
 // ================================================================
 //  Deposit — happy path
 // ================================================================
