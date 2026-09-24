@@ -374,6 +374,43 @@ impl SafeHaven {
         storage::add_depositor(&env, &depositor);
         events::deposit(&env, &depositor, &token, amount, unlock_time, deposit_id);
 
+        // Track sustainability metrics
+        let lock_duration: u64 = unlock_time.saturating_sub(now);
+        let carbon_footprint = calculate_carbon_footprint(amount, lock_duration);
+        let carbon_offset = calculate_carbon_offset(carbon_footprint, penalty_bps);
+        
+        let metrics = SustainabilityMetrics {
+            deposit_id,
+            depositor: depositor.clone(),
+            carbon_footprint,
+            renewable_energy_percent: crate::constants::RENEWABLE_ENERGY_BASELINE,
+            carbon_offset_grams: carbon_offset,
+            timestamp: now,
+        };
+        
+        storage::set_sustainability_metrics(&env, &depositor, deposit_id, &metrics);
+        
+        // Update aggregated totals
+        let total_carbon = storage::get_total_carbon_footprint(&env, &depositor).saturating_add(carbon_footprint);
+        let total_offset = storage::get_total_carbon_offset(&env, &depositor).saturating_add(carbon_offset);
+        storage::set_total_carbon_footprint(&env, &depositor, total_carbon);
+        storage::set_total_carbon_offset(&env, &depositor, total_offset);
+        
+        // Check for sustainability milestones
+        let deposit_ids = storage::get_deposit_ids(&env, &depositor);
+        let mut total_renewable: u64 = 0;
+        for id in deposit_ids.iter() {
+            if let Some(m) = storage::get_sustainability_metrics_readonly(&env, &depositor, id) {
+                total_renewable = total_renewable.saturating_add(m.renewable_energy_percent as u64);
+            }
+        }
+        let average_renewable = if deposit_ids.len() > 0 {
+            ((total_renewable / deposit_ids.len() as u64) as u32).min(100)
+        } else {
+            0
+        };
+        check_sustainability_milestones(&env, &depositor, total_carbon, total_offset, average_renewable);
+
         Ok(deposit_id)
     }
 
@@ -519,6 +556,43 @@ impl SafeHaven {
         storage::add_depositor(&env, &depositor);
         events::deposit(&env, &depositor, &token, amount, unlock_time, deposit_id);
 
+        // Track sustainability metrics
+        let lock_duration: u64 = unlock_time.saturating_sub(now);
+        let carbon_footprint = calculate_carbon_footprint(amount, lock_duration);
+        let carbon_offset = calculate_carbon_offset(carbon_footprint, penalty_bps);
+        
+        let metrics = SustainabilityMetrics {
+            deposit_id,
+            depositor: depositor.clone(),
+            carbon_footprint,
+            renewable_energy_percent: crate::constants::RENEWABLE_ENERGY_BASELINE,
+            carbon_offset_grams: carbon_offset,
+            timestamp: now,
+        };
+        
+        storage::set_sustainability_metrics(&env, &depositor, deposit_id, &metrics);
+        
+        // Update aggregated totals
+        let total_carbon = storage::get_total_carbon_footprint(&env, &depositor).saturating_add(carbon_footprint);
+        let total_offset = storage::get_total_carbon_offset(&env, &depositor).saturating_add(carbon_offset);
+        storage::set_total_carbon_footprint(&env, &depositor, total_carbon);
+        storage::set_total_carbon_offset(&env, &depositor, total_offset);
+        
+        // Check for sustainability milestones
+        let deposit_ids = storage::get_deposit_ids(&env, &depositor);
+        let mut total_renewable: u64 = 0;
+        for id in deposit_ids.iter() {
+            if let Some(m) = storage::get_sustainability_metrics_readonly(&env, &depositor, id) {
+                total_renewable = total_renewable.saturating_add(m.renewable_energy_percent as u64);
+            }
+        }
+        let average_renewable = if deposit_ids.len() > 0 {
+            ((total_renewable / deposit_ids.len() as u64) as u32).min(100)
+        } else {
+            0
+        };
+        check_sustainability_milestones(&env, &depositor, total_carbon, total_offset, average_renewable);
+
         Ok(deposit_id)
     }
 
@@ -650,6 +724,43 @@ impl SafeHaven {
         storage::set_deposit_by_ledger(&env, &depositor, deposit_id, &entry);
         storage::add_depositor(&env, &depositor);
         events::deposit_by_ledger(&env, &depositor, &token, amount, unlock_ledger, deposit_id);
+
+        // Track sustainability metrics (convert ledger gap to estimated seconds)
+        let estimated_duration_secs = (ledger_gap as u64).saturating_mul(storage::LEDGER_SECONDS);
+        let carbon_footprint = calculate_carbon_footprint(amount, estimated_duration_secs);
+        let carbon_offset = calculate_carbon_offset(carbon_footprint, penalty_bps);
+        
+        let metrics = SustainabilityMetrics {
+            deposit_id,
+            depositor: depositor.clone(),
+            carbon_footprint,
+            renewable_energy_percent: crate::constants::RENEWABLE_ENERGY_BASELINE,
+            carbon_offset_grams: carbon_offset,
+            timestamp: env.ledger().timestamp(),
+        };
+        
+        storage::set_sustainability_metrics(&env, &depositor, deposit_id, &metrics);
+        
+        // Update aggregated totals
+        let total_carbon = storage::get_total_carbon_footprint(&env, &depositor).saturating_add(carbon_footprint);
+        let total_offset = storage::get_total_carbon_offset(&env, &depositor).saturating_add(carbon_offset);
+        storage::set_total_carbon_footprint(&env, &depositor, total_carbon);
+        storage::set_total_carbon_offset(&env, &depositor, total_offset);
+        
+        // Check for sustainability milestones
+        let deposit_ids = storage::get_deposit_ids(&env, &depositor);
+        let mut total_renewable: u64 = 0;
+        for id in deposit_ids.iter() {
+            if let Some(m) = storage::get_sustainability_metrics_readonly(&env, &depositor, id) {
+                total_renewable = total_renewable.saturating_add(m.renewable_energy_percent as u64);
+            }
+        }
+        let average_renewable = if deposit_ids.len() > 0 {
+            ((total_renewable / deposit_ids.len() as u64) as u32).min(100)
+        } else {
+            0
+        };
+        check_sustainability_milestones(&env, &depositor, total_carbon, total_offset, average_renewable);
 
         Ok(deposit_id)
     }

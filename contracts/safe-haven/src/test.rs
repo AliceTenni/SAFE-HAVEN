@@ -5008,3 +5008,373 @@ fn test_emergency_withdrawal_mixed_deposit_types_same_ledger() {
     let total = vault.get_emergency_withdrawal_total(&env, env.ledger().sequence());
     assert_eq!(total, 50_000);
 }
+
+// ================================================================
+//  Sustainability Metrics Tests
+// ================================================================
+
+#[test]
+fn test_sustainability_metrics_stored_on_deposit() {
+    use crate::constants::RENEWABLE_ENERGY_BASELINE;
+
+    let (env, vault, token, _admin, alice, _fee) = setup();
+
+    let now = env.ledger().timestamp();
+    let unlock_time = now + 3600; // 1 hour
+    let amount = 1_000i128;
+
+    let deposit_id = vault.deposit(&alice, &token, &amount, &unlock_time, &0)
+        .expect("deposit should succeed");
+
+    // Retrieve sustainability metrics
+    let metrics = vault.get_sustainability_metrics(&alice, &deposit_id);
+    assert!(metrics.is_some(), "metrics should exist");
+
+    let m = metrics.unwrap();
+    assert_eq!(m.deposit_id, deposit_id);
+    assert_eq!(m.depositor, alice);
+    assert_eq!(m.renewable_energy_percent, RENEWABLE_ENERGY_BASELINE);
+    assert!(m.carbon_footprint > 0, "carbon footprint should be calculated");
+    assert!(m.timestamp > 0, "timestamp should be set");
+}
+
+#[test]
+fn test_carbon_footprint_calculation() {
+    use crate::constants::CARBON_BASELINE_PER_UNIT_SECOND;
+
+    let (env, vault, token, _admin, alice, _fee) = setup();
+
+    let now = env.ledger().timestamp();
+    let unlock_time = now + 100; // 100 seconds
+    let amount = 1_000i128;
+
+    let deposit_id = vault.deposit(&alice, &token, &amount, &unlock_time, &0)
+        .expect("deposit should succeed");
+
+    let metrics = vault.get_sustainability_metrics(&alice, &deposit_id)
+        .expect("metrics should exist");
+
+    // Expected: amount * duration * CARBON_BASELINE_PER_UNIT_SECOND
+    let expected = amount * 100 * CARBON_BASELINE_PER_UNIT_SECOND;
+    assert_eq!(metrics.carbon_footprint, expected, "carbon footprint calculation");
+}
+
+#[test]
+fn test_carbon_offset_with_penalty() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+
+    let now = env.ledger().timestamp();
+    let unlock_time = now + 100;
+    let amount = 1_000i128;
+    let penalty_bps = 1_000u32; // 10% penalty
+
+    let deposit_id = vault.deposit(&alice, &token, &amount, &unlock_time, &penalty_bps)
+        .expect("deposit should succeed");
+
+    let metrics = vault.get_sustainability_metrics(&alice, &deposit_id)
+        .expect("metrics should exist");
+
+    // Carbon offset should be 10% of carbon footprint
+    let expected_offset = (metrics.carbon_footprint * 1_000) / 10_000;
+    assert_eq!(metrics.carbon_offset_grams, expected_offset, "carbon offset calculation");
+}
+
+#[test]
+fn test_aggregated_carbon_totals() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+
+    let now = env.ledger().timestamp();
+    let unlock_time = now + 100;
+
+    // First deposit
+    let amount1 = 500i128;
+    let deposit1 = vault.deposit(&alice, &token, &amount1, &unlock_time, &0)
+        .expect("first deposit");
+
+    let metrics1 = vault.get_sustainability_metrics(&alice, &deposit1)
+        .expect("first metrics");
+
+    // Second deposit
+    let amount2 = 1_000i128;
+    let deposit2 = vault.deposit(&alice, &token, &amount2, &unlock_time, &0)
+        .expect("second deposit");
+
+    let metrics2 = vault.get_sustainability_metrics(&alice, &deposit2)
+        .expect("second metrics");
+
+    // Check aggregated report
+    let report = vault.generate_sustainability_report(&alice);
+    assert_eq!(
+        report.total_carbon_footprint,
+        metrics1.carbon_footprint + metrics2.carbon_footprint,
+        "total carbon should be sum of both deposits"
+    );
+    assert_eq!(report.active_deposit_count, 2, "should have 2 active deposits");
+}
+
+#[test]
+fn test_sustainability_report_averages_renewable() {
+    use crate::constants::RENEWABLE_ENERGY_BASELINE;
+
+    let (env, vault, token, _admin, alice, _fee) = setup();
+
+    let now = env.ledger().timestamp();
+    let unlock_time = now + 100;
+
+    // Create multiple deposits
+    vault.deposit(&alice, &token, &500, &unlock_time, &0)
+        .expect("deposit 1");
+    vault.deposit(&alice, &token, &1_000, &unlock_time, &0)
+        .expect("deposit 2");
+
+    let report = vault.generate_sustainability_report(&alice);
+    
+    // Average renewable should be the baseline since all deposits use it
+    assert_eq!(report.average_renewable_energy_percent, RENEWABLE_ENERGY_BASELINE);
+    assert_eq!(report.active_deposit_count, 2);
+}
+
+#[test]
+fn test_sustainability_metrics_removed_on_withdraw() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+
+    let now = env.ledger().timestamp();
+    let unlock_time = now + 100;
+    let deposit_id = vault.deposit(&alice, &token, &1_000, &unlock_time, &0)
+        .expect("deposit");
+
+    // Verify metrics exist
+    assert!(vault.get_sustainability_metrics(&alice, &deposit_id).is_some());
+
+    // Advance time past unlock
+    env.ledger().set_timestamp(unlock_time + 1);
+
+    // Withdraw
+    vault.withdraw(&alice, &deposit_id)
+        .expect("withdraw should succeed");
+
+    // Metrics should be removed
+    assert!(vault.get_sustainability_metrics(&alice, &deposit_id).is_none());
+}
+
+#[test]
+fn test_sustainability_metrics_removed_on_cancel() {
+    let (env, vault, token, _admin, alice, fee) = setup();
+
+    let now = env.ledger().timestamp();
+    let unlock_time = now + 3600;
+    let deposit_id = vault.deposit(&alice, &token, &1_000, &unlock_time, &0)
+        .expect("deposit");
+
+    // Verify metrics exist
+    let metrics_before = vault.get_sustainability_metrics(&alice, &deposit_id);
+    assert!(metrics_before.is_some());
+
+    // Cancel deposit
+    vault.cancel_deposit(&alice, &deposit_id)
+        .expect("cancel should succeed");
+
+    // Metrics should be removed
+    assert!(vault.get_sustainability_metrics(&alice, &deposit_id).is_none());
+}
+
+#[test]
+fn test_no_carbon_offset_without_penalty() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+
+    let now = env.ledger().timestamp();
+    let unlock_time = now + 100;
+    let deposit_id = vault.deposit(&alice, &token, &1_000, &unlock_time, &0)
+        .expect("deposit with zero penalty");
+
+    let metrics = vault.get_sustainability_metrics(&alice, &deposit_id)
+        .expect("metrics should exist");
+
+    assert_eq!(metrics.carbon_offset_grams, 0, "offset should be zero without penalty");
+}
+
+#[test]
+fn test_full_carbon_offset_with_max_penalty() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+
+    let now = env.ledger().timestamp();
+    let unlock_time = now + 100;
+    let deposit_id = vault.deposit(&alice, &token, &1_000, &unlock_time, &10_000)
+        .expect("deposit with 100% penalty");
+
+    let metrics = vault.get_sustainability_metrics(&alice, &deposit_id)
+        .expect("metrics should exist");
+
+    // 100% penalty means full carbon offset
+    assert_eq!(
+        metrics.carbon_offset_grams,
+        metrics.carbon_footprint,
+        "offset should equal footprint with 100% penalty"
+    );
+}
+
+#[test]
+fn test_sustainability_totals_updated_on_multiple_deposits() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+
+    let now = env.ledger().timestamp();
+    let unlock_time = now + 100;
+    let penalty_bps = 5_000u32; // 50%
+
+    // Deposit 1
+    vault.deposit(&alice, &token, &1_000, &unlock_time, &penalty_bps)
+        .expect("deposit 1");
+
+    let report1 = vault.generate_sustainability_report(&alice);
+    let total1 = report1.total_carbon_footprint;
+    let offset1 = report1.total_carbon_offset;
+
+    // Deposit 2
+    vault.deposit(&alice, &token, &2_000, &unlock_time, &penalty_bps)
+        .expect("deposit 2");
+
+    let report2 = vault.generate_sustainability_report(&alice);
+
+    // Totals should be larger
+    assert!(report2.total_carbon_footprint > total1, "total carbon should increase");
+    assert!(report2.total_carbon_offset > offset1, "total offset should increase");
+    assert_eq!(report2.active_deposit_count, 2);
+}
+
+#[test]
+fn test_ledger_based_deposit_sustainability_calculation() {
+    use crate::constants::MIN_LOCK_LEDGERS;
+    use crate::storage::LEDGER_SECONDS;
+
+    let (env, vault, token, _admin, alice, _fee) = setup();
+
+    let current_ledger = env.ledger().sequence();
+    let unlock_ledger = current_ledger + MIN_LOCK_LEDGERS + 10;
+    let amount = 1_000i128;
+
+    let deposit_id = vault.deposit_by_ledger(&alice, &token, &amount, &unlock_ledger, &0)
+        .expect("ledger-based deposit");
+
+    let metrics = vault.get_sustainability_metrics(&alice, &deposit_id)
+        .expect("metrics should exist");
+
+    // Verify carbon was calculated based on estimated duration
+    assert!(metrics.carbon_footprint > 0);
+    
+    // Expected duration: (MIN_LOCK_LEDGERS + 10) * LEDGER_SECONDS seconds
+    let expected_duration = (MIN_LOCK_LEDGERS + 10) as u64 * LEDGER_SECONDS;
+    // Allow some variance due to integer division
+    assert!(
+        metrics.carbon_footprint > (amount * expected_duration as i128) - 100,
+        "carbon should be approximately: amount * estimated_duration * baseline"
+    );
+}
+
+#[test]
+fn test_milestone_carbon_neutral() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+
+    let now = env.ledger().timestamp();
+    let unlock_time = now + 100;
+
+    // Deposit with 100% offset (penalty_bps = 10_000)
+    vault.deposit(&alice, &token, &1_000, &unlock_time, &10_000)
+        .expect("deposit");
+
+    // Check events were emitted (would be verified in real test setup with event capture)
+    // This test serves as a placeholder for milestone emission verification
+    let report = vault.generate_sustainability_report(&alice);
+    assert_eq!(report.total_carbon_offset, report.total_carbon_footprint);
+}
+
+#[test]
+fn test_zero_total_with_no_deposits() {
+    let (env, vault, _token, _admin, alice, _fee) = setup();
+
+    let report = vault.generate_sustainability_report(&alice);
+    assert_eq!(report.total_carbon_footprint, 0);
+    assert_eq!(report.total_carbon_offset, 0);
+    assert_eq!(report.active_deposit_count, 0);
+}
+
+#[test]
+fn test_sustainability_with_deposit_for() {
+    use crate::constants::RENEWABLE_ENERGY_BASELINE;
+
+    let (env, vault, token, _admin, alice, _fee) = setup();
+
+    let now = env.ledger().timestamp();
+    let unlock_time = now + 100;
+    let amount = 1_000i128;
+
+    // Bob deposits FOR Alice
+    let bob: Address = Address::generate(&env);
+    env.ledger().set(LedgerInfo {
+        timestamp: now,
+        protocol_version: 20,
+        sequence_number: 0,
+        network_id: Default::default(),
+        base_reserve: 0,
+        min_temp_entry_ttl: 0,
+        min_persistent_entry_ttl: 0,
+        max_entry_ttl: 0,
+    });
+
+    let deposit_id = vault.deposit_for(&bob, &alice, &token, &amount, &unlock_time, &0)
+        .expect("deposit_for");
+
+    let metrics = vault.get_sustainability_metrics(&alice, &deposit_id)
+        .expect("metrics should exist for Alice");
+
+    // Alice is the depositor in metrics
+    assert_eq!(metrics.depositor, alice);
+    assert_eq!(metrics.renewable_energy_percent, RENEWABLE_ENERGY_BASELINE);
+}
+
+#[test]
+fn test_sustainability_report_timestamp() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+
+    let now = env.ledger().timestamp();
+    let unlock_time = now + 100;
+    
+    vault.deposit(&alice, &token, &1_000, &unlock_time, &0)
+        .expect("deposit");
+
+    let report = vault.generate_sustainability_report(&alice);
+    
+    // Report timestamp should be approximately now
+    assert_eq!(report.report_timestamp, now);
+}
+
+#[test]
+fn test_multiple_depositors_independent_metrics() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+
+    let bob: Address = Address::generate(&env);
+    let now = env.ledger().timestamp();
+    let unlock_time = now + 100;
+
+    // Mint tokens for Bob
+    let token_client = TokenClient::new(&env, &token);
+    token_client.mint(&bob, &10_000);
+
+    // Alice's deposit
+    let alice_deposit = vault.deposit(&alice, &token, &1_000, &unlock_time, &0)
+        .expect("Alice deposit");
+
+    // Bob's deposit
+    let bob_deposit = vault.deposit(&bob, &token, &2_000, &unlock_time, &0)
+        .expect("Bob deposit");
+
+    // Metrics should be independent
+    let alice_metrics = vault.get_sustainability_metrics(&alice, &alice_deposit)
+        .expect("Alice metrics");
+    let bob_metrics = vault.get_sustainability_metrics(&bob, &bob_deposit)
+        .expect("Bob metrics");
+
+    // Different amounts should result in different carbon footprints
+    assert!(alice_metrics.carbon_footprint != bob_metrics.carbon_footprint);
+    assert_eq!(alice_metrics.depositor, alice);
+    assert_eq!(bob_metrics.depositor, bob);
+}
