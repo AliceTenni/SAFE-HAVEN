@@ -2601,4 +2601,553 @@ impl SafeHaven {
     pub fn get_claim(env: Env, claim_id: u32) -> Option<InsuranceClaim> {
         storage::get_claim_readonly(&env, claim_id)
     }
+
+    // ================================================================
+    //  Sponsorship Fund Management (Admin-Only)
+    // ================================================================
+
+    /// Initialize the sponsorship fund for the first time.
+    /// Only callable once. Sets up rate limits and eligibility rules.
+    pub fn initialize_sponsorship(
+        env: Env,
+        admin: Address,
+        sponsor_address: Address,
+        initial_balance: i128,
+        max_per_txn: i128,
+        max_per_user_day: i128,
+        min_eligible_balance: i128,
+        cooldown_seconds: u64,
+    ) -> Result<(), VaultError> {
+        admin.require_auth();
+        storage::require_admin(&env, &admin)?;
+
+        // Check if already initialized
+        if storage::is_sponsorship_initialized(&env) {
+            return Err(VaultError::AlreadyInitialized);
+        }
+
+        // Validate inputs
+        if initial_balance <= 0 {
+            return Err(VaultError::InvalidAmount);
+        }
+        if max_per_txn <= 0 || max_per_user_day <= 0 || min_eligible_balance < 0 {
+            return Err(VaultError::InvalidSponsorshipConfig);
+        }
+
+        // Create sponsorship fund
+        let fund = types::SponsorshipFund {
+            balance: initial_balance,
+            sponsor_address: sponsor_address.clone(),
+            max_per_txn,
+            max_per_user_day,
+            min_eligible_balance,
+            cooldown_seconds,
+            last_replenished: env.ledger().timestamp(),
+        };
+
+        storage::set_sponsorship_fund(&env, &fund);
+        storage::set_sponsorship_initialized(&env);
+
+        events::sponsorship_fund_initialized(
+            &env,
+            &sponsor_address,
+            initial_balance,
+            max_per_txn,
+            max_per_user_day,
+            min_eligible_balance,
+        );
+
+        Ok(())
+    }
+
+    /// Replenish the sponsorship fund.
+    /// Can be called by the sponsor address to add tokens from penalties or admin deposits.
+    pub fn replenish_sponsorship_fund(
+        env: Env,
+        sponsor: Address,
+        amount: i128,
+    ) -> Result<(), VaultError> {
+        sponsor.require_auth();
+
+        if !storage::is_sponsorship_initialized(&env) {
+            return Err(VaultError::SponsorshipNotInitialized);
+        }
+
+        let mut fund = storage::get_sponsorship_fund(&env)
+            .ok_or(VaultError::SponsorshipNotInitialized)?;
+
+        if sponsor != fund.sponsor_address {
+            return Err(VaultError::Unauthorized);
+        }
+
+        if amount <= 0 {
+            return Err(VaultError::InvalidAmount);
+        }
+
+        fund.balance = fund
+            .balance
+            .checked_add(amount)
+            .ok_or(VaultError::AmountTooLarge)?;
+        fund.last_replenished = env.ledger().timestamp();
+
+        storage::set_sponsorship_fund(&env, &fund);
+
+        events::sponsorship_fund_replenished(&env, &sponsor, amount, fund.balance);
+
+        Ok(())
+    }
+
+    /// Adjust sponsorship configuration (rate limits and eligibility rules).
+    pub fn adjust_sponsorship_config(
+        env: Env,
+        admin: Address,
+        max_per_txn: i128,
+        max_per_user_day: i128,
+        min_eligible_balance: i128,
+        cooldown_seconds: u64,
+    ) -> Result<(), VaultError> {
+        admin.require_auth();
+        storage::require_admin(&env, &admin)?;
+
+        if !storage::is_sponsorship_initialized(&env) {
+            return Err(VaultError::SponsorshipNotInitialized);
+        }
+
+        let mut fund = storage::get_sponsorship_fund(&env)
+            .ok_or(VaultError::SponsorshipNotInitialized)?;
+
+        if max_per_txn <= 0 || max_per_user_day <= 0 || min_eligible_balance < 0 {
+            return Err(VaultError::InvalidSponsorshipConfig);
+        }
+
+        fund.max_per_txn = max_per_txn;
+        fund.max_per_user_day = max_per_user_day;
+        fund.min_eligible_balance = min_eligible_balance;
+        fund.cooldown_seconds = cooldown_seconds;
+
+        storage::set_sponsorship_fund(&env, &fund);
+
+        events::sponsorship_config_updated(
+            &env,
+            &admin,
+            max_per_txn,
+            max_per_user_day,
+            min_eligible_balance,
+            cooldown_seconds,
+        );
+
+        Ok(())
+    }
+
+    // ================================================================
+    //  Sponsorship Eligibility Checks
+    // ================================================================
+
+    /// Check if a user is eligible for sponsorship.
+    /// Returns eligibility status, reason (if not eligible), and available amount.
+    pub fn check_sponsorship_eligibility(env: Env, user: Address) -> Result<types::SponsorshipEligibility, VaultError> {
+        if !storage::is_sponsorship_initialized(&env) {
+            return Ok(types::SponsorshipEligibility {
+                is_eligible: false,
+                reason: soroban_sdk::String::from_str(&env, "sponsorship_not_initialized"),
+                available_today: 0,
+            });
+        }
+
+        let fund = storage::get_sponsorship_fund(&env)
+            .ok_or(VaultError::SponsorshipNotInitialized)?;
+
+        let current_time = env.ledger().timestamp();
+        let day = storage::get_day_bucket(current_time);
+
+        // 1. KYC-lite: Check minimum balance
+        let user_balance = env.current_contract_address().try_into().unwrap_or(0_i128);
+        if user_balance < fund.min_eligible_balance {
+            return Ok(types::SponsorshipEligibility {
+                is_eligible: false,
+                reason: soroban_sdk::String::from_str(&env, "insufficient_balance"),
+                available_today: 0,
+            });
+        }
+
+        // 2. Check sponsorship fund balance
+        if fund.balance <= 0 {
+            return Ok(types::SponsorshipEligibility {
+                is_eligible: false,
+                reason: soroban_sdk::String::from_str(&env, "fund_depleted"),
+                available_today: 0,
+            });
+        }
+
+        // 3. Check daily limit
+        let usage = storage::get_sponsorship_usage(&env, &user, day);
+        let amount_used_today = usage.as_ref().map(|u| u.amount_used_today).unwrap_or(0);
+        let available_today = fund.max_per_user_day - amount_used_today;
+
+        if available_today <= 0 {
+            return Ok(types::SponsorshipEligibility {
+                is_eligible: false,
+                reason: soroban_sdk::String::from_str(&env, "daily_limit_exceeded"),
+                available_today: 0,
+            });
+        }
+
+        // 4. Check cooldown
+        if let Some(u) = usage {
+            let time_since_last = current_time.saturating_sub(u.last_sponsored_time);
+            if time_since_last < fund.cooldown_seconds {
+                return Ok(types::SponsorshipEligibility {
+                    is_eligible: false,
+                    reason: soroban_sdk::String::from_str(&env, "cooldown_active"),
+                    available_today: 0,
+                });
+            }
+
+            // 5. Sybil detection: flag if high velocity
+            if u.transaction_count > 10 {
+                events::sybil_detected(&env, &user, "high_velocity");
+                return Ok(types::SponsorshipEligibility {
+                    is_eligible: false,
+                    reason: soroban_sdk::String::from_str(&env, "sybil_suspected"),
+                    available_today: 0,
+                });
+            }
+        }
+
+        let available = available_today.min(fund.balance).min(fund.max_per_txn);
+
+        Ok(types::SponsorshipEligibility {
+            is_eligible: true,
+            reason: soroban_sdk::String::from_str(&env, ""),
+            available_today: available,
+        })
+    }
+
+    /// Get current sponsorship fund status.
+    pub fn get_sponsorship_fund_status(env: Env) -> Option<types::SponsorshipFund> {
+        if storage::is_sponsorship_initialized(&env) {
+            storage::get_sponsorship_fund(&env)
+        } else {
+            None
+        }
+    }
+
+    /// Get sponsorship usage for a user today.
+    pub fn get_sponsorship_usage_today(env: Env, user: Address) -> Option<types::SponsorshipUsage> {
+        if !storage::is_sponsorship_initialized(&env) {
+            return None;
+        }
+        let current_time = env.ledger().timestamp();
+        let day = storage::get_day_bucket(current_time);
+        storage::get_sponsorship_usage(&env, &user, day)
+    }
+
+    // ================================================================
+    //  Sponsored Deposit Functions
+    // ================================================================
+
+    /// Create a sponsored deposit.
+    /// The user pays for tokens; sponsorship fund covers resource fees.
+    pub fn sponsored_deposit(
+        env: Env,
+        depositor: Address,
+        token: Address,
+        amount: i128,
+        unlock_time: u64,
+        penalty_bps: u32,
+    ) -> Result<u32, VaultError> {
+        depositor.require_auth();
+
+        // 1. Check sponsorship eligibility
+        let eligibility = Self::check_sponsorship_eligibility(env.clone(), depositor.clone())?;
+        if !eligibility.is_eligible {
+            return Err(VaultError::NotEligibleForSponsorship);
+        }
+
+        // 2. Estimate sponsorship fee (in this case, a fixed amount per deposit)
+        // In a production system, this would be based on actual resource costs
+        let estimated_fee: i128 = 1_000; // Example: 1000 units (adjust based on actual gas)
+
+        // 3. Check sponsorship fund has enough
+        let mut fund = storage::get_sponsorship_fund(&env)
+            .ok_or(VaultError::SponsorshipNotInitialized)?;
+
+        if fund.balance < estimated_fee {
+            return Err(VaultError::InsufficientSponsorshipFund);
+        }
+
+        // 4. Deduct from sponsorship fund (checks-effects-interactions)
+        fund.balance = fund.balance.checked_sub(estimated_fee)
+            .ok_or(VaultError::InvalidAmount)?;
+        storage::set_sponsorship_fund(&env, &fund);
+
+        // 5. Record sponsorship usage
+        let current_time = env.ledger().timestamp();
+        let day = storage::get_day_bucket(current_time);
+        let mut usage = storage::get_sponsorship_usage(&env, &depositor, day)
+            .unwrap_or(types::SponsorshipUsage {
+                amount_used_today: 0,
+                last_sponsored_time: 0,
+                transaction_count: 0,
+            });
+
+        usage.amount_used_today = usage.amount_used_today
+            .checked_add(estimated_fee)
+            .ok_or(VaultError::AmountTooLarge)?;
+        usage.last_sponsored_time = current_time;
+        usage.transaction_count = usage.transaction_count.saturating_add(1);
+
+        storage::set_sponsorship_usage(&env, &depositor, day, &usage);
+
+        // 6. Create deposit (standard deposit logic)
+        // Validate unlock time
+        if unlock_time <= current_time {
+            return Err(VaultError::UnlockTimeNotInFuture);
+        }
+
+        let lock_duration = unlock_time.saturating_sub(current_time);
+        if lock_duration < MIN_LOCK_DURATION_SECS {
+            return Err(VaultError::LockDurationTooShort);
+        }
+        if lock_duration > MAX_LOCK_DURATION_SECS {
+            return Err(VaultError::LockDurationTooLong);
+        }
+
+        if amount <= 0 || amount > MAX_DEPOSIT_AMOUNT {
+            return Err(VaultError::InvalidAmount);
+        }
+
+        if penalty_bps > 10000 {
+            return Err(VaultError::InvalidPenaltyBps);
+        }
+
+        // Generate deposit ID
+        let deposit_id = storage::next_deposit_id(&env, &depositor);
+
+        // Create vault entry
+        let entry = VaultEntry {
+            token: token.clone(),
+            amount,
+            unlock_time,
+            depositor: depositor.clone(),
+            penalty_bps,
+            compound_frequency_secs: 0,
+            last_accrual_timestamp: current_time,
+        };
+
+        // Store deposit
+        let key = types::VaultKey::Deposit(depositor.clone(), deposit_id);
+        env.storage().persistent().set(&key, &entry);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, storage::BUMP_THRESHOLD, storage::BUMP_TARGET);
+
+        // Track active deposit ID
+        storage::add_active_deposit_id(&env, &depositor, deposit_id);
+
+        // Add to depositor list if first deposit
+        if deposit_id == 0 {
+            storage::add_depositor(&env, &depositor);
+        }
+
+        // Transfer tokens from depositor to contract
+        let token_client = token::Client::new(&env, &token);
+        token_client.transfer(&depositor, &env.current_contract_address(), &amount);
+
+        // Emit events
+        events::deposit(&env, &depositor, &token, amount, unlock_time, deposit_id);
+        events::gasless_transaction_executed(
+            &env,
+            &depositor,
+            None, // No relayer for user-sponsored
+            &token,
+            amount,
+            estimated_fee,
+            deposit_id,
+        );
+
+        Ok(deposit_id)
+    }
+
+    /// Create a relayer-sponsored deposit.
+    /// Relayer funds the tokens; sponsorship fund covers resource fees.
+    pub fn sponsored_deposit_for(
+        env: Env,
+        relayer: Address,
+        depositor: Address,
+        token: Address,
+        amount: i128,
+        unlock_time: u64,
+        penalty_bps: u32,
+    ) -> Result<u32, VaultError> {
+        relayer.require_auth();
+
+        // 1. Check sponsorship eligibility (for depositor, not relayer)
+        let eligibility = Self::check_sponsorship_eligibility(env.clone(), depositor.clone())?;
+        if !eligibility.is_eligible {
+            return Err(VaultError::NotEligibleForSponsorship);
+        }
+
+        // 2. Estimate sponsorship fee
+        let estimated_fee: i128 = 1_000; // Example: 1000 units
+
+        // 3. Check sponsorship fund has enough
+        let mut fund = storage::get_sponsorship_fund(&env)
+            .ok_or(VaultError::SponsorshipNotInitialized)?;
+
+        if fund.balance < estimated_fee {
+            return Err(VaultError::InsufficientSponsorshipFund);
+        }
+
+        // 4. Deduct from sponsorship fund
+        fund.balance = fund.balance.checked_sub(estimated_fee)
+            .ok_or(VaultError::InvalidAmount)?;
+        storage::set_sponsorship_fund(&env, &fund);
+
+        // 5. Record sponsorship usage
+        let current_time = env.ledger().timestamp();
+        let day = storage::get_day_bucket(current_time);
+        let mut usage = storage::get_sponsorship_usage(&env, &depositor, day)
+            .unwrap_or(types::SponsorshipUsage {
+                amount_used_today: 0,
+                last_sponsored_time: 0,
+                transaction_count: 0,
+            });
+
+        usage.amount_used_today = usage.amount_used_today
+            .checked_add(estimated_fee)
+            .ok_or(VaultError::AmountTooLarge)?;
+        usage.last_sponsored_time = current_time;
+        usage.transaction_count = usage.transaction_count.saturating_add(1);
+
+        storage::set_sponsorship_usage(&env, &depositor, day, &usage);
+
+        // 6. Create deposit
+        if unlock_time <= current_time {
+            return Err(VaultError::UnlockTimeNotInFuture);
+        }
+
+        let lock_duration = unlock_time.saturating_sub(current_time);
+        if lock_duration < MIN_LOCK_DURATION_SECS {
+            return Err(VaultError::LockDurationTooShort);
+        }
+        if lock_duration > MAX_LOCK_DURATION_SECS {
+            return Err(VaultError::LockDurationTooLong);
+        }
+
+        if amount <= 0 || amount > MAX_DEPOSIT_AMOUNT {
+            return Err(VaultError::InvalidAmount);
+        }
+
+        if penalty_bps > 10000 {
+            return Err(VaultError::InvalidPenaltyBps);
+        }
+
+        // Generate deposit ID
+        let deposit_id = storage::next_deposit_id(&env, &depositor);
+
+        // Create vault entry
+        let entry = VaultEntry {
+            token: token.clone(),
+            amount,
+            unlock_time,
+            depositor: depositor.clone(),
+            penalty_bps,
+            compound_frequency_secs: 0,
+            last_accrual_timestamp: current_time,
+        };
+
+        // Store deposit
+        let key = types::VaultKey::Deposit(depositor.clone(), deposit_id);
+        env.storage().persistent().set(&key, &entry);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, storage::BUMP_THRESHOLD, storage::BUMP_TARGET);
+
+        // Track active deposit ID
+        storage::add_active_deposit_id(&env, &depositor, deposit_id);
+
+        // Add to depositor list if first deposit
+        if deposit_id == 0 {
+            storage::add_depositor(&env, &depositor);
+        }
+
+        // Transfer tokens from relayer to contract
+        let token_client = token::Client::new(&env, &token);
+        token_client.transfer(&relayer, &env.current_contract_address(), &amount);
+
+        // Emit events
+        events::deposit(&env, &depositor, &token, amount, unlock_time, deposit_id);
+        events::gasless_transaction_executed(
+            &env,
+            &depositor,
+            Some(&relayer),
+            &token,
+            amount,
+            estimated_fee,
+            deposit_id,
+        );
+
+        Ok(deposit_id)
+    }
+
+    // ================================================================
+    //  Relayer Integration Points
+    // ================================================================
+    //
+    // Relayers integrate with the sponsorship system via these standardized
+    // contract functions:
+    //
+    // 1. Query sponsorship status:
+    //    - get_sponsorship_fund_status() → SponsorshipFund
+    //    - check_sponsorship_eligibility(user) → SponsorshipEligibility
+    //    - get_sponsorship_usage_today(user) → Option<SponsorshipUsage>
+    //
+    // 2. Submit sponsored transactions:
+    //    - sponsored_deposit_for(relayer, depositor, token, amount, unlock_time, penalty_bps)
+    //
+    // 3. Monitor events for:
+    //    - gasless_transaction_executed: Confirm successful sponsorship
+    //    - sybil_detected: Flag suspicious patterns
+    //    - sponsorship_fund_replenished: Track fund health
+    //
+    // Example Relayer Workflow:
+    // ```
+    // 1. User submits deposit request to relayer
+    // 2. Relayer calls check_sponsorship_eligibility(user_address)
+    // 3. If eligible:
+    //    a. Relayer simulates sponsored_deposit_for to estimate fees
+    //    b. Relayer submits signed transaction calling sponsored_deposit_for
+    //    c. Relayer waits for GaslessTransactionExecuted event
+    //    d. Relayer returns confirmation to user
+    // 4. If not eligible:
+    //    a. Relayer returns error reason to user
+    //    b. User can retry later or use standard (non-sponsored) deposit
+    // ```
+
+    /// Estimate the resource cost for a sponsored deposit.
+    /// Used by relayers to calculate fees and check fund availability.
+    pub fn estimate_sponsorship_fee(_env: Env) -> i128 {
+        // Fixed estimate for this version. In production, this could be:
+        // - Dynamic based on deposit amount
+        // - Based on actual network congestion
+        // - Calibrated via admin configuration
+        1_000
+    }
+
+    /// Get relayer-friendly sponsorship info (combined status + eligibility).
+    /// This function is optimized for relayer queries to minimize RPC calls.
+    pub fn get_sponsorship_relayer_info(
+        env: Env,
+        user: Address,
+    ) -> Result<(types::SponsorshipFund, types::SponsorshipEligibility, i128), VaultError> {
+        let fund = storage::get_sponsorship_fund(&env)
+            .ok_or(VaultError::SponsorshipNotInitialized)?;
+
+        let eligibility = Self::check_sponsorship_eligibility(env.clone(), user)?;
+
+        let estimated_fee = Self::estimate_sponsorship_fee(env);
+
+        Ok((fund, eligibility, estimated_fee))
+    }
 }

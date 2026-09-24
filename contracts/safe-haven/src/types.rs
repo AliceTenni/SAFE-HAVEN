@@ -89,6 +89,12 @@ pub enum VaultKey {
     RewardsPool,
     /// Rewards claimed by a staker (track cumulative for auditing)
     StakerRewardsClaimed(Address),
+    /// Sponsorship fund state (singleton)
+    SponsorshipFund,
+    /// Per-user sponsorship usage tracking: "spons_usage:{user}:{day}"
+    SponsorshipUsage(Address, u64),
+    /// Flag to track if sponsorship is initialized
+    SponsorshipInitialized,
 }
 
 #[contracttype]
@@ -169,10 +175,56 @@ pub struct StakerEntry {
     pub stake_amount: i128,
 }
 
-/// Deposit type indicator — distinguishes between timestamp-based and ledger-based deposits
+/// Sponsorship fund configuration and state
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum DepositType {
-    TimeBased,
-    LedgerBased,
+pub struct SponsorshipFund {
+    /// Balance of native tokens available for sponsorship
+    pub balance: i128,
+
+    /// Address that manages the sponsorship fund (typically admin)
+    pub sponsor_address: Address,
+
+    /// Maximum tokens to sponsor per transaction
+    pub max_per_txn: i128,
+
+    /// Maximum tokens to sponsor per user per day
+    pub max_per_user_day: i128,
+
+    /// Minimum native balance required to be eligible for sponsorship (KYC-lite)
+    pub min_eligible_balance: i128,
+
+    /// Cooldown period (in seconds) between sponsored transactions per user
+    pub cooldown_seconds: u64,
+
+    /// Timestamp of last update (for tracking replenishment frequency)
+    pub last_replenished: u64,
+}
+
+/// Per-user sponsorship tracking for a specific day
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SponsorshipUsage {
+    /// Cumulative amount sponsored to this user today
+    pub amount_used_today: i128,
+
+    /// Timestamp of the last sponsored transaction for this user
+    pub last_sponsored_time: u64,
+
+    /// Counter of sponsored transactions for this user (for sybil detection)
+    pub transaction_count: u32,
+}
+
+/// Result of sponsorship eligibility check
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SponsorshipEligibility {
+    /// User is eligible if they meet all criteria
+    pub is_eligible: bool,
+
+    /// Reason if not eligible (empty string if eligible)
+    pub reason: soroban_sdk::String,
+
+    /// Amount available for this user today
+    pub available_today: i128,
 }
