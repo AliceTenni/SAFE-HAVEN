@@ -89,6 +89,8 @@ pub enum VaultKey {
     RewardsPool,
     /// Rewards claimed by a staker (track cumulative for auditing)
     StakerRewardsClaimed(Address),
+    /// NFT evolution record: maps (depositor, deposit_id) to NFTEvolutionRecord
+    NFTEvolution(Address, u32),
 }
 
 #[contracttype]

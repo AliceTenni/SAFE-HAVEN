@@ -374,6 +374,16 @@ impl SafeHaven {
         storage::add_depositor(&env, &depositor);
         events::deposit(&env, &depositor, &token, amount, unlock_time, deposit_id);
 
+        // Initialize NFT evolution record for the deposit
+        let nft_record = crate::nft::create_evolution_record(
+            &env,
+            deposit_id,
+            amount,
+            unlock_time,
+            now,
+        );
+        storage::set_nft_evolution(&env, &depositor, deposit_id, &nft_record);
+
         // Track sustainability metrics
         let lock_duration: u64 = unlock_time.saturating_sub(now);
         let carbon_footprint = calculate_carbon_footprint(amount, lock_duration);
@@ -554,6 +564,16 @@ impl SafeHaven {
 
         storage::set_deposit(&env, &depositor, deposit_id, &entry);
         storage::add_depositor(&env, &depositor);
+
+        // Initialize NFT evolution record for the deposit
+        let nft_record = crate::nft::create_evolution_record(
+            &env,
+            deposit_id,
+            amount,
+            unlock_time,
+            now,
+        );
+        storage::set_nft_evolution(&env, &depositor, deposit_id, &nft_record);
         events::deposit(&env, &depositor, &token, amount, unlock_time, deposit_id);
 
         // Track sustainability metrics
@@ -1114,6 +1134,10 @@ impl SafeHaven {
                 token_client.transfer(&contract, &depositor, &refund);
             }
 
+            
+            // Clean up NFT evolution record on cancellation
+            storage::remove_nft_evolution(&env, &depositor, deposit_id);
+            storage::remove_sustainability_metrics(&env, &depositor, deposit_id);
             events::penalty_split(&env, &depositor, penalty, fee_recipient_share, stakers_share, deposit_id);
             events::deposit_cancelled(&env, &depositor, &entry.token, entry.amount, penalty, deposit_id);
             return Ok(());
@@ -1318,6 +1342,10 @@ impl SafeHaven {
             storage::cleanup_old_epochs(&env, &depositor, current_epoch);
 
             events::withdraw(&env, &depositor, &entry.token, entry.amount, deposit_id);
+
+            // Clean up NFT evolution record on withdrawal
+            storage::remove_nft_evolution(&env, &depositor, deposit_id);
+            storage::remove_sustainability_metrics(&env, &depositor, deposit_id);
             return Ok(());
         }
 
@@ -1342,6 +1370,10 @@ impl SafeHaven {
             storage::increment_withdrawal_count(&env, &depositor, current_epoch);
             storage::cleanup_old_epochs(&env, &depositor, current_epoch);
 
+
+            // Clean up NFT evolution record on withdrawal
+            storage::remove_nft_evolution(&env, &depositor, deposit_id);
+            storage::remove_sustainability_metrics(&env, &depositor, deposit_id);
             events::withdraw(&env, &depositor, &entry.token, entry.amount, deposit_id);
             return Ok(());
         }
@@ -2600,5 +2632,63 @@ impl SafeHaven {
     /// Returns the `InsuranceClaim` for `claim_id`, or `None` if not found.
     pub fn get_claim(env: Env, claim_id: u32) -> Option<InsuranceClaim> {
         storage::get_claim_readonly(&env, claim_id)
+    }
+
+    // ================================================================
+    //  NFT Evolution Query Functions
+    // ================================================================
+
+    /// Get the NFT evolution record for a deposit.
+    /// Returns `None` if no NFT record exists yet.
+    pub fn get_nft_evolution(
+        env: Env,
+        depositor: Address,
+        deposit_id: u32,
+    ) -> Option<crate::nft::NFTEvolutionRecord> {
+        storage::get_nft_evolution_readonly(&env, &depositor, deposit_id)
+    }
+
+    /// Get the current evolution stage of a deposit's NFT.
+    /// Returns `None` if the deposit does not exist or has no NFT record.
+    pub fn get_nft_stage(
+        env: Env,
+        depositor: Address,
+        deposit_id: u32,
+    ) -> Option<crate::nft::EvolutionStage> {
+        storage::get_nft_evolution_readonly(&env, &depositor, deposit_id)
+            .map(|record| record.stage)
+    }
+
+    /// Get the rarity tier of a deposit's NFT.
+    /// Returns `None` if the deposit does not exist or has no NFT record.
+    pub fn get_nft_rarity(
+        env: Env,
+        depositor: Address,
+        deposit_id: u32,
+    ) -> Option<crate::nft::RarityTier> {
+        storage::get_nft_evolution_readonly(&env, &depositor, deposit_id)
+            .map(|record| record.rarity)
+    }
+
+    /// Get the metadata URI for a deposit's NFT.
+    /// Returns `None` if the deposit does not exist or has no NFT record.
+    pub fn get_nft_metadata_uri(
+        env: Env,
+        depositor: Address,
+        deposit_id: u32,
+    ) -> Option<String> {
+        storage::get_nft_evolution_readonly(&env, &depositor, deposit_id)
+            .map(|record| record.metadata_uri)
+    }
+
+    /// Get the evolution history (count) for a deposit's NFT.
+    /// Returns `None` if the deposit does not exist or has no NFT record.
+    pub fn get_nft_evolution_count(
+        env: Env,
+        depositor: Address,
+        deposit_id: u32,
+    ) -> Option<u32> {
+        storage::get_nft_evolution_readonly(&env, &depositor, deposit_id)
+            .map(|record| record.evolution_count)
     }
 }
