@@ -1,6 +1,6 @@
 use soroban_sdk::{Address, Env, Vec};
 
-use crate::types::{VaultEntry, VaultKey, LedgerVaultEntry, MAX_LOCK_DURATION_SECS};
+use crate::types::{VaultEntry, VaultKey, LedgerVaultEntry, MAX_LOCK_DURATION_SECS, SustainabilityMetrics};
 
 // Number of seconds per ledger — Soroban ledgers are ~5 seconds apart.
 pub const LEDGER_SECONDS: u64 = 5;
@@ -450,4 +450,109 @@ pub fn get_storage_version(env: &Env) -> Option<u32> {
     env.storage()
         .persistent()
         .get(&VaultKey::StorageVersion)
+}
+
+// ----------------------------------------------------------------
+//  Sustainability metrics helpers
+// ----------------------------------------------------------------
+
+/// Store sustainability metrics for a specific deposit.
+pub fn set_sustainability_metrics(
+    env: &Env,
+    depositor: &Address,
+    deposit_id: u32,
+    metrics: &SustainabilityMetrics,
+) {
+    let key = VaultKey::SustainabilityMetrics(depositor.clone(), deposit_id);
+    env.storage().persistent().set(&key, metrics);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
+}
+
+/// Retrieve sustainability metrics for a specific deposit.
+pub fn get_sustainability_metrics(
+    env: &Env,
+    depositor: &Address,
+    deposit_id: u32,
+) -> Option<SustainabilityMetrics> {
+    let key = VaultKey::SustainabilityMetrics(depositor.clone(), deposit_id);
+    let metrics: Option<SustainabilityMetrics> = env.storage().persistent().get(&key);
+    if metrics.is_some() {
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
+    }
+    metrics
+}
+
+/// Retrieve sustainability metrics without extending TTL (read-only).
+pub fn get_sustainability_metrics_readonly(
+    env: &Env,
+    depositor: &Address,
+    deposit_id: u32,
+) -> Option<SustainabilityMetrics> {
+    let key = VaultKey::SustainabilityMetrics(depositor.clone(), deposit_id);
+    env.storage().persistent().get(&key)
+}
+
+/// Remove sustainability metrics for a specific deposit.
+pub fn remove_sustainability_metrics(env: &Env, depositor: &Address, deposit_id: u32) {
+    let key = VaultKey::SustainabilityMetrics(depositor.clone(), deposit_id);
+    env.storage().persistent().remove(&key);
+}
+
+/// Get total carbon footprint for a depositor.
+pub fn get_total_carbon_footprint(env: &Env, depositor: &Address) -> i128 {
+    let key = VaultKey::TotalCarbonFootprint(depositor.clone());
+    env.storage()
+        .persistent()
+        .get::<VaultKey, i128>(&key)
+        .unwrap_or(0)
+}
+
+/// Set total carbon footprint for a depositor.
+pub fn set_total_carbon_footprint(env: &Env, depositor: &Address, total: i128) {
+    let key = VaultKey::TotalCarbonFootprint(depositor.clone());
+    env.storage().persistent().set(&key, &total);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
+}
+
+/// Get total carbon offset for a depositor.
+pub fn get_total_carbon_offset(env: &Env, depositor: &Address) -> i128 {
+    let key = VaultKey::TotalCarbonOffset(depositor.clone());
+    env.storage()
+        .persistent()
+        .get::<VaultKey, i128>(&key)
+        .unwrap_or(0)
+}
+
+/// Set total carbon offset for a depositor.
+pub fn set_total_carbon_offset(env: &Env, depositor: &Address, total: i128) {
+    let key = VaultKey::TotalCarbonOffset(depositor.clone());
+    env.storage().persistent().set(&key, &total);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
+}
+
+/// Check if a depositor has achieved a specific milestone.
+/// Returns a bitmap where each bit represents a different milestone type.
+pub fn get_milestone_bitmap(env: &Env, depositor: &Address) -> u32 {
+    let key = VaultKey::MilestoneAchieved(depositor.clone());
+    env.storage()
+        .persistent()
+        .get::<VaultKey, u32>(&key)
+        .unwrap_or(0)
+}
+
+/// Set milestone bitmap for a depositor.
+pub fn set_milestone_bitmap(env: &Env, depositor: &Address, bitmap: u32) {
+    let key = VaultKey::MilestoneAchieved(depositor.clone());
+    env.storage().persistent().set(&key, &bitmap);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
 }

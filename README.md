@@ -218,6 +218,102 @@ Permanently removes admin. Contract becomes fully trustless.
 
 ---
 
+## Sustainability Metrics
+
+SAFE-HAVEN tracks environmental impact across all deposits to support ESG goals and climate commitments.
+
+### Carbon Footprint Tracking
+
+Each deposit automatically calculates a **carbon footprint** based on:
+- **Amount locked** — larger deposits = higher impact
+- **Lock duration** — longer locks = higher impact
+- **Baseline multiplier** — configurable environmental cost per unit-second (default: 1 gram CO2e per unit per second)
+
+**Formula**: `carbon_footprint = amount × duration_seconds × CARBON_BASELINE_PER_UNIT_SECOND`
+
+### Renewable Energy Percentage
+
+Every deposit tracks an assumed **renewable energy percentage** (default: 50%). This represents the energy mix used for hosting and network operations.
+
+### Carbon Offset Integration
+
+Users can configure a **penalty basis points** (0–10,000) that simultaneously:
+1. **Penalizes early withdrawals** — funds are sent to the fee recipient
+2. **Offsets carbon** — penalty % is converted to CO2 offset
+
+**Formula**: `carbon_offset = carbon_footprint × (penalty_bps / 10,000)`
+
+### Sustainability Metrics Queries
+
+#### `get_sustainability_metrics(depositor, deposit_id) -> Option<SustainabilityMetrics>`
+Retrieves calculated metrics for a single deposit:
+```rust
+pub struct SustainabilityMetrics {
+    pub deposit_id: u32,
+    pub depositor: Address,
+    pub carbon_footprint: i128,           // grams CO2e
+    pub renewable_energy_percent: u32,   // 0-100%
+    pub carbon_offset_grams: i128,       // grams CO2 offset
+    pub timestamp: u64,                  // when recorded
+}
+```
+
+#### `generate_sustainability_report(depositor) -> SustainabilityReport`
+Aggregates metrics across all active deposits:
+```rust
+pub struct SustainabilityReport {
+    pub depositor: Address,
+    pub total_carbon_footprint: i128,        // sum across all deposits
+    pub average_renewable_energy_percent: u32, // weighted average
+    pub total_carbon_offset: i128,           // sum of all offsets
+    pub active_deposit_count: u32,           // number of open vaults
+    pub report_timestamp: u64,
+}
+```
+
+### Sustainability Milestones
+
+The contract emits `SustainabilityMilestone` events when depositors achieve environmental goals:
+
+| Milestone | Condition |
+|---|---|
+| **Carbon Neutral** | 100% of carbon footprint is offset |
+| **High Renewable** | ≥ 75% renewable energy across deposits |
+| **Carbon Negative** | Total offset exceeds total footprint |
+| **Large Offset** | Total offset ≥ 1 billion grams CO2e (1,000 tonnes) |
+
+**Behavior**: Each milestone is emitted at most once per depositor (using a bitmap flag). Once achieved, the same milestone will not emit again unless reset.
+
+### Lifecycle of Metrics
+
+| Event | Action |
+|---|---|
+| **Deposit** | Metrics calculated, stored, aggregates updated, milestones checked |
+| **Withdraw** | Metrics removed from storage (no longer needed) |
+| **Cancel** | Metrics removed, aggregates decremented |
+| **Query** | `get_sustainability_metrics()` and `generate_sustainability_report()` read-only (no writes) |
+
+### Example: Tracking a Sustainable Vault
+
+```
+1. Alice deposits 1,000 USDC for 100 days with 50% early-exit penalty
+   → carbon_footprint = 1,000 × 8,640,000 seconds × 1 = 8.64 billion grams CO2e
+   → carbon_offset = 8.64 billion × 0.5 = 4.32 billion grams (50% offset)
+
+2. She makes a second deposit of 500 USDC for 50 days with 100% penalty
+   → carbon_footprint = 500 × 4,320,000 × 1 = 2.16 billion grams
+   → carbon_offset = 2.16 billion (full offset)
+
+3. Her sustainability report shows:
+   → total_carbon_footprint = 10.8 billion grams
+   → total_carbon_offset = 6.48 billion grams
+   → average_renewable_energy = 50%
+   → SustainabilityMilestone::HighRenewable is NOT emitted (50% < 75% threshold)
+   → SustainabilityMilestone::LargeOffset IS emitted (6.48B > 1B threshold)
+```
+
+---
+
 ## Error Codes
 
 | Code | Name | Meaning |

@@ -1,4 +1,5 @@
 use soroban_sdk::{symbol_short, Address, Env, Symbol};
+use crate::types::SustainabilityMilestoneType;
 
 pub fn contract_initialized(
     env: &Env,
@@ -107,4 +108,16 @@ pub fn withdraw_to(
 ) {
     let topics = (Symbol::new(env, "withdraw_to"), depositor.clone(), token.clone());
     env.events().publish(topics, (recipient.clone(), amount));
+}
+
+pub fn sustainability_milestone_achieved(
+    env: &Env,
+    depositor: &Address,
+    milestone: SustainabilityMilestoneType,
+    carbon_footprint: i128,
+    renewable_energy_percent: u32,
+    carbon_offset: i128,
+) {
+    let topics = (Symbol::new(env, "sust_milestone"), depositor.clone());
+    env.events().publish(topics, (milestone, carbon_footprint, renewable_energy_percent, carbon_offset));
 }
