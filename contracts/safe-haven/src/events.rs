@@ -207,3 +207,54 @@ pub fn interest_accrued(
     env.events()
         .publish(topics, (deposit_id, old_amount, new_amount));
 }
+
+/// Emitted when a MEV commitment is submitted
+pub fn commit_submitted(
+    env: &Env,
+    depositor: &Address,
+    deposit_id: u32,
+    commit_hash: &soroban_sdk::BytesN<32>,
+) {
+    let topics = (Symbol::new(env, "mev_commit"), depositor.clone());
+    env.events().publish(topics, (deposit_id, commit_hash.clone()));
+}
+
+/// Emitted when a MEV commitment is revealed
+pub fn reveal_submitted(
+    env: &Env,
+    depositor: &Address,
+    deposit_id: u32,
+    token: &Address,
+    amount: i128,
+    price: i128,
+) {
+    let topics = (Symbol::new(env, "mev_reveal"), depositor.clone());
+    env.events()
+        .publish(topics, (deposit_id, token.clone(), amount, price));
+}
+
+/// Emitted when MEV is detected
+pub fn mev_detected(
+    env: &Env,
+    depositor: &Address,
+    deposit_id: u32,
+    price_deviation_bps: u32,
+    mev_amount: i128,
+) {
+    let topics = (Symbol::new(env, "mev_detected"), depositor.clone());
+    env.events()
+        .publish(topics, (deposit_id, price_deviation_bps, mev_amount));
+}
+
+/// Emitted when MEV is recovered and redistributed to users
+pub fn mev_recovered(env: &Env, total_recovered: i128, affected_users: u32) {
+    let topics = (Symbol::new(env, "mev_recovered"),);
+    env.events()
+        .publish(topics, (total_recovered, affected_users));
+}
+
+/// Emitted when a sustainability milestone is achieved
+pub fn sustainability_milestone(env: &Env, depositor: &Address, milestone_type: &str) {
+    let topics = (Symbol::new(env, "milestone"), depositor.clone());
+    env.events().publish(topics, Symbol::new(env, milestone_type));
+}

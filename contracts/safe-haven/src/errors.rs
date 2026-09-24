@@ -29,4 +29,14 @@ pub enum VaultError {
     RecipientNotWhitelisted = 18,
     /// Compound frequency must be >= 60 seconds if non-zero (issue #332).
     InvalidCompoundFrequency = 19,
+    /// MEV attack detected — price deviation exceeds threshold
+    MEVAttackDetected = 20,
+    /// Commit hash not found for reveal
+    CommitNotFound = 21,
+    /// Commit hash does not match revealed values
+    CommitMismatch = 22,
+    /// Reveal window expired
+    RevealWindowExpired = 23,
+    /// Invalid price data for MEV detection
+    InvalidPriceData = 24,
 }
