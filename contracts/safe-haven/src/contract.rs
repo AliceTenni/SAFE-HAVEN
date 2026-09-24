@@ -2601,4 +2601,142 @@ impl SafeHaven {
     pub fn get_claim(env: Env, claim_id: u32) -> Option<InsuranceClaim> {
         storage::get_claim_readonly(&env, claim_id)
     }
+
+    // ================================================================
+    //  Prediction Markets - Entry Points
+    // ================================================================
+
+    /// Initialize the prediction market subsystem
+    pub fn init_prediction_markets(
+        env: Env,
+        admin: Address,
+        fee_recipient: Address,
+        default_fee_bps: Option<u32>,
+    ) -> Result<(), crate::prediction_market_errors::PredictionMarketError> {
+        admin.require_auth();
+        let fee_bps = default_fee_bps.unwrap_or(100); // Default 1%
+        crate::prediction_market::initialize_markets(&env, admin, fee_recipient, fee_bps)
+    }
+
+    /// Create a new prediction market for deposit outcomes
+    pub fn create_prediction_market(
+        env: Env,
+        creator: Address,
+        market_type: String,
+        description: String,
+        oracle: Address,
+        close_time: u64,
+        resolution_deadline: u64,
+        outcome_names: Vec<String>,
+        fee_bps: Option<u32>,
+    ) -> Result<u32, crate::prediction_market_errors::PredictionMarketError> {
+        crate::prediction_market::create_market(
+            &env,
+            creator,
+            market_type,
+            description,
+            oracle,
+            close_time,
+            resolution_deadline,
+            outcome_names,
+            fee_bps,
+        )
+    }
+
+    /// Place a bet on a prediction market outcome
+    pub fn place_prediction_bet(
+        env: Env,
+        bettor: Address,
+        market_id: u32,
+        outcome_id: u32,
+        amount: i128,
+        token: Address,
+    ) -> Result<(), crate::prediction_market_errors::PredictionMarketError> {
+        crate::prediction_market::place_bet(
+            &env, bettor, market_id, outcome_id, amount, token,
+        )
+    }
+
+    /// Close a market to new bets (oracle can then resolve)
+    pub fn close_prediction_market(
+        env: Env,
+        closer: Address,
+        market_id: u32,
+    ) -> Result<(), crate::prediction_market_errors::PredictionMarketError> {
+        crate::prediction_market::close_market(&env, closer, market_id)
+    }
+
+    /// Resolve a market with a winning outcome (oracle submission)
+    pub fn resolve_prediction_market(
+        env: Env,
+        oracle: Address,
+        market_id: u32,
+        winning_outcome: u32,
+        resolution_data: Option<i128>,
+    ) -> Result<(), crate::prediction_market_errors::PredictionMarketError> {
+        crate::prediction_market::resolve_market(
+            &env,
+            oracle,
+            market_id,
+            winning_outcome,
+            resolution_data,
+        )
+    }
+
+    /// Claim winnings from a resolved prediction market
+    pub fn claim_prediction_winnings(
+        env: Env,
+        bettor: Address,
+        market_id: u32,
+        outcome_id: u32,
+        token: Address,
+    ) -> Result<i128, crate::prediction_market_errors::PredictionMarketError> {
+        crate::prediction_market::claim_winnings(&env, bettor, market_id, outcome_id, token)
+    }
+
+    /// Cancel a market and refund all bets (admin only)
+    pub fn cancel_prediction_market(
+        env: Env,
+        admin: Address,
+        market_id: u32,
+        token: Address,
+    ) -> Result<i128, crate::prediction_market_errors::PredictionMarketError> {
+        crate::prediction_market::cancel_market(&env, admin, market_id, token)
+    }
+
+    /// Pause/unpause market creation
+    pub fn set_prediction_market_paused(
+        env: Env,
+        admin: Address,
+        paused: bool,
+    ) -> Result<(), crate::prediction_market_errors::PredictionMarketError> {
+        crate::prediction_market::set_market_paused(&env, admin, paused)
+    }
+
+    /// Get prediction market details
+    pub fn get_prediction_market(
+        env: Env,
+        market_id: u32,
+    ) -> Option<crate::prediction_market_types::PredictionMarket> {
+        crate::prediction_market::get_market_details(&env, market_id)
+    }
+
+    /// Get outcome details for a market
+    pub fn get_market_outcome(
+        env: Env,
+        market_id: u32,
+        outcome_id: u32,
+    ) -> Option<crate::prediction_market_types::MarketOutcome> {
+        crate::prediction_market::get_outcome_details(&env, market_id, outcome_id)
+    }
+
+    /// Get a user's bet details
+    pub fn get_user_bet(
+        env: Env,
+        market_id: u32,
+        outcome_id: u32,
+        bettor: Address,
+    ) -> Option<crate::prediction_market_types::Bet> {
+        crate::prediction_market::get_bet_details(&env, market_id, outcome_id, &bettor)
+    }
 }
