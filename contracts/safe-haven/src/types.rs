@@ -224,3 +224,14 @@ pub struct SponsorshipEligibility {
     /// Amount available for this user today
     pub available_today: i128,
 }
+
+/// Lockdown history entry to track emergency lockdowns
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LockdownEntry {
+    pub activated_at: u64,
+    pub deactivated_at: Option<u64>,
+    pub admin: Address,
+    pub reason: String,
+    pub duration_secs: Option<u64>,
+}
