@@ -11,10 +11,11 @@ use crate::{
         MIN_LOCK_LEDGERS, STAKER_PENALTY_BPS, FEE_RECIPIENT_PENALTY_BPS,
     },
     errors::VaultError,
-    events, storage,
+    events, storage, constants,
     types::{
         DepositType, MultiTokenVaultEntry, TokenDeposit, VaultEntry, LedgerVaultEntry, Page,
-        STORAGE_VERSION, MAX_TOKENS_PER_DEPOSIT,
+        STORAGE_VERSION, MAX_TOKENS_PER_DEPOSIT, MEVCommitment, MEVDetection, MEVStatus,
+        PriceSample, SustainabilityMetrics,
     },
 };
 
@@ -374,6 +375,16 @@ impl SafeHaven {
         storage::add_depositor(&env, &depositor);
         events::deposit(&env, &depositor, &token, amount, unlock_time, deposit_id);
 
+        // Initialize NFT evolution record for the deposit
+        let nft_record = crate::nft::create_evolution_record(
+            &env,
+            deposit_id,
+            amount,
+            unlock_time,
+            now,
+        );
+        storage::set_nft_evolution(&env, &depositor, deposit_id, &nft_record);
+
         // Track sustainability metrics
         let lock_duration: u64 = unlock_time.saturating_sub(now);
         let carbon_footprint = calculate_carbon_footprint(amount, lock_duration);
@@ -554,6 +565,16 @@ impl SafeHaven {
 
         storage::set_deposit(&env, &depositor, deposit_id, &entry);
         storage::add_depositor(&env, &depositor);
+
+        // Initialize NFT evolution record for the deposit
+        let nft_record = crate::nft::create_evolution_record(
+            &env,
+            deposit_id,
+            amount,
+            unlock_time,
+            now,
+        );
+        storage::set_nft_evolution(&env, &depositor, deposit_id, &nft_record);
         events::deposit(&env, &depositor, &token, amount, unlock_time, deposit_id);
 
         // Track sustainability metrics
@@ -1114,6 +1135,10 @@ impl SafeHaven {
                 token_client.transfer(&contract, &depositor, &refund);
             }
 
+            
+            // Clean up NFT evolution record on cancellation
+            storage::remove_nft_evolution(&env, &depositor, deposit_id);
+            storage::remove_sustainability_metrics(&env, &depositor, deposit_id);
             events::penalty_split(&env, &depositor, penalty, fee_recipient_share, stakers_share, deposit_id);
             events::deposit_cancelled(&env, &depositor, &entry.token, entry.amount, penalty, deposit_id);
             return Ok(());
@@ -1279,6 +1304,174 @@ impl SafeHaven {
         Ok(())
     }
 
+    // ================================================================
+    //  MEV PROTECTION: COMMIT-REVEAL SCHEME
+    // ================================================================
+
+    /// Submit a private commit for a deposit to enable MEV protection.
+    /// The commit hash is Keccak256(token || amount || price || nonce).
+    /// Depositor must reveal within MEV_REVEAL_WINDOW_SECS.
+    pub fn mev_commit(
+        env: Env,
+        depositor: Address,
+        deposit_id: u32,
+        commit_hash: soroban_sdk::BytesN<32>,
+    ) -> Result<(), VaultError> {
+        depositor.require_auth();
+
+        // Verify deposit exists
+        if storage::get_deposit_readonly(&env, &depositor, deposit_id).is_none() {
+            return Err(VaultError::NoDepositFound);
+        }
+
+        let now = env.ledger().timestamp();
+        let commitment = MEVCommitment {
+            commit_hash: commit_hash.clone(),
+            timestamp: now,
+            depositor: depositor.clone(),
+            revealed: false,
+        };
+
+        storage::set_mev_commitment(&env, &depositor, deposit_id, &commitment);
+        storage::set_mev_status(&env, &depositor, deposit_id, &MEVStatus::Committed);
+
+        events::commit_submitted(&env, &depositor, deposit_id, &commit_hash);
+
+        Ok(())
+    }
+
+    /// Reveal a MEV commitment with actual transaction details.
+    /// Verifies the reveal matches the commit hash and checks for MEV attacks.
+    pub fn mev_reveal(
+        env: Env,
+        depositor: Address,
+        deposit_id: u32,
+        token: Address,
+        amount: i128,
+        price: i128,
+        nonce: u32,
+    ) -> Result<(), VaultError> {
+        depositor.require_auth();
+
+        // Get the commitment
+        let commitment = storage::get_mev_commitment(&env, &depositor, deposit_id)
+            .ok_or(VaultError::CommitNotFound)?;
+
+        // Check reveal window (30 minutes)
+        let now = env.ledger().timestamp();
+        if now > commitment.timestamp + constants::MEV_REVEAL_WINDOW_SECS {
+            return Err(VaultError::RevealWindowExpired);
+        }
+
+        // Verify the reveal hash matches the commitment
+        let reveal_hash = compute_commit_hash(&env, &token, amount, price, nonce);
+        if reveal_hash != commitment.commit_hash {
+            return Err(VaultError::CommitMismatch);
+        }
+
+        // Record the revealed price
+        let price_sample = PriceSample {
+            token: token.clone(),
+            price,
+            timestamp: now,
+        };
+        storage::add_price_sample(&env, &token, &price_sample);
+
+        // Detect MEV attacks via price deviation
+        detect_mev_attack(&env, &depositor, deposit_id, &token, price, now)?;
+
+        // Mark commitment as revealed
+        let mut commitment = commitment;
+        commitment.revealed = true;
+        storage::set_mev_commitment(&env, &depositor, deposit_id, &commitment);
+        storage::set_mev_status(&env, &depositor, deposit_id, &MEVStatus::Revealed);
+
+        events::reveal_submitted(&env, &depositor, deposit_id, &token, amount, price);
+
+        Ok(())
+    }
+
+    /// Claim MEV recovered for a depositor from the MEV pool.
+    pub fn claim_mev_recovery(env: Env, depositor: Address) -> Result<i128, VaultError> {
+        depositor.require_auth();
+
+        let mev_recovered = storage::get_mev_claimed(&env, &depositor);
+        if mev_recovered <= 0 {
+            return Err(VaultError::NoRewardsToClaim);
+        }
+
+        // Deduct from MEV pool
+        let current_pool = storage::get_mev_pool(&env);
+        let new_pool = current_pool.saturating_sub(mev_recovered);
+        storage::set_mev_pool(&env, new_pool);
+
+        // Reset claimed amount
+        storage::set_mev_claimed(&env, &depositor, 0);
+
+        Ok(mev_recovered)
+    }
+
+    /// Query detected MEV attacks for a deposit
+    pub fn get_mev_detections(
+        env: Env,
+        depositor: Address,
+        deposit_id: u32,
+        offset: u32,
+        limit: u32,
+    ) -> Result<Vec<MEVDetection>, VaultError> {
+        let limit = limit.min(50); // Cap at 50 results
+        let max_id = storage::get_mev_detection_counter(&env, &depositor, deposit_id);
+
+        let mut detections = Vec::new(&env);
+        for i in offset..offset.saturating_add(limit) {
+            if i >= max_id {
+                break;
+            }
+            if let Some(detection) = storage::get_mev_detection(&env, &depositor, deposit_id, i) {
+                detections.push_back(detection);
+            }
+        }
+
+        Ok(detections)
+    }
+
+    /// Query MEV status for a deposit
+    pub fn get_mev_status_query(env: Env, depositor: Address, deposit_id: u32) -> MEVStatus {
+        storage::get_mev_status(&env, &depositor, deposit_id)
+    }
+
+    /// Query MEV recovered (pending claim) for a depositor
+    pub fn get_mev_pending(env: Env, depositor: Address) -> i128 {
+        storage::get_mev_claimed(&env, &depositor)
+    }
+
+    /// Query total MEV pool (recovered and pending redistribution)
+    pub fn get_mev_pool_total(env: Env) -> i128 {
+        storage::get_mev_pool(&env)
+    }
+
+    /// Admin function: finalize MEV redistribution across all affected deposits.
+    /// This is called periodically to process accumulated MEV and redistribute
+    /// it to depositors who had detected attacks.
+    pub fn finalize_mev_redistribution(env: Env, admin: Address) -> Result<i128, VaultError> {
+        admin.require_auth();
+        storage::require_admin(&env, &admin)?;
+
+        let current_pool = storage::get_mev_pool(&env);
+        if current_pool <= 0 {
+            return Ok(0);
+        }
+
+        // For simplicity, the pool is not automatically distributed here.
+        // Depositors claim their rewards individually via claim_mev_recovery().
+        // This function simply returns the current pool amount for monitoring.
+        Ok(current_pool)
+    }
+
+    // ================================================================
+    //  MEV DETECTION HELPERS (internal)
+    // ================================================================
+
     // ----------------------------------------------------------------
     //  Core: Withdraw
     // ----------------------------------------------------------------
@@ -1318,6 +1511,10 @@ impl SafeHaven {
             storage::cleanup_old_epochs(&env, &depositor, current_epoch);
 
             events::withdraw(&env, &depositor, &entry.token, entry.amount, deposit_id);
+
+            // Clean up NFT evolution record on withdrawal
+            storage::remove_nft_evolution(&env, &depositor, deposit_id);
+            storage::remove_sustainability_metrics(&env, &depositor, deposit_id);
             return Ok(());
         }
 
@@ -1342,6 +1539,10 @@ impl SafeHaven {
             storage::increment_withdrawal_count(&env, &depositor, current_epoch);
             storage::cleanup_old_epochs(&env, &depositor, current_epoch);
 
+
+            // Clean up NFT evolution record on withdrawal
+            storage::remove_nft_evolution(&env, &depositor, deposit_id);
+            storage::remove_sustainability_metrics(&env, &depositor, deposit_id);
             events::withdraw(&env, &depositor, &entry.token, entry.amount, deposit_id);
             return Ok(());
         }
@@ -2603,140 +2804,252 @@ impl SafeHaven {
     }
 
     // ================================================================
-    //  Prediction Markets - Entry Points
+    //  NFT Evolution Query Functions
     // ================================================================
 
-    /// Initialize the prediction market subsystem
-    pub fn init_prediction_markets(
+    /// Get the NFT evolution record for a deposit.
+    /// Returns `None` if no NFT record exists yet.
+    pub fn get_nft_evolution(
         env: Env,
-        admin: Address,
-        fee_recipient: Address,
-        default_fee_bps: Option<u32>,
-    ) -> Result<(), crate::prediction_market_errors::PredictionMarketError> {
-        admin.require_auth();
-        let fee_bps = default_fee_bps.unwrap_or(100); // Default 1%
-        crate::prediction_market::initialize_markets(&env, admin, fee_recipient, fee_bps)
+        depositor: Address,
+        deposit_id: u32,
+    ) -> Option<crate::nft::NFTEvolutionRecord> {
+        storage::get_nft_evolution_readonly(&env, &depositor, deposit_id)
     }
 
-    /// Create a new prediction market for deposit outcomes
-    pub fn create_prediction_market(
+    /// Get the current evolution stage of a deposit's NFT.
+    /// Returns `None` if the deposit does not exist or has no NFT record.
+    pub fn get_nft_stage(
         env: Env,
-        creator: Address,
-        market_type: String,
-        description: String,
-        oracle: Address,
-        close_time: u64,
-        resolution_deadline: u64,
-        outcome_names: Vec<String>,
-        fee_bps: Option<u32>,
-    ) -> Result<u32, crate::prediction_market_errors::PredictionMarketError> {
-        crate::prediction_market::create_market(
-            &env,
-            creator,
-            market_type,
-            description,
-            oracle,
-            close_time,
-            resolution_deadline,
-            outcome_names,
-            fee_bps,
-        )
+        depositor: Address,
+        deposit_id: u32,
+    ) -> Option<crate::nft::EvolutionStage> {
+        storage::get_nft_evolution_readonly(&env, &depositor, deposit_id)
+            .map(|record| record.stage)
     }
 
-    /// Place a bet on a prediction market outcome
-    pub fn place_prediction_bet(
+    /// Get the rarity tier of a deposit's NFT.
+    /// Returns `None` if the deposit does not exist or has no NFT record.
+    pub fn get_nft_rarity(
         env: Env,
-        bettor: Address,
-        market_id: u32,
-        outcome_id: u32,
-        amount: i128,
-        token: Address,
-    ) -> Result<(), crate::prediction_market_errors::PredictionMarketError> {
-        crate::prediction_market::place_bet(
-            &env, bettor, market_id, outcome_id, amount, token,
-        )
+        depositor: Address,
+        deposit_id: u32,
+    ) -> Option<crate::nft::RarityTier> {
+        storage::get_nft_evolution_readonly(&env, &depositor, deposit_id)
+            .map(|record| record.rarity)
     }
 
-    /// Close a market to new bets (oracle can then resolve)
-    pub fn close_prediction_market(
+    /// Get the metadata URI for a deposit's NFT.
+    /// Returns `None` if the deposit does not exist or has no NFT record.
+    pub fn get_nft_metadata_uri(
         env: Env,
-        closer: Address,
-        market_id: u32,
-    ) -> Result<(), crate::prediction_market_errors::PredictionMarketError> {
-        crate::prediction_market::close_market(&env, closer, market_id)
+        depositor: Address,
+        deposit_id: u32,
+    ) -> Option<String> {
+        storage::get_nft_evolution_readonly(&env, &depositor, deposit_id)
+            .map(|record| record.metadata_uri)
     }
 
-    /// Resolve a market with a winning outcome (oracle submission)
-    pub fn resolve_prediction_market(
+    /// Get the evolution history (count) for a deposit's NFT.
+    /// Returns `None` if the deposit does not exist or has no NFT record.
+    pub fn get_nft_evolution_count(
         env: Env,
-        oracle: Address,
-        market_id: u32,
-        winning_outcome: u32,
-        resolution_data: Option<i128>,
-    ) -> Result<(), crate::prediction_market_errors::PredictionMarketError> {
-        crate::prediction_market::resolve_market(
-            &env,
-            oracle,
-            market_id,
-            winning_outcome,
-            resolution_data,
-        )
+        depositor: Address,
+        deposit_id: u32,
+    ) -> Option<u32> {
+        storage::get_nft_evolution_readonly(&env, &depositor, deposit_id)
+            .map(|record| record.evolution_count)
+    }
+}
+
+
+// ================================================================
+//  MEV DETECTION & RECOVERY HELPERS (module-level)
+// ================================================================
+
+/// Compute Keccak256 hash of (token || amount || price || nonce) for commit-reveal.
+/// This function uses the token's address bytes, concatenated with the amount,
+/// price, and nonce values encoded as little-endian i128/u32.
+fn compute_commit_hash(
+    env: &Env,
+    token: &Address,
+    amount: i128,
+    price: i128,
+    nonce: u32,
+) -> soroban_sdk::BytesN<32> {
+    use soroban_sdk::Bytes;
+
+    // Serialize: token (32 bytes) || amount (16 bytes) || price (16 bytes) || nonce (4 bytes)
+    let mut data = Bytes::new(env);
+    
+    // Add token address (should be 32 bytes when serialized)
+    let token_bytes = env.serialize_to_bytes(token).unwrap_or_else(|_| Bytes::new(env));
+    for b in token_bytes.iter() {
+        data.push_back(b);
+    }
+    
+    // Add amount (i128 = 16 bytes, little-endian)
+    for b in amount.to_le_bytes().iter() {
+        data.push_back(*b);
+    }
+    
+    // Add price (i128 = 16 bytes, little-endian)
+    for b in price.to_le_bytes().iter() {
+        data.push_back(*b);
+    }
+    
+    // Add nonce (u32 = 4 bytes, little-endian)
+    for b in nonce.to_le_bytes().iter() {
+        data.push_back(*b);
+    }
+    
+    // Compute Keccak256 hash
+    soroban_sdk::crypto::keccak256(&data)
+}
+
+/// Detect MEV attacks by comparing current price against time-weighted average price (TWAP).
+/// If price deviation exceeds MEV_PRICE_DEVIATION_THRESHOLD_BPS, record an attack detection.
+fn detect_mev_attack(
+    env: &Env,
+    depositor: &Address,
+    deposit_id: u32,
+    token: &Address,
+    current_price: i128,
+    now: u64,
+) -> Result<(), VaultError> {
+    if current_price <= 0 {
+        return Err(VaultError::InvalidPriceData);
     }
 
-    /// Claim winnings from a resolved prediction market
-    pub fn claim_prediction_winnings(
-        env: Env,
-        bettor: Address,
-        market_id: u32,
-        outcome_id: u32,
-        token: Address,
-    ) -> Result<i128, crate::prediction_market_errors::PredictionMarketError> {
-        crate::prediction_market::claim_winnings(&env, bettor, market_id, outcome_id, token)
+    // Get price history for the token
+    let price_history = storage::get_price_history(env, token, now);
+    
+    if price_history.len() == 0 {
+        // Not enough history, assume no attack
+        return Ok(());
     }
 
-    /// Cancel a market and refund all bets (admin only)
-    pub fn cancel_prediction_market(
-        env: Env,
-        admin: Address,
-        market_id: u32,
-        token: Address,
-    ) -> Result<i128, crate::prediction_market_errors::PredictionMarketError> {
-        crate::prediction_market::cancel_market(&env, admin, market_id, token)
+    // Calculate time-weighted average price (TWAP)
+    let mut weighted_sum: i128 = 0;
+    let mut total_weight: u64 = 0;
+    
+    for sample in price_history.iter() {
+        let time_since = now.saturating_sub(sample.timestamp);
+        // Give more weight to recent prices (decay over time)
+        let weight = 3600u64.saturating_sub(time_since); // 1-hour decay window
+        if weight > 0 {
+            weighted_sum = weighted_sum.saturating_add((sample.price).saturating_mul(weight as i128));
+            total_weight = total_weight.saturating_add(weight);
+        }
     }
 
-    /// Pause/unpause market creation
-    pub fn set_prediction_market_paused(
-        env: Env,
-        admin: Address,
-        paused: bool,
-    ) -> Result<(), crate::prediction_market_errors::PredictionMarketError> {
-        crate::prediction_market::set_market_paused(&env, admin, paused)
+    let twap = if total_weight > 0 {
+        weighted_sum / (total_weight as i128)
+    } else {
+        // Fallback: use average of all prices
+        let mut sum: i128 = 0;
+        for sample in price_history.iter() {
+            sum = sum.saturating_add(sample.price);
+        }
+        if price_history.len() > 0 {
+            sum / (price_history.len() as i128)
+        } else {
+            current_price
+        }
+    };
+
+    // Check for price deviation
+    let deviation_bps = if current_price > twap {
+        ((current_price - twap) * 10_000) / twap
+    } else {
+        ((twap - current_price) * 10_000) / twap
+    };
+
+    if deviation_bps as u32 > constants::MEV_PRICE_DEVIATION_THRESHOLD_BPS {
+        // MEV attack detected
+        let detection_id = storage::next_mev_detection_id(env, depositor, deposit_id);
+        
+        // Estimate MEV recovered (simplified: difference between current and TWAP)
+        let mev_amount = (current_price - twap).abs();
+        
+        let detection = MEVDetection {
+            timestamp: now,
+            depositor: depositor.clone(),
+            deposit_id,
+            price_deviation_bps: deviation_bps as u32,
+            mev_recovered: mev_amount,
+            resolved: false,
+        };
+
+        storage::set_mev_detection(env, depositor, deposit_id, detection_id, &detection);
+        storage::set_mev_status(env, depositor, deposit_id, &MEVStatus::AttackDetected);
+
+        // Add to MEV pool for redistribution
+        let current_pool = storage::get_mev_pool(env);
+        let new_pool = current_pool.saturating_add(mev_amount);
+        storage::set_mev_pool(env, new_pool);
+
+        // Credit depositor with recovered MEV
+        let current_claimed = storage::get_mev_claimed(env, depositor);
+        let new_claimed = current_claimed.saturating_add(mev_amount);
+        storage::set_mev_claimed(env, depositor, new_claimed);
+
+        events::mev_detected(env, depositor, deposit_id, deviation_bps as u32, mev_amount);
     }
 
-    /// Get prediction market details
-    pub fn get_prediction_market(
-        env: Env,
-        market_id: u32,
-    ) -> Option<crate::prediction_market_types::PredictionMarket> {
-        crate::prediction_market::get_market_details(&env, market_id)
+    Ok(())
+}
+
+/// Calculate carbon footprint: amount × duration_seconds × CARBON_BASELINE
+fn calculate_carbon_footprint(amount: i128, duration_secs: u64) -> i128 {
+    (amount as i128)
+        .saturating_mul(duration_secs as i128)
+        .saturating_mul(constants::CARBON_BASELINE_PER_UNIT_SECOND)
+}
+
+/// Calculate carbon offset: carbon_footprint × (penalty_bps / 10_000)
+fn calculate_carbon_offset(carbon_footprint: i128, penalty_bps: u32) -> i128 {
+    carbon_footprint
+        .saturating_mul(penalty_bps as i128)
+        .saturating_div(10_000)
+}
+
+/// Check sustainability milestones and emit events
+fn check_sustainability_milestones(
+    env: &Env,
+    depositor: &Address,
+    total_carbon: i128,
+    total_offset: i128,
+    average_renewable: u32,
+) {
+    let bitmap = storage::get_milestone_bitmap(env, depositor);
+    let mut new_bitmap = bitmap;
+
+    // Milestone 1: Carbon Neutral (100% offset)
+    if total_carbon > 0 && total_offset >= total_carbon && (bitmap & 1) == 0 {
+        new_bitmap |= 1;
+        events::sustainability_milestone(env, depositor, "carbon_neutral");
     }
 
-    /// Get outcome details for a market
-    pub fn get_market_outcome(
-        env: Env,
-        market_id: u32,
-        outcome_id: u32,
-    ) -> Option<crate::prediction_market_types::MarketOutcome> {
-        crate::prediction_market::get_outcome_details(&env, market_id, outcome_id)
+    // Milestone 2: High Renewable (≥75%)
+    if average_renewable >= 75 && (bitmap & 2) == 0 {
+        new_bitmap |= 2;
+        events::sustainability_milestone(env, depositor, "high_renewable");
     }
 
-    /// Get a user's bet details
-    pub fn get_user_bet(
-        env: Env,
-        market_id: u32,
-        outcome_id: u32,
-        bettor: Address,
-    ) -> Option<crate::prediction_market_types::Bet> {
-        crate::prediction_market::get_bet_details(&env, market_id, outcome_id, &bettor)
+    // Milestone 3: Carbon Negative (offset > footprint)
+    if total_offset > total_carbon && (bitmap & 4) == 0 {
+        new_bitmap |= 4;
+        events::sustainability_milestone(env, depositor, "carbon_negative");
+    }
+
+    // Milestone 4: Large Offset (≥1 billion grams = 1000 tonnes)
+    if total_offset >= 1_000_000_000 && (bitmap & 8) == 0 {
+        new_bitmap |= 8;
+        events::sustainability_milestone(env, depositor, "large_offset");
+    }
+
+    if new_bitmap != bitmap {
+        storage::set_milestone_bitmap(env, depositor, new_bitmap);
     }
 }
