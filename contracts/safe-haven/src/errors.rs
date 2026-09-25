@@ -31,4 +31,10 @@ pub enum VaultError {
     InvalidCompoundFrequency = 19,
     /// The emergency-withdrawal circuit-breaker threshold would be exceeded.
     EmergencyWithdrawalLimitExceeded = 20,
+    InvalidSubscriptionParams = 21,
+    NoSubscriptionFound = 22,
+    SubscriptionCancelled = 23,
+    SubscriptionCompleted = 24,
+    SubscriptionNotDue = 25,
+    SubscriptionPaused = 26,
 }

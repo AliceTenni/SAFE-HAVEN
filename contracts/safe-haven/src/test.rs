@@ -4157,6 +4157,45 @@ fn test_get_subscription_ids_returns_all() {
     assert_eq!(ids.get(2).unwrap(), 2);
 }
 
+#[test]
+fn test_subscription_can_be_paused_and_resumed() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    let sub_id = create_default_subscription(&vault, &env, &alice, &token);
+
+    vault.pause_subscription(&alice, &sub_id);
+    let paused = vault.get_subscription(&alice, &sub_id).unwrap();
+    assert!(paused.paused);
+    assert_eq!(
+        vault.try_execute_subscription(&alice, &sub_id),
+        Err(Ok(VaultError::SubscriptionPaused))
+    );
+
+    vault.resume_subscription(&alice, &sub_id);
+    let resumed = vault.get_subscription(&alice, &sub_id).unwrap();
+    assert!(!resumed.paused);
+    vault.execute_subscription(&alice, &sub_id);
+}
+
+#[test]
+fn test_subscription_history_and_statistics_track_executions() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    let sub_id = create_default_subscription(&vault, &env, &alice, &token);
+
+    let first_deposit_id = vault.execute_subscription(&alice, &sub_id);
+    advance_time(&env, 121);
+    let second_deposit_id = vault.execute_subscription(&alice, &sub_id);
+
+    let history = vault.get_subscription_history(&alice, &sub_id);
+    assert_eq!(history.len(), 2);
+    assert_eq!(history.get(0).unwrap().deposit_id, first_deposit_id);
+    assert_eq!(history.get(1).unwrap().deposit_id, second_deposit_id);
+
+    let stats = vault.get_subscription_stats(&alice, &sub_id);
+    assert_eq!(stats.deposit_count, 2);
+    assert_eq!(stats.total_amount, 2_000);
+    assert!(stats.last_execution_time > 0);
+}
+
 // ================================================================
 //  Issue #334 — Deposit insurance pool tests
 // ================================================================

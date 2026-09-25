@@ -95,6 +95,11 @@ pub enum VaultKey {
     EmergencyWithdrawalPerLedger(u32),
     /// Historical circuit-breaker activations.
     CircuitBreakerHistory,
+    SubscriptionCounter(Address),
+    Subscription(Address, u32),
+    SubscriptionIds(Address),
+    SubscriptionHistory(Address, u32),
+    SubscriptionStats(Address, u32),
 }
 
 #[contracttype]
@@ -103,6 +108,38 @@ pub struct CircuitBreakerActivation {
     pub ledger: u32,
     pub amount: i128,
     pub threshold: i128,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DepositSubscription {
+    pub depositor: Address,
+    pub token: Address,
+    pub amount: i128,
+    pub interval_secs: u64,
+    pub total_count: u32,
+    pub executed_count: u32,
+    pub lock_duration_secs: u64,
+    pub penalty_bps: u32,
+    pub next_execution_time: u64,
+    pub paused: bool,
+    pub cancelled: bool,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SubscriptionExecution {
+    pub deposit_id: u32,
+    pub amount: i128,
+    pub executed_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SubscriptionStats {
+    pub deposit_count: u32,
+    pub total_amount: i128,
+    pub last_execution_time: u64,
 }
 
 #[contracttype]
@@ -184,9 +221,3 @@ pub struct StakerEntry {
 }
 
 /// Deposit type indicator — distinguishes between timestamp-based and ledger-based deposits
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum DepositType {
-    TimeBased,
-    LedgerBased,
-}

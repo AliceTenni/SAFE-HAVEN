@@ -13,7 +13,7 @@ use crate::{
     errors::VaultError,
     events, storage,
     types::{
-        CircuitBreakerActivation, DepositType, MultiTokenVaultEntry, TokenDeposit, VaultEntry,
+        CircuitBreakerActivation, DepositSubscription, DepositType, MultiTokenVaultEntry, SubscriptionExecution, SubscriptionStats, TokenDeposit, VaultEntry,
         LedgerVaultEntry, Page, STORAGE_VERSION, MAX_EMERGENCY_WITHDRAWAL_PER_LEDGER,
         MAX_TOKENS_PER_DEPOSIT,
     },
@@ -2379,7 +2379,7 @@ impl SafeHaven {
         let sub_id = storage::next_subscription_id(&env, &depositor);
         let now = env.ledger().timestamp();
 
-        let sub = RecurringDeposit {
+        let sub = DepositSubscription {
             depositor: depositor.clone(),
             token: token.clone(),
             amount,
@@ -2390,6 +2390,7 @@ impl SafeHaven {
             penalty_bps,
             // First execution is due immediately.
             next_execution_time: now,
+            paused: false,
             cancelled: false,
         };
 
@@ -2405,6 +2406,28 @@ impl SafeHaven {
         );
 
         Ok(sub_id)
+    }
+
+    pub fn subscribe(
+        env: Env,
+        depositor: Address,
+        token: Address,
+        amount: i128,
+        interval_secs: u64,
+        total_count: u32,
+        lock_duration_secs: u64,
+        penalty_bps: u32,
+    ) -> Result<u32, VaultError> {
+        Self::create_subscription(
+            env,
+            depositor,
+            token,
+            amount,
+            interval_secs,
+            total_count,
+            lock_duration_secs,
+            penalty_bps,
+        )
     }
 
     /// Cancels an active subscription.
@@ -2425,12 +2448,26 @@ impl SafeHaven {
         if sub.cancelled {
             return Err(VaultError::SubscriptionCancelled);
         }
+
+        if sub.paused {
+            return Err(VaultError::SubscriptionPaused);
+        }
         if sub.executed_count >= sub.total_count {
             return Err(VaultError::SubscriptionCompleted);
         }
 
         sub.cancelled = true;
         storage::set_subscription(&env, &depositor, sub_id, &sub);
+        storage::record_subscription_execution(&env, &depositor, sub_id, &SubscriptionExecution {
+            deposit_id,
+            amount: sub.amount,
+            executed_at: now,
+        });
+        storage::set_subscription_stats(&env, &depositor, sub_id, &SubscriptionStats {
+            deposit_count: sub.executed_count,
+            total_amount: sub.amount.saturating_mul(sub.executed_count as i128),
+            last_execution_time: now,
+        });
 
         events::subscription_cancelled(&env, &depositor, sub_id, sub.executed_count);
         Ok(())
@@ -2491,6 +2528,8 @@ impl SafeHaven {
             unlock_time,
             depositor: depositor.clone(),
             penalty_bps: sub.penalty_bps,
+            compound_frequency_secs: 0,
+            last_accrual_timestamp: now,
         };
         storage::set_deposit(&env, &depositor, deposit_id, &entry);
         storage::add_depositor(&env, &depositor);
@@ -2513,13 +2552,45 @@ impl SafeHaven {
         Ok(deposit_id)
     }
 
-    /// Returns the `RecurringDeposit` struct for the given `(depositor, sub_id)`,
+    pub fn pause_subscription(env: Env, depositor: Address, sub_id: u32) -> Result<(), VaultError> {
+        depositor.require_auth();
+        let mut sub = storage::get_subscription(&env, &depositor, sub_id).ok_or(VaultError::NoSubscriptionFound)?;
+        if sub.cancelled { return Err(VaultError::SubscriptionCancelled); }
+        if sub.executed_count >= sub.total_count { return Err(VaultError::SubscriptionCompleted); }
+        if sub.paused { return Err(VaultError::SubscriptionPaused); }
+        sub.paused = true;
+        storage::set_subscription(&env, &depositor, sub_id, &sub);
+        events::subscription_paused(&env, &depositor, sub_id);
+        Ok(())
+    }
+
+    pub fn resume_subscription(env: Env, depositor: Address, sub_id: u32) -> Result<(), VaultError> {
+        depositor.require_auth();
+        let mut sub = storage::get_subscription(&env, &depositor, sub_id).ok_or(VaultError::NoSubscriptionFound)?;
+        if sub.cancelled { return Err(VaultError::SubscriptionCancelled); }
+        if sub.executed_count >= sub.total_count { return Err(VaultError::SubscriptionCompleted); }
+        if !sub.paused { return Ok(()); }
+        sub.paused = false;
+        storage::set_subscription(&env, &depositor, sub_id, &sub);
+        events::subscription_resumed(&env, &depositor, sub_id);
+        Ok(())
+    }
+
+    pub fn get_subscription_history(env: Env, depositor: Address, sub_id: u32) -> Vec<SubscriptionExecution> {
+        storage::get_subscription_history(&env, &depositor, sub_id)
+    }
+
+    pub fn get_subscription_stats(env: Env, depositor: Address, sub_id: u32) -> SubscriptionStats {
+        storage::get_subscription_stats(&env, &depositor, sub_id)
+    }
+
+    /// Returns the `DepositSubscription` struct for the given `(depositor, sub_id)`,
     /// or `None` if not found.
     pub fn get_subscription(
         env: Env,
         depositor: Address,
         sub_id: u32,
-    ) -> Option<RecurringDeposit> {
+    ) -> Option<DepositSubscription> {
         storage::get_subscription_readonly(&env, &depositor, sub_id)
     }
 

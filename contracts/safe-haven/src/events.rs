@@ -218,3 +218,43 @@ pub fn interest_accrued(
     env.events()
         .publish(topics, (deposit_id, old_amount, new_amount));
 }
+
+pub fn subscription_created(
+    env: &Env,
+    depositor: &Address,
+    token: &Address,
+    subscription_id: u32,
+    amount: i128,
+    interval_secs: u64,
+    total_count: u32,
+) {
+    let topics = (Symbol::new(env, "SubscriptionCreated"), depositor.clone(), token.clone());
+    env.events().publish(topics, (subscription_id, amount, interval_secs, total_count));
+}
+
+pub fn subscription_executed(
+    env: &Env,
+    depositor: &Address,
+    token: &Address,
+    subscription_id: u32,
+    deposit_id: u32,
+    executed_count: u32,
+) {
+    let topics = (Symbol::new(env, "DepositAutoCreated"), depositor.clone(), token.clone());
+    env.events().publish(topics, (subscription_id, deposit_id, executed_count));
+}
+
+pub fn subscription_paused(env: &Env, depositor: &Address, subscription_id: u32) {
+    let topics = (Symbol::new(env, "SubscriptionPaused"), depositor.clone());
+    env.events().publish(topics, subscription_id);
+}
+
+pub fn subscription_resumed(env: &Env, depositor: &Address, subscription_id: u32) {
+    let topics = (Symbol::new(env, "SubscriptionResumed"), depositor.clone());
+    env.events().publish(topics, subscription_id);
+}
+
+pub fn subscription_cancelled(env: &Env, depositor: &Address, subscription_id: u32, executed_count: u32) {
+    let topics = (Symbol::new(env, "SubscriptionCancelled"), depositor.clone());
+    env.events().publish(topics, (subscription_id, executed_count));
+}
