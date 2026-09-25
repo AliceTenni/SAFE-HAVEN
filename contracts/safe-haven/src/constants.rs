@@ -32,3 +32,8 @@ pub const STAKER_PENALTY_BPS: u32 = 7_000;
 
 /// Fee recipient penalty split: percentage of penalties allocated to fee recipient (30% = 3000 basis points)
 pub const FEE_RECIPIENT_PENALTY_BPS: u32 = 3_000;
+
+/// Community governance voting window; proposals remain open for ~3 days.
+pub const GOVERNANCE_VOTING_PERIOD_SECS: u64 = 3 * 24 * 60 * 60;
+/// Timelock applied after voting before governance actions can execute.
+pub const GOVERNANCE_TIMELOCK_SECS: u64 = 24 * 60 * 60;

@@ -72,7 +72,10 @@ use crate::{
     constants::MIN_LOCK_LEDGERS,
     contract::{SafeHaven, SafeHavenClient},
     errors::VaultError,
-    types::{DepositType, VaultEntry, VaultKey, MAX_DEPOSIT_AMOUNT, MAX_LOCK_DURATION_SECS},
+    types::{
+        DepositType, GovernanceMode, ProposalType, VaultEntry, VaultKey, MAX_DEPOSIT_AMOUNT,
+        MAX_LOCK_DURATION_SECS,
+    },
 };
 
 fn setup() -> (
@@ -391,6 +394,28 @@ fn test_admin_governance_requires_admin_and_prevents_double_vote() {
         vault.try_execute_proposal(&proposal_id),
         Err(Ok(VaultError::ProposalAlreadyExecuted))
     );
+}
+
+#[test]
+fn test_parameter_change_governance_executes_max_deposit_update() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    let bob: Address = Address::generate(&env);
+    StellarAssetClient::new(&env, &token).mint(&alice, &1_000);
+    StellarAssetClient::new(&env, &token).mint(&bob, &2_000);
+
+    let unlock_time = env.ledger().timestamp() + 3600;
+    vault.deposit(&alice, &token, &1_000, &unlock_time, &0);
+    vault.deposit(&bob, &token, &2_000, &unlock_time, &0);
+
+    let proposal_id = vault.propose_change(&alice, &GovernanceMode::CommunityVote, &ProposalType::MaxDeposit, &5_000);
+    assert_eq!(vault.vote(&proposal_id, &alice, &true), 1_000);
+    assert_eq!(vault.vote(&proposal_id, &bob, &false), 2_000);
+
+    advance_time(&env, 86_400 + 86_400);
+    vault.execute_proposal(&proposal_id);
+
+    let (max_deposit, _max_lock) = vault.get_constants();
+    assert_eq!(max_deposit, 5_000);
 }
 
 // ================================================================

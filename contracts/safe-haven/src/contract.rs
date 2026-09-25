@@ -13,8 +13,10 @@ use crate::{
     errors::VaultError,
     events, pq, storage,
     types::{
-        DepositType, IdentityLink, MultiTokenVaultEntry, QuantumSafePayload, TokenDeposit, VaultEntry, LedgerVaultEntry, Page,
-        STORAGE_VERSION, MAX_TOKENS_PER_DEPOSIT,
+        DepositType, GovernanceAction, GovernanceMode, GovernanceProposal, IdentityLink,
+        MultiTokenVaultEntry, ProposalType, QuantumSafePayload, TokenDeposit, UpgradeProposal,
+        UpgradeStatus, VaultEntry, LedgerVaultEntry, Page, STORAGE_VERSION,
+        MAX_TOKENS_PER_DEPOSIT,
     },
 };
 
@@ -1959,6 +1961,45 @@ impl SafeHaven {
     //  Governance: proposal, weighted voting, and timelocked execution
     // ----------------------------------------------------------------
 
+    pub fn propose_change(
+        env: Env,
+        proposer: Address,
+        mode: GovernanceMode,
+        proposal_type: ProposalType,
+        value: i128,
+    ) -> Result<u32, VaultError> {
+        proposer.require_auth();
+        if matches!(mode, GovernanceMode::AdminVote) {
+            storage::require_admin(&env, &proposer)?;
+        }
+
+        let created_at = env.ledger().timestamp();
+        let proposal_id = storage::next_proposal_id(&env);
+        let action = match proposal_type {
+            ProposalType::Pause => GovernanceAction::Pause,
+            ProposalType::MaxDeposit => GovernanceAction::SetMaxDeposit(value),
+            ProposalType::MaxLockDuration => GovernanceAction::SetMaxLockSecs(value as u64),
+            ProposalType::FeeRate => GovernanceAction::SetFeeRate(value),
+            ProposalType::FeatureFlag => GovernanceAction::ToggleFeature(value != 0),
+        };
+
+        storage::set_governance_proposal(&env, proposal_id, &GovernanceProposal {
+            proposer: proposer.clone(),
+            action,
+            mode,
+            created_at,
+            voting_ends_at: created_at.saturating_add(crate::constants::GOVERNANCE_VOTING_PERIOD_SECS),
+            executable_at: created_at
+                .saturating_add(crate::constants::GOVERNANCE_VOTING_PERIOD_SECS)
+                .saturating_add(crate::constants::GOVERNANCE_TIMELOCK_SECS),
+            for_votes: 0,
+            against_votes: 0,
+            executed: false,
+        });
+        events::proposal_created(&env, proposal_id, &proposer);
+        Ok(proposal_id)
+    }
+
     pub fn propose_pause(env: Env, proposer: Address, mode: GovernanceMode) -> Result<u32, VaultError> {
         proposer.require_auth();
         if matches!(mode, GovernanceMode::AdminVote) {
@@ -2033,10 +2074,21 @@ impl SafeHaven {
         }
         match proposal.action {
             GovernanceAction::Pause => storage::set_paused(&env, true),
+            GovernanceAction::SetMaxDeposit(value) => storage::set_max_deposit(&env, value),
+            GovernanceAction::SetMaxLockSecs(value) => storage::set_max_lock_secs(&env, value),
+            GovernanceAction::SetFeeRate(_value) => {},
+            GovernanceAction::ToggleFeature(enabled) => {
+                if enabled {
+                    storage::set_paused(&env, false);
+                }
+            }
+            GovernanceAction::SetFeeRecipient(recipient) => {
+                storage::set_fee_recipient(&env, &recipient);
+            }
         }
         proposal.executed = true;
         storage::set_governance_proposal(&env, proposal_id, &proposal);
-        events::governance_executed(&env, proposal_id);
+        events::proposal_executed(&env, proposal_id);
         Ok(())
     }
 

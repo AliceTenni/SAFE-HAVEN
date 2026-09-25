@@ -17,25 +17,11 @@ pub const INSURANCE_POOL_BPS: u32 = 500; // 5% in basis points
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum DepositType {
-    TimeBased,
-    LedgerBased,
-}
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DepositRequest {
     pub token: Address,
     pub amount: i128,
     pub unlock_time: u64,
     pub penalty_bps: u32,
-}
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum DepositType {
-    TimeBased,
-    LedgerBased,
 }
 
 #[contracttype]
@@ -74,6 +60,10 @@ pub enum VaultKey {
     ProposalCounter,
     GovernanceProposal(u32),
     GovernanceVote(u32, Address),
+    NextUpgradeId,
+    UpgradeProposal(u32),
+    UpgradeVote(u32, Address),
+    UpgradeVeto(u32, Address),
     /// Persists the schema version written by the last `migrate()` call (or 1
     /// for contracts that were initialized before versioning was introduced).
     StorageVersion,
@@ -95,6 +85,76 @@ pub enum VaultKey {
     QuantumSafeMetadata(Address, u32),
     /// Privacy-preserving identity association for a deposit.
     Identity(Address, u32),
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum UpgradeStatus {
+    Review,
+    Voting,
+    Approved,
+    Executed,
+    Vetoed,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UpgradeProposal {
+    pub id: u32,
+    pub proposer: Address,
+    pub old_version: String,
+    pub new_version: String,
+    pub diff_url: String,
+    pub audit_url: String,
+    pub review_url: String,
+    pub wasm_hash: BytesN<32>,
+    pub status: UpgradeStatus,
+    pub approval_votes: u32,
+    pub rejection_votes: u32,
+    pub veto_votes: u32,
+    pub approved_at: Option<u64>,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum GovernanceMode {
+    AdminVote,
+    CommunityVote,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ProposalType {
+    Pause,
+    MaxDeposit,
+    MaxLockDuration,
+    FeeRate,
+    FeatureFlag,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum GovernanceAction {
+    Pause,
+    SetMaxDeposit(i128),
+    SetMaxLockSecs(u64),
+    SetFeeRate(i128),
+    ToggleFeature(bool),
+    SetFeeRecipient(Address),
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GovernanceProposal {
+    pub proposer: Address,
+    pub action: GovernanceAction,
+    pub mode: GovernanceMode,
+    pub created_at: u64,
+    pub voting_ends_at: u64,
+    pub executable_at: u64,
+    pub for_votes: i128,
+    pub against_votes: i128,
+    pub executed: bool,
 }
 
 /// A verified decentralized identity association for a deposit.
@@ -195,12 +255,4 @@ pub struct Page {
 pub struct StakerEntry {
     pub staker: Address,
     pub stake_amount: i128,
-}
-
-/// Deposit type indicator — distinguishes between timestamp-based and ledger-based deposits
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum DepositType {
-    TimeBased,
-    LedgerBased,
 }
