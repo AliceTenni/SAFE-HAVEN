@@ -1,4 +1,4 @@
-use soroban_sdk::{contracttype, Address, Vec};
+use soroban_sdk::{contracttype, Address, Bytes, BytesN, String, Vec};
 
 pub const MAX_DEPOSIT_AMOUNT: i128 = 1_000_000_000_000_000;
 pub const MAX_LOCK_DURATION_SECS: u64 = 157_788_000;
@@ -6,6 +6,8 @@ pub const MIN_LOCK_DURATION_SECS: u64 = 60;
 
 /// Maximum number of tokens allowed in a single multi-token deposit (issue #330).
 pub const MAX_TOKENS_PER_DEPOSIT: u32 = 5;
+/// Emergency withdrawals at or above this cumulative amount in one ledger trip the circuit breaker.
+pub const MAX_EMERGENCY_WITHDRAWAL_PER_LEDGER: i128 = 100_000_000;
 
 /// Current storage schema version. Bump this constant when the on-chain
 /// layout of a `contracttype` struct changes so `migrate()` can detect
@@ -17,25 +19,11 @@ pub const INSURANCE_POOL_BPS: u32 = 500; // 5% in basis points
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum DepositType {
-    TimeBased,
-    LedgerBased,
-}
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DepositRequest {
     pub token: Address,
     pub amount: i128,
     pub unlock_time: u64,
     pub penalty_bps: u32,
-}
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum DepositType {
-    TimeBased,
-    LedgerBased,
 }
 
 #[contracttype]
@@ -74,9 +62,19 @@ pub enum VaultKey {
     ProposalCounter,
     GovernanceProposal(u32),
     GovernanceVote(u32, Address),
+    NextUpgradeId,
+    UpgradeProposal(u32),
+    UpgradeVote(u32, Address),
+    UpgradeVeto(u32, Address),
     /// Persists the schema version written by the last `migrate()` call (or 1
     /// for contracts that were initialized before versioning was introduced).
     StorageVersion,
+    /// Guards flash-loan execution against re-entrant nested calls.
+    FlashLoanGuard,
+    /// Active borrower state for a single-token flash loan.
+    FlashLoanState(Address, Address),
+    /// Fee share owed to a depositor for a token after flash-loan repayment.
+    FlashLoanFeeBalance(Address, Address),
     /// Staker entry: maps staker address to their stake amount
     Staker(Address),
     /// List of all registered stakers
@@ -89,12 +87,8 @@ pub enum VaultKey {
     RewardsPool,
     /// Rewards claimed by a staker (track cumulative for auditing)
     StakerRewardsClaimed(Address),
-    /// Time-lock proof for a deposit (issue #xyz)
-    TimeLockProof(Address, u32),
-    /// Counter for proof generation per depositor (issue #xyz)
-    ProofCounter(Address),
-    /// Metadata tracking proof generation events (issue #xyz)
-    ProofMetadata(Address, u32),
+    /// NFT evolution record: maps (depositor, deposit_id) to NFTEvolutionRecord
+    NFTEvolution(Address, u32),
 }
 
 #[contracttype]
@@ -109,6 +103,22 @@ pub struct VaultEntry {
     pub compound_frequency_secs: u64,
     /// Timestamp of last compound accrual (issue #332).
     pub last_accrual_timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TaxLossHarvest {
+    pub depositor: Address,
+    pub original_token: Address,
+    pub replacement_token: Address,
+    pub original_deposit_id: u32,
+    pub replacement_deposit_id: u32,
+    pub cost_basis: i128,
+    pub current_value: i128,
+    pub realized_loss: i128,
+    pub tax_benefit: i128,
+    pub harvested_at: u64,
+    pub wash_sale_until: u64,
 }
 
 #[contracttype]
@@ -175,49 +185,110 @@ pub struct StakerEntry {
     pub stake_amount: i128,
 }
 
-/// Cryptographic proof of time-locked deposit compliance
+/// Sponsorship fund configuration and state
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct TimeLockProof {
-    /// Unique proof identifier (per depositor-deposit pair)
-    pub proof_id: u32,
-    /// The depositor who created this proof
-    pub depositor: Address,
-    /// Associated deposit ID
-    pub deposit_id: u32,
-    /// Token address of the deposited asset
-    pub token: Address,
-    /// Deposited amount
-    pub amount: i128,
-    /// Unlock time (absolute Unix timestamp)
-    pub unlock_time: u64,
-    /// Lock duration in seconds
-    pub lock_duration_secs: u64,
-    /// Timestamp when proof was generated
-    pub proof_timestamp: u64,
-    /// Cryptographic signature (hash of deposit parameters) — prevents tampering
-    /// Format: SHA256 hash of (depositor + token + amount + unlock_time + deposit_id)
-    pub proof_signature: soroban_sdk::BytesN<32>,
-    /// Expiration timestamp of the proof (for archival purposes)
-    pub proof_expiry: u64,
+pub struct SponsorshipFund {
+    /// Balance of native tokens available for sponsorship
+    pub balance: i128,
+
+    /// Address that manages the sponsorship fund (typically admin)
+    pub sponsor_address: Address,
+
+    /// Maximum tokens to sponsor per transaction
+    pub max_per_txn: i128,
+
+    /// Maximum tokens to sponsor per user per day
+    pub max_per_user_day: i128,
+
+    /// Minimum native balance required to be eligible for sponsorship (KYC-lite)
+    pub min_eligible_balance: i128,
+
+    /// Cooldown period (in seconds) between sponsored transactions per user
+    pub cooldown_seconds: u64,
+
+    /// Timestamp of last update (for tracking replenishment frequency)
+    pub last_replenished: u64,
 }
 
-/// Proof export format for off-chain verification
+/// Per-user sponsorship tracking for a specific day
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ProofExport {
-    /// Human-readable proof identifier
-    pub proof_reference: soroban_sdk::String,
-    /// JSON-compatible proof data (base64 encoded)
-    pub proof_data: soroban_sdk::String,
-    /// Export timestamp
-    pub export_timestamp: u64,
+pub struct SponsorshipUsage {
+    /// Cumulative amount sponsored to this user today
+    pub amount_used_today: i128,
+
+    /// Timestamp of the last sponsored transaction for this user
+    pub last_sponsored_time: u64,
+
+    /// Counter of sponsored transactions for this user (for sybil detection)
+    pub transaction_count: u32,
 }
 
-/// Deposit type indicator — distinguishes between timestamp-based and ledger-based deposits
+/// Result of sponsorship eligibility check
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum DepositType {
-    TimeBased,
-    LedgerBased,
+pub struct SponsorshipEligibility {
+    /// User is eligible if they meet all criteria
+    pub is_eligible: bool,
+
+    /// Reason if not eligible (empty string if eligible)
+    pub reason: soroban_sdk::String,
+
+    /// Amount available for this user today
+    pub available_today: i128,
+}
+
+/// Lockdown history entry to track emergency lockdowns
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LockdownEntry {
+    pub activated_at: u64,
+    pub deactivated_at: Option<u64>,
+    pub admin: Address,
+    pub reason: String,
+    pub duration_secs: Option<u64>,
+}
+
+// ----------------------------------------------------------------
+//  ACL — Access Control List
+// ----------------------------------------------------------------
+
+/// Granular permission types for the SAFE-HAVEN Access Control List.
+///
+/// Each variant maps to a single bit in a `u32` bitmask stored per address.
+/// The admin always bypasses ACL checks — these permissions apply to
+/// non-admin callers only.
+///
+/// # Bit layout
+/// | Permission        | Bit position | Mask value |
+/// |---|---|---|
+/// | `ViewVault`       | 0            | 0x0001 |
+/// | `Deposit`         | 1            | 0x0002 |
+/// | `Withdraw`        | 2            | 0x0004 |
+/// | `CancelDeposit`   | 3            | 0x0008 |
+/// | `Manage`          | 4            | 0x0010 |
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum PermissionType {
+    /// Allows the address to query vault entries via `get_vault` / `get_vault_batch`.
+    ViewVault = 0,
+    /// Allows the address to create deposits on behalf of themselves (`deposit`, `deposit_for`,
+    /// `deposit_by_ledger`, `multi_deposit`).
+    Deposit = 1,
+    /// Allows the address to call `withdraw` and `withdraw_to` for their own deposits.
+    Withdraw = 2,
+    /// Allows the address to call `cancel_deposit` for their own deposits.
+    CancelDeposit = 3,
+    /// Allows the address to call admin-adjacent operations such as `emergency_withdraw`,
+    /// `pause`, and `unpause`.  Typically granted only to trusted operator addresses.
+    Manage = 4,
+}
+
+impl PermissionType {
+    /// Returns the bit mask for this permission.
+    pub fn mask(self) -> u32 {
+        1u32 << (self as u32)
+    }
 }
