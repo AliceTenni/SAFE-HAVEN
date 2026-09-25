@@ -35,6 +35,10 @@ pub enum VaultKey {
     /// Persists the schema version written by the last `migrate()` call (or 1
     /// for contracts that were initialized before versioning was introduced).
     StorageVersion,
+    /// Oracle configuration mapping token address to oracle address
+    Oracle(Address),
+    /// Total balance of the volatility protection fund (reserves for value shortfalls)
+    ProtectionFundBalance,
 }
 
 #[contracttype]
@@ -45,6 +49,8 @@ pub struct VaultEntry {
     pub unlock_time: u64,
     pub depositor: Address,
     pub penalty_bps: u32,
+    /// Minimum value guarantee in native token units (optional, 0 = disabled)
+    pub min_value_guarantee: i128,
 }
 
 #[contracttype]
@@ -55,4 +61,6 @@ pub struct LedgerVaultEntry {
     pub unlock_ledger: u32,
     pub depositor: Address,
     pub penalty_bps: u32,
+    /// Minimum value guarantee in native token units (optional, 0 = disabled)
+    pub min_value_guarantee: i128,
 }

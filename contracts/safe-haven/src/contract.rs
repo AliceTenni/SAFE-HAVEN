@@ -73,6 +73,7 @@ impl SafeHaven {
         amount: i128,
         unlock_time: u64,
         penalty_bps: u32,
+        min_value_guarantee: i128,
     ) -> Result<u32, VaultError> {
         depositor.require_auth();
 
@@ -111,6 +112,11 @@ impl SafeHaven {
             return Err(VaultError::LockDurationTooShort);
         }
 
+        // If min_value_guarantee is set, verify oracle is configured for the token
+        if min_value_guarantee > 0 && storage::get_oracle(&env, &token).is_none() {
+            return Err(VaultError::OracleNotConfigured);
+        }
+
         let deposit_id = storage::next_deposit_id(&env, &depositor);
 
         let token_client = token::Client::new(&env, &token);
@@ -122,6 +128,7 @@ impl SafeHaven {
             unlock_time,
             depositor: depositor.clone(),
             penalty_bps,
+            min_value_guarantee,
         };
 
         storage::set_deposit(&env, &depositor, deposit_id, &entry);
@@ -139,6 +146,7 @@ impl SafeHaven {
         amount: i128,
         unlock_time: u64,
         penalty_bps: u32,
+        min_value_guarantee: i128,
     ) -> Result<u32, VaultError> {
         payer.require_auth();
 
@@ -177,6 +185,11 @@ impl SafeHaven {
             return Err(VaultError::LockDurationTooShort);
         }
 
+        // If min_value_guarantee is set, verify oracle is configured for the token
+        if min_value_guarantee > 0 && storage::get_oracle(&env, &token).is_none() {
+            return Err(VaultError::OracleNotConfigured);
+        }
+
         let deposit_id = storage::next_deposit_id(&env, &depositor);
 
         let token_client = token::Client::new(&env, &token);
@@ -188,6 +201,7 @@ impl SafeHaven {
             unlock_time,
             depositor: depositor.clone(),
             penalty_bps,
+            min_value_guarantee,
         };
 
         storage::set_deposit(&env, &depositor, deposit_id, &entry);
@@ -208,6 +222,7 @@ impl SafeHaven {
         amount: i128,
         unlock_ledger: u32,
         penalty_bps: u32,
+        min_value_guarantee: i128,
     ) -> Result<u32, VaultError> {
         depositor.require_auth();
 
@@ -242,6 +257,11 @@ impl SafeHaven {
             return Err(VaultError::LockDurationTooShort);
         }
 
+        // If min_value_guarantee is set, verify oracle is configured for the token
+        if min_value_guarantee > 0 && storage::get_oracle(&env, &token).is_none() {
+            return Err(VaultError::OracleNotConfigured);
+        }
+
         let deposit_id = storage::next_deposit_id(&env, &depositor);
 
         let token_client = token::Client::new(&env, &token);
@@ -253,6 +273,7 @@ impl SafeHaven {
             unlock_ledger,
             depositor: depositor.clone(),
             penalty_bps,
+            min_value_guarantee,
         };
 
         storage::set_deposit_by_ledger(&env, &depositor, deposit_id, &entry);
@@ -338,6 +359,122 @@ impl SafeHaven {
     //  Core: Withdraw
     // ----------------------------------------------------------------
 
+    /// Helper: Get oracle price for a token (placeholder that uses oracle storage)
+    /// In a real implementation, this would call an actual oracle contract.
+    /// For now, returns a mock price based on the configured oracle existence.
+    fn get_oracle_price(env: &Env, token: &Address, oracle: &Address) -> Result<i128, VaultError> {
+        // In production, this would:
+        // 1. Call the oracle contract at `oracle` address
+        // 2. Parse the response to get the price
+        // 3. Handle oracle failures
+        // For now, we return a placeholder. Tests should mock this appropriately.
+        if oracle == &Address::from_contract_id(env, &[0u8; 32]) {
+            return Err(VaultError::InvalidOracleData);
+        }
+        // Placeholder: assume price hasn't changed (use original amount as proxy)
+        Ok(1_000_000) // 1 unit of native token = 1,000,000 stroops (example)
+    }
+
+    /// Helper: Check if value guarantee is violated and handle shortfall
+    fn handle_value_guarantee(
+        env: &Env,
+        entry: &VaultEntry,
+        original_amount: i128,
+        deposit_id: u32,
+    ) -> Result<i128, VaultError> {
+        if entry.min_value_guarantee == 0 {
+            return Ok(original_amount); // No guarantee, return full amount
+        }
+
+        // Get oracle for this token
+        let oracle = storage::get_oracle(env, &entry.token)
+            .ok_or(VaultError::OracleNotConfigured)?;
+
+        // Get current price (in production, call oracle contract)
+        let _price = Self::get_oracle_price(env, &entry.token, &oracle)?;
+
+        // For this implementation, we calculate the shortfall based on the guarantee
+        // In production, you'd compute: current_value = (balance * current_price) / original_price
+        // For now, assume price hasn't changed significantly
+        let current_value = original_amount; // Simplified: assume no price change
+
+        if current_value < entry.min_value_guarantee {
+            let shortfall = entry.min_value_guarantee - current_value;
+
+            // Check if protection fund can cover the shortfall
+            let fund_balance = storage::get_protection_fund_balance(env);
+            if fund_balance < shortfall {
+                return Err(VaultError::InsufficientProtectionFund);
+            }
+
+            // Withdraw from protection fund
+            storage::withdraw_from_protection_fund(env, shortfall)?;
+
+            // Emit event that guarantee was triggered
+            events::value_guarantee_triggered(
+                env,
+                &entry.depositor,
+                &entry.token,
+                shortfall,
+                deposit_id,
+            );
+
+            // Return guaranteed minimum value
+            Ok(entry.min_value_guarantee)
+        } else {
+            Ok(current_value)
+        }
+    }
+
+    /// Helper: Check if value guarantee is violated and handle shortfall (ledger-based)
+    fn handle_value_guarantee_ledger(
+        env: &Env,
+        entry: &LedgerVaultEntry,
+        original_amount: i128,
+        deposit_id: u32,
+    ) -> Result<i128, VaultError> {
+        if entry.min_value_guarantee == 0 {
+            return Ok(original_amount); // No guarantee, return full amount
+        }
+
+        // Get oracle for this token
+        let oracle = storage::get_oracle(env, &entry.token)
+            .ok_or(VaultError::OracleNotConfigured)?;
+
+        // Get current price (in production, call oracle contract)
+        let _price = Self::get_oracle_price(env, &entry.token, &oracle)?;
+
+        // For this implementation, we calculate the shortfall based on the guarantee
+        let current_value = original_amount; // Simplified: assume no price change
+
+        if current_value < entry.min_value_guarantee {
+            let shortfall = entry.min_value_guarantee - current_value;
+
+            // Check if protection fund can cover the shortfall
+            let fund_balance = storage::get_protection_fund_balance(env);
+            if fund_balance < shortfall {
+                return Err(VaultError::InsufficientProtectionFund);
+            }
+
+            // Withdraw from protection fund
+            storage::withdraw_from_protection_fund(env, shortfall)?;
+
+            // Emit event that guarantee was triggered
+            events::value_guarantee_triggered(
+                env,
+                &entry.depositor,
+                &entry.token,
+                shortfall,
+                deposit_id,
+            );
+
+            // Return guaranteed minimum value
+            Ok(entry.min_value_guarantee)
+        } else {
+            Ok(current_value)
+        }
+    }
+
     pub fn withdraw(env: Env, depositor: Address, deposit_id: u32) -> Result<(), VaultError> {
         depositor.require_auth();
 
@@ -348,15 +485,18 @@ impl SafeHaven {
                 return Err(VaultError::FundsStillLocked);
             }
 
+            // Handle value guarantee and shortfall protection
+            let withdraw_amount = Self::handle_value_guarantee(&env, &entry, entry.amount, deposit_id)?;
+
             storage::remove_deposit(&env, &depositor, deposit_id);
             if storage::get_deposit_ids(&env, &depositor).len() == 0 {
                 storage::remove_depositor(&env, &depositor);
             }
 
             let token_client = token::Client::new(&env, &entry.token);
-            token_client.transfer(&env.current_contract_address(), &depositor, &entry.amount);
+            token_client.transfer(&env.current_contract_address(), &depositor, &withdraw_amount);
 
-            events::withdraw(&env, &depositor, &entry.token, entry.amount, deposit_id);
+            events::withdraw(&env, &depositor, &entry.token, withdraw_amount, deposit_id);
             return Ok(());
         }
 
@@ -367,15 +507,18 @@ impl SafeHaven {
                 return Err(VaultError::FundsStillLocked);
             }
 
+            // Handle value guarantee and shortfall protection
+            let withdraw_amount = Self::handle_value_guarantee_ledger(&env, &entry, entry.amount, deposit_id)?;
+
             storage::remove_deposit_by_ledger(&env, &depositor, deposit_id);
             if storage::get_deposit_ids(&env, &depositor).len() == 0 {
                 storage::remove_depositor(&env, &depositor);
             }
 
             let token_client = token::Client::new(&env, &entry.token);
-            token_client.transfer(&env.current_contract_address(), &depositor, &entry.amount);
+            token_client.transfer(&env.current_contract_address(), &depositor, &withdraw_amount);
 
-            events::withdraw(&env, &depositor, &entry.token, entry.amount, deposit_id);
+            events::withdraw(&env, &depositor, &entry.token, withdraw_amount, deposit_id);
             return Ok(());
         }
 
@@ -397,15 +540,18 @@ impl SafeHaven {
                 return Err(VaultError::FundsStillLocked);
             }
 
+            // Handle value guarantee and shortfall protection
+            let withdraw_amount = Self::handle_value_guarantee(&env, &entry, entry.amount, deposit_id)?;
+
             storage::remove_deposit(&env, &depositor, deposit_id);
             if storage::get_deposit_ids(&env, &depositor).len() == 0 {
                 storage::remove_depositor(&env, &depositor);
             }
 
             let token_client = token::Client::new(&env, &entry.token);
-            token_client.transfer(&env.current_contract_address(), &recipient, &entry.amount);
+            token_client.transfer(&env.current_contract_address(), &recipient, &withdraw_amount);
 
-            events::withdraw_to(&env, &depositor, &recipient, &entry.token, entry.amount);
+            events::withdraw_to(&env, &depositor, &recipient, &entry.token, withdraw_amount);
             return Ok(());
         }
 
@@ -416,15 +562,18 @@ impl SafeHaven {
                 return Err(VaultError::FundsStillLocked);
             }
 
+            // Handle value guarantee and shortfall protection
+            let withdraw_amount = Self::handle_value_guarantee_ledger(&env, &entry, entry.amount, deposit_id)?;
+
             storage::remove_deposit_by_ledger(&env, &depositor, deposit_id);
             if storage::get_deposit_ids(&env, &depositor).len() == 0 {
                 storage::remove_depositor(&env, &depositor);
             }
 
             let token_client = token::Client::new(&env, &entry.token);
-            token_client.transfer(&env.current_contract_address(), &recipient, &entry.amount);
+            token_client.transfer(&env.current_contract_address(), &recipient, &withdraw_amount);
 
-            events::withdraw_to(&env, &depositor, &recipient, &entry.token, entry.amount);
+            events::withdraw_to(&env, &depositor, &recipient, &entry.token, withdraw_amount);
             return Ok(());
         }
 
@@ -503,6 +652,44 @@ impl SafeHaven {
 
     pub fn is_paused(env: Env) -> bool {
         storage::is_paused(&env)
+    }
+
+    // ----------------------------------------------------------------
+    //  Admin: Oracle Configuration (volatility protection)
+    // ----------------------------------------------------------------
+
+    /// Configure an oracle for a token to enable value verification in deposits.
+    /// Only callable by the contract admin.
+    pub fn configure_oracle(
+        env: Env,
+        admin: Address,
+        token: Address,
+        oracle: Address,
+    ) -> Result<(), VaultError> {
+        admin.require_auth();
+
+        let stored_admin = storage::get_admin(&env).ok_or(VaultError::Unauthorized)?;
+        if admin != stored_admin {
+            return Err(VaultError::Unauthorized);
+        }
+
+        storage::set_oracle(&env, &token, &oracle);
+        events::oracle_configured(&env, &admin, &token, &oracle);
+        Ok(())
+    }
+
+    /// Remove the oracle configuration for a token.
+    /// Only callable by the contract admin.
+    pub fn remove_oracle(env: Env, admin: Address, token: Address) -> Result<(), VaultError> {
+        admin.require_auth();
+
+        let stored_admin = storage::get_admin(&env).ok_or(VaultError::Unauthorized)?;
+        if admin != stored_admin {
+            return Err(VaultError::Unauthorized);
+        }
+
+        storage::remove_oracle(&env, &token);
+        Ok(())
     }
 
     // ----------------------------------------------------------------
@@ -721,6 +908,64 @@ impl SafeHaven {
     /// (treat as version 0 / pre-migration).
     pub fn get_storage_version(env: Env) -> Option<u32> {
         storage::get_storage_version(&env)
+    }
+
+    // ----------------------------------------------------------------
+    //  Read-only: Volatility Protection Queries
+    // ----------------------------------------------------------------
+
+    /// Get the oracle address configured for a token.
+    /// Returns None if no oracle is configured.
+    pub fn get_oracle(env: Env, token: Address) -> Option<Address> {
+        storage::get_oracle(&env, &token)
+    }
+
+    /// Get the current balance of the volatility protection fund.
+    pub fn get_protection_fund_balance(env: Env) -> i128 {
+        storage::get_protection_fund_balance(&env)
+    }
+
+    /// Get the current value of a vault entry (for a timestamp-based deposit).
+    /// This is a simplified version that returns the vault's amount.
+    /// In a production system with real oracle integration, this would
+    /// compute: current_value = (amount * current_oracle_price) / original_price
+    pub fn get_vault_current_value(env: Env, depositor: Address, deposit_id: u32) -> Option<i128> {
+        if let Some(entry) = storage::get_deposit_readonly(&env, &depositor, deposit_id) {
+            // Simplified: return the original amount.
+            // In production, compute current value from oracle price.
+            Some(entry.amount)
+        } else {
+            None
+        }
+    }
+
+    /// Get the current value of a ledger-based vault entry.
+    /// This is a simplified version that returns the vault's amount.
+    pub fn get_ledger_vault_current_value(env: Env, depositor: Address, deposit_id: u32) -> Option<i128> {
+        if let Some(entry) = storage::get_deposit_by_ledger_readonly(&env, &depositor, deposit_id) {
+            // Simplified: return the original amount.
+            Some(entry.amount)
+        } else {
+            None
+        }
+    }
+
+    /// Get the min_value_guarantee for a timestamp-based deposit.
+    pub fn get_vault_min_guarantee(env: Env, depositor: Address, deposit_id: u32) -> Option<i128> {
+        if let Some(entry) = storage::get_deposit_readonly(&env, &depositor, deposit_id) {
+            Some(entry.min_value_guarantee)
+        } else {
+            None
+        }
+    }
+
+    /// Get the min_value_guarantee for a ledger-based deposit.
+    pub fn get_ledger_vault_min_guarantee(env: Env, depositor: Address, deposit_id: u32) -> Option<i128> {
+        if let Some(entry) = storage::get_deposit_by_ledger_readonly(&env, &depositor, deposit_id) {
+            Some(entry.min_value_guarantee)
+        } else {
+            None
+        }
     }
 
     /// Admin-only migration hook.

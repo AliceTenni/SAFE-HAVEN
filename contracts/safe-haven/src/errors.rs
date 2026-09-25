@@ -18,4 +18,8 @@ pub enum VaultError {
     ContractPaused = 12,
     VaultAlreadyUnlocked = 13,
     MissingFeeRecipient = 14,
+    OracleNotConfigured = 15,
+    InsufficientProtectionFund = 16,
+    InvalidOracleData = 17,
+    ValueDropDetected = 18,
 }
