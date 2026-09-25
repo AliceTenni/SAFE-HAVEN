@@ -1211,3 +1211,54 @@ pub fn set_milestone_bitmap(env: &Env, depositor: &Address, bitmap: u32) {
         .persistent()
         .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
 }
+
+
+// ================================================================
+//  NFT Evolution helpers
+// ================================================================
+
+/// Store an NFT evolution record for a deposit.
+pub fn set_nft_evolution(
+    env: &Env,
+    depositor: &Address,
+    deposit_id: u32,
+    record: &crate::nft::NFTEvolutionRecord,
+) {
+    let key = crate::types::VaultKey::NFTEvolution(depositor.clone(), deposit_id);
+    env.storage().persistent().set(&key, record);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
+}
+
+/// Retrieve an NFT evolution record (mutable path — extends TTL).
+pub fn get_nft_evolution(
+    env: &Env,
+    depositor: &Address,
+    deposit_id: u32,
+) -> Option<crate::nft::NFTEvolutionRecord> {
+    let key = crate::types::VaultKey::NFTEvolution(depositor.clone(), deposit_id);
+    let record: Option<crate::nft::NFTEvolutionRecord> = env.storage().persistent().get(&key);
+    if record.is_some() {
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
+    }
+    record
+}
+
+/// Retrieve an NFT evolution record (read-only — does not extend TTL).
+pub fn get_nft_evolution_readonly(
+    env: &Env,
+    depositor: &Address,
+    deposit_id: u32,
+) -> Option<crate::nft::NFTEvolutionRecord> {
+    let key = crate::types::VaultKey::NFTEvolution(depositor.clone(), deposit_id);
+    env.storage().persistent().get(&key)
+}
+
+/// Remove an NFT evolution record from storage.
+pub fn remove_nft_evolution(env: &Env, depositor: &Address, deposit_id: u32) {
+    let key = crate::types::VaultKey::NFTEvolution(depositor.clone(), deposit_id);
+    env.storage().persistent().remove(&key);
+}

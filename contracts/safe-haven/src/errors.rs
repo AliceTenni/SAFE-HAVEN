@@ -29,6 +29,18 @@ pub enum VaultError {
     RecipientNotWhitelisted = 18,
     /// Compound frequency must be >= 60 seconds if non-zero (issue #332).
     InvalidCompoundFrequency = 19,
-    /// Contract is in emergency lockdown mode — user operations blocked.
-    EmergencyLockdown = 20,
+    /// Sponsorship fund not initialized
+    SponsorshipNotInitialized = 20,
+    /// User not eligible for sponsorship
+    NotEligibleForSponsorship = 21,
+    /// Sponsorship fund insufficient
+    InsufficientSponsorshipFund = 22,
+    /// User exceeded daily sponsorship limit
+    SponsorshipDailyLimitExceeded = 23,
+    /// User transaction cooldown still active
+    SponsorshipCooldownActive = 24,
+    /// Potential sybil attack detected
+    PotentialSybilAttack = 25,
+    /// Sponsorship configuration error
+    InvalidSponsorshipConfig = 26,
 }

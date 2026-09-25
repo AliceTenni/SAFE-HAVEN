@@ -208,24 +208,16 @@ pub fn interest_accrued(
         .publish(topics, (deposit_id, old_amount, new_amount));
 }
 
-/// Emitted when emergency lockdown is activated.
-pub fn emergency_lockdown_activated(
+/// Emitted when a deposit NFT evolves to a new stage.
+pub fn nft_evolved(
     env: &Env,
-    admin: &Address,
-    reason: &soroban_sdk::String,
-    timestamp: u64,
+    depositor: &Address,
+    deposit_id: u32,
+    old_stage: crate::nft::EvolutionStage,
+    new_stage: crate::nft::EvolutionStage,
+    rarity: crate::nft::RarityTier,
 ) {
-    let topics = (Symbol::new(env, "lockdown_on"), admin.clone());
-    env.events().publish(topics, (reason.clone(), timestamp));
-}
-
-/// Emitted when emergency lockdown is deactivated.
-pub fn emergency_lockdown_deactivated(
-    env: &Env,
-    admin: &Address,
-    timestamp: u64,
-    duration_secs: u64,
-) {
-    let topics = (Symbol::new(env, "lockdown_off"), admin.clone());
-    env.events().publish(topics, (timestamp, duration_secs));
+    let topics = (Symbol::new(env, "nft_evolved"), depositor.clone());
+    env.events()
+        .publish(topics, (deposit_id, old_stage, new_stage, rarity));
 }

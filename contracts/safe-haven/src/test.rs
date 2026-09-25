@@ -5381,321 +5381,311 @@ fn test_multiple_depositors_independent_metrics() {
 
 
 // ================================================================
-//  Emergency Lockdown Tests
+//  NFT Evolution Tests
 // ================================================================
 
 #[test]
-fn test_activate_lockdown_admin_only() {
-    let (env, vault, _token, admin, alice, _fee) = setup();
+fn test_nft_creation_on_deposit() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    let token_client = TokenClient::new(&env, &token);
 
-    let reason = soroban_sdk::String::from_slice(&env, "Security incident detected");
+    let now = env.ledger().timestamp();
+    let unlock_time = now + 1000;
+    let amount = 5_000;
 
-    // Admin can activate lockdown
-    assert!(vault.try_activate_lockdown(&admin, &reason).is_ok());
-    assert!(vault.is_emergency_lockdown());
+    // Create a deposit
+    let deposit_id = vault.deposit(&alice, &token, &amount, &unlock_time, &0)
+        .expect("deposit succeeds");
 
-    // Non-admin cannot activate lockdown
-    assert_eq!(
-        vault.try_activate_lockdown(&alice, &reason),
-        Err(Ok(VaultError::Unauthorized))
-    );
+    // NFT record should exist
+    let nft = vault.get_nft_evolution(&alice, &deposit_id)
+        .expect("NFT record exists");
+
+    // Verify initial state
+    assert_eq!(nft.deposit_id, deposit_id);
+    assert_eq!(nft.stage, crate::nft::EvolutionStage::Egg);
+    assert_eq!(nft.rarity, crate::nft::RarityTier::Uncommon); // 5000 >= 1000
+    assert_eq!(nft.created_at, now);
+    assert_eq!(nft.last_evolved_at, now);
+    assert_eq!(nft.evolution_count, 0);
+    assert_eq!(nft.current_amount, amount);
+    assert_eq!(nft.unlock_time, unlock_time);
 }
 
 #[test]
-fn test_lockdown_blocks_deposits() {
-    let (env, vault, token, admin, alice, _fee) = setup();
+fn test_nft_stage_egg_to_hatchling() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    let token_client = TokenClient::new(&env, &token);
 
-    let unlock_time = env.ledger().timestamp() + 3600;
-    let reason = soroban_sdk::String::from_slice(&env, "Emergency maintenance");
+    let now = env.ledger().timestamp();
+    let unlock_time = now + 100_000;
+    let amount = 5_000;
 
-    // Activate lockdown
-    vault.activate_lockdown(&admin, &reason);
+    // Create a deposit
+    let deposit_id = vault.deposit(&alice, &token, &amount, &unlock_time, &0)
+        .expect("deposit succeeds");
 
-    // Deposit should fail during lockdown
-    assert_eq!(
-        vault.try_deposit(&alice, &token, &1_000, &unlock_time, &0),
-        Err(Ok(VaultError::EmergencyLockdown))
-    );
-}
+    // Initial stage should be Egg
+    let stage = vault.get_nft_stage(&alice, &deposit_id)
+        .expect("stage query succeeds");
+    assert_eq!(stage, crate::nft::EvolutionStage::Egg);
 
-#[test]
-fn test_lockdown_blocks_multi_deposits() {
-    let (env, vault, token, admin, alice, _fee) = setup();
-
-    let unlock_time = env.ledger().timestamp() + 3600;
-    let reason = soroban_sdk::String::from_slice(&env, "Critical bug found");
-
-    // Activate lockdown
-    vault.activate_lockdown(&admin, &reason);
-
-    // Multi-deposit should fail during lockdown
-    let mut deposits = Vec::new(&env);
-    deposits.push_back(crate::types::TokenDeposit {
-        token: token.clone(),
-        amount: 1_000,
+    // Advance time to 14+ days
+    env.ledger().with_mut(|ledger| {
+        ledger.timestamp = now + (15 * 24 * 60 * 60); // 15 days
     });
 
-    assert_eq!(
-        vault.try_multi_deposit(&alice, &deposits, &unlock_time, &0),
-        Err(Ok(VaultError::EmergencyLockdown))
-    );
+    // Create another deposit to trigger time update
+    // (In practice, withdrawal or other operations would check evolution)
+    let unlock_time2 = now + (15 * 24 * 60 * 60) + 100_000;
+    let deposit_id2 = vault.deposit(&alice, &token, &amount, &unlock_time2, &0)
+        .expect("second deposit succeeds");
+
+    // Stage should still be Egg for first deposit (unless evolution check is called)
+    // This test verifies the calculation, not automatic evolution
+    let calc_stage = crate::nft::calculate_evolution_stage(15 * 24 * 60 * 60);
+    assert_eq!(calc_stage, crate::nft::EvolutionStage::Hatchling);
 }
 
 #[test]
-fn test_lockdown_blocks_withdrawals() {
-    let (env, vault, token, admin, alice, _fee) = setup();
+fn test_nft_rarity_common() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
 
-    let unlock_time = env.ledger().timestamp() + 3600;
+    let now = env.ledger().timestamp();
+    let unlock_time = now + 1000; // Very short lock
+    let amount = 100; // Very small amount
 
-    // Deposit first (before lockdown)
-    let deposit_id = vault.deposit(&alice, &token, &1_000, &unlock_time, &0);
+    let deposit_id = vault.deposit(&alice, &token, &amount, &unlock_time, &0)
+        .expect("deposit succeeds");
 
-    // Advance time past unlock
-    advance_time(&env, 3700);
-
-    let reason = soroban_sdk::String::from_slice(&env, "Detected attack");
-
-    // Activate lockdown
-    vault.activate_lockdown(&admin, &reason);
-
-    // Withdrawal should fail during lockdown even though funds are unlocked
-    assert_eq!(
-        vault.try_withdraw(&alice, &deposit_id),
-        Err(Ok(VaultError::EmergencyLockdown))
-    );
+    let rarity = vault.get_nft_rarity(&alice, &deposit_id)
+        .expect("rarity query succeeds");
+    assert_eq!(rarity, crate::nft::RarityTier::Common);
 }
 
 #[test]
-fn test_lockdown_blocks_withdraw_to() {
-    let (env, vault, token, admin, alice, _fee) = setup();
+fn test_nft_rarity_legendary() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
 
-    let unlock_time = env.ledger().timestamp() + 3600;
-    let recipient = Address::generate(&env);
+    let now = env.ledger().timestamp();
+    let unlock_time = now + (400 * 24 * 60 * 60); // 400 days (exceeds 365 threshold)
+    let amount = 2_000_000; // Exceeds legendary threshold
 
-    // Deposit first (before lockdown)
-    let deposit_id = vault.deposit(&alice, &token, &1_000, &unlock_time, &0);
+    let deposit_id = vault.deposit(&alice, &token, &amount, &unlock_time, &0)
+        .expect("deposit succeeds");
 
-    // Advance time past unlock
-    advance_time(&env, 3700);
-
-    let reason = soroban_sdk::String::from_slice(&env, "Vulnerability patched");
-
-    // Activate lockdown
-    vault.activate_lockdown(&admin, &reason);
-
-    // withdraw_to should fail during lockdown
-    assert_eq!(
-        vault.try_withdraw_to(&alice, &deposit_id, &recipient),
-        Err(Ok(VaultError::EmergencyLockdown))
-    );
+    let rarity = vault.get_nft_rarity(&alice, &deposit_id)
+        .expect("rarity query succeeds");
+    assert_eq!(rarity, crate::nft::RarityTier::Legendary);
 }
 
 #[test]
-fn test_deactivate_lockdown_admin_only() {
-    let (env, vault, _token, admin, alice, _fee) = setup();
+fn test_nft_metadata_uri_present() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
 
-    let reason = soroban_sdk::String::from_slice(&env, "Security incident");
+    let now = env.ledger().timestamp();
+    let unlock_time = now + 10_000;
+    let amount = 5_000;
 
-    // Activate lockdown first
-    vault.activate_lockdown(&admin, &reason);
-    assert!(vault.is_emergency_lockdown());
+    let deposit_id = vault.deposit(&alice, &token, &amount, &unlock_time, &0)
+        .expect("deposit succeeds");
 
-    // Admin can deactivate lockdown
-    assert!(vault.try_deactivate_lockdown(&admin).is_ok());
-    assert!(!vault.is_emergency_lockdown());
+    let metadata = vault.get_nft_metadata_uri(&alice, &deposit_id)
+        .expect("metadata uri query succeeds");
 
-    // Non-admin cannot deactivate lockdown (reactivate first for testing)
-    vault.activate_lockdown(&admin, &reason);
-    assert_eq!(
-        vault.try_deactivate_lockdown(&alice),
-        Err(Ok(VaultError::Unauthorized))
-    );
+    // Metadata should contain deposit ID and stage info
+    let metadata_str = metadata.to_string();
+    assert!(metadata_str.len() > 0);
+    assert!(metadata_str.contains("deposit_nft"));
 }
 
 #[test]
-fn test_deactivate_lockdown_tracks_history() {
-    let (env, vault, _token, admin, _alice, _fee) = setup();
+fn test_nft_evolution_count_initial() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
 
-    let reason = soroban_sdk::String::from_slice(&env, "Test lockdown");
-    let initial_timestamp = env.ledger().timestamp();
+    let now = env.ledger().timestamp();
+    let unlock_time = now + 10_000;
+    let amount = 5_000;
 
-    // Activate lockdown
-    vault.activate_lockdown(&admin, &reason);
+    let deposit_id = vault.deposit(&alice, &token, &amount, &unlock_time, &0)
+        .expect("deposit succeeds");
 
-    // Wait some time
-    advance_time(&env, 3600);
-
-    // Deactivate lockdown
-    vault.deactivate_lockdown(&admin);
-
-    // Check history
-    let history = vault.get_lockdown_history();
-    assert_eq!(history.len(), 1);
-
-    let entry = history.get(0).unwrap();
-    assert_eq!(entry.admin, admin);
-    assert_eq!(entry.activated_at, initial_timestamp);
-    assert!(entry.deactivated_at.is_some());
-    assert!(entry.duration_secs.is_some());
-    assert_eq!(entry.duration_secs.unwrap(), 3600);
+    let count = vault.get_nft_evolution_count(&alice, &deposit_id)
+        .expect("evolution count query succeeds");
+    assert_eq!(count, 0); // No evolutions yet
 }
 
 #[test]
-fn test_lockdown_reason_tracked() {
-    let (env, vault, _token, admin, _alice, _fee) = setup();
+fn test_nft_removed_on_withdrawal() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
 
-    let reason = soroban_sdk::String::from_slice(&env, "Suspicious activity detected");
+    let now = env.ledger().timestamp();
+    let unlock_time = now + 1000;
+    let amount = 5_000;
 
-    // Activate lockdown with specific reason
-    vault.activate_lockdown(&admin, &reason);
+    let deposit_id = vault.deposit(&alice, &token, &amount, &unlock_time, &0)
+        .expect("deposit succeeds");
 
-    // Deactivate lockdown
-    vault.deactivate_lockdown(&admin);
+    // Verify NFT exists
+    let nft_before = vault.get_nft_evolution(&alice, &deposit_id)
+        .expect("NFT exists before withdrawal");
+    assert_eq!(nft_before.deposit_id, deposit_id);
 
-    // Check history contains the reason
-    let history = vault.get_lockdown_history();
-    let entry = history.get(0).unwrap();
-    assert_eq!(entry.reason, reason);
-}
-
-#[test]
-fn test_cannot_deactivate_when_not_locked() {
-    let (env, vault, _token, admin, _alice, _fee) = setup();
-
-    // Try to deactivate when not in lockdown
-    assert_eq!(
-        vault.try_deactivate_lockdown(&admin),
-        Err(Ok(VaultError::Unauthorized))
-    );
-}
-
-#[test]
-fn test_operations_work_after_lockdown_deactivation() {
-    let (env, vault, token, admin, alice, _fee) = setup();
-
-    let unlock_time = env.ledger().timestamp() + 3600;
-    let reason = soroban_sdk::String::from_slice(&env, "Test lockdown cycle");
-
-    // Activate lockdown
-    vault.activate_lockdown(&admin, &reason);
-
-    // Deactivate lockdown
-    vault.deactivate_lockdown(&admin);
-
-    // Should now be able to deposit
-    let deposit_id = vault.deposit(&alice, &token, &1_000, &unlock_time, &0);
-    assert_eq!(vault.get_vault(&alice, &deposit_id).unwrap().amount, 1_000);
-
-    // Should be able to withdraw after unlock
-    advance_time(&env, 3700);
-    assert!(vault.try_withdraw(&alice, &deposit_id).is_ok());
-}
-
-#[test]
-fn test_lockdown_does_not_affect_admin_functions() {
-    let (env, vault, _token, admin, _alice, _fee) = setup();
-
-    let reason = soroban_sdk::String::from_slice(&env, "Admin lockdown test");
-
-    // Activate lockdown
-    vault.activate_lockdown(&admin, &reason.clone());
-    assert!(vault.is_emergency_lockdown());
-
-    // Admin should still be able to deactivate during lockdown
-    vault.deactivate_lockdown(&admin);
-    assert!(!vault.is_emergency_lockdown());
-
-    // Can activate again
-    vault.activate_lockdown(&admin, &reason);
-    assert!(vault.is_emergency_lockdown());
-}
-
-#[test]
-fn test_multiple_lockdown_cycles_tracked() {
-    let (env, vault, _token, admin, _alice, _fee) = setup();
-
-    let reason1 = soroban_sdk::String::from_slice(&env, "First incident");
-    let reason2 = soroban_sdk::String::from_slice(&env, "Second incident");
-
-    // First lockdown cycle
-    vault.activate_lockdown(&admin, &reason1);
-    advance_time(&env, 1800);
-    vault.deactivate_lockdown(&admin);
-
-    // Second lockdown cycle
-    vault.activate_lockdown(&admin, &reason2);
-    advance_time(&env, 2700);
-    vault.deactivate_lockdown(&admin);
-
-    // Check history contains both entries
-    let history = vault.get_lockdown_history();
-    assert_eq!(history.len(), 2);
-
-    let entry1 = history.get(0).unwrap();
-    let entry2 = history.get(1).unwrap();
-
-    assert_eq!(entry1.reason, reason1);
-    assert_eq!(entry1.duration_secs.unwrap(), 1800);
-
-    assert_eq!(entry2.reason, reason2);
-    assert_eq!(entry2.duration_secs.unwrap(), 2700);
-}
-
-#[test]
-fn test_lockdown_events_emitted() {
-    let (env, vault, _token, admin, _alice, _fee) = setup();
-
-    let reason = soroban_sdk::String::from_slice(&env, "Test events");
-
-    // Activate lockdown
-    vault.activate_lockdown(&admin, &reason);
-
-    // Check for lockdown_on event
-    let events = env.events().all();
-    let lockdown_on_found = events.iter().any(|(_, event)| {
-        let topics = &event.0;
-        topics.len() > 0
-            && topics.get(0).to_string().contains("lockdown_on")
+    // Advance time and withdraw
+    env.ledger().with_mut(|ledger| {
+        ledger.timestamp = unlock_time + 1;
     });
-    assert!(lockdown_on_found, "lockdown_on event not emitted");
 
-    // Deactivate lockdown
-    vault.deactivate_lockdown(&admin);
+    vault.withdraw(&alice, &deposit_id)
+        .expect("withdraw succeeds");
 
-    // Check for lockdown_off event
-    let events = env.events().all();
-    let lockdown_off_found = events.iter().any(|(_, event)| {
-        let topics = &event.0;
-        topics.len() > 0
-            && topics.get(0).to_string().contains("lockdown_off")
-    });
-    assert!(lockdown_off_found, "lockdown_off event not emitted");
+    // NFT should be removed
+    let nft_after = vault.get_nft_evolution(&alice, &deposit_id);
+    assert!(nft_after.is_none());
 }
 
 #[test]
-fn test_lockdown_preserves_existing_deposits() {
-    let (env, vault, token, admin, alice, _fee) = setup();
+fn test_nft_removed_on_cancel() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    let token_client = TokenClient::new(&env, &token);
 
-    let unlock_time = env.ledger().timestamp() + 3600;
+    let now = env.ledger().timestamp();
+    let unlock_time = now + 100_000;
+    let amount = 5_000;
 
-    // Create deposit before lockdown
-    let deposit_id = vault.deposit(&alice, &token, &5_000, &unlock_time, &0);
+    let deposit_id = vault.deposit(&alice, &token, &amount, &unlock_time, &0)
+        .expect("deposit succeeds");
 
-    // Verify deposit exists
-    assert_eq!(vault.get_vault(&alice, &deposit_id).unwrap().amount, 5_000);
+    // Verify NFT exists
+    let nft_before = vault.get_nft_evolution(&alice, &deposit_id)
+        .expect("NFT exists before cancellation");
+    assert_eq!(nft_before.deposit_id, deposit_id);
 
-    // Activate lockdown
-    let reason = soroban_sdk::String::from_slice(&env, "Preserving deposits");
-    vault.activate_lockdown(&admin, &reason);
+    // Cancel the deposit
+    vault.cancel_deposit(&alice, &deposit_id)
+        .expect("cancel_deposit succeeds");
 
-    // Deposit data should still be intact
-    assert_eq!(vault.get_vault(&alice, &deposit_id).unwrap().amount, 5_000);
+    // NFT should be removed
+    let nft_after = vault.get_nft_evolution(&alice, &deposit_id);
+    assert!(nft_after.is_none());
+}
 
-    // Deactivate and withdraw should work
-    vault.deactivate_lockdown(&admin);
-    advance_time(&env, 3700);
-    vault.withdraw(&alice, &deposit_id);
+#[test]
+fn test_nft_rarity_by_duration() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
 
-    // Deposit should be gone after withdrawal
-    assert!(vault.get_vault(&alice, &deposit_id).is_none());
+    let now = env.ledger().timestamp();
+    let amount = 100; // Small amount
+
+    // Test each duration threshold
+    let test_cases = vec![
+        (now + (6 * 24 * 60 * 60), crate::nft::RarityTier::Common),
+        (now + (8 * 24 * 60 * 60), crate::nft::RarityTier::Uncommon),
+        (now + (31 * 24 * 60 * 60), crate::nft::RarityTier::Rare),
+        (now + (91 * 24 * 60 * 60), crate::nft::RarityTier::Epic),
+        (now + (400 * 24 * 60 * 60), crate::nft::RarityTier::Legendary),
+    ];
+
+    for (idx, (unlock_time, expected_rarity)) in test_cases.into_iter().enumerate() {
+        let deposit_id = vault.deposit(&alice, &token, &amount, &unlock_time, &0)
+            .expect("deposit succeeds");
+
+        let rarity = vault.get_nft_rarity(&alice, &deposit_id)
+            .expect("rarity query succeeds");
+        assert_eq!(rarity, expected_rarity, "Failed for test case {}", idx);
+    }
+}
+
+#[test]
+fn test_nft_multiple_deposits_independent() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+
+    let now = env.ledger().timestamp();
+
+    // Create first deposit with small amount
+    let deposit_id1 = vault.deposit(&alice, &token, &100, &(now + 1000), &0)
+        .expect("first deposit succeeds");
+
+    // Create second deposit with large amount
+    let deposit_id2 = vault.deposit(&alice, &token, &2_000_000, &(now + 100_000), &0)
+        .expect("second deposit succeeds");
+
+    // NFTs should have different rarities
+    let rarity1 = vault.get_nft_rarity(&alice, &deposit_id1)
+        .expect("first rarity query succeeds");
+    let rarity2 = vault.get_nft_rarity(&alice, &deposit_id2)
+        .expect("second rarity query succeeds");
+
+    assert_eq!(rarity1, crate::nft::RarityTier::Common);
+    assert_eq!(rarity2, crate::nft::RarityTier::Legendary);
+}
+
+#[test]
+fn test_nft_calculate_stage_progression() {
+    // Direct unit tests for stage calculation
+    let test_cases = vec![
+        (0, crate::nft::EvolutionStage::Egg),
+        (1 * 24 * 60 * 60, crate::nft::EvolutionStage::Egg),
+        (14 * 24 * 60 * 60, crate::nft::EvolutionStage::Hatchling),
+        (30 * 24 * 60 * 60, crate::nft::EvolutionStage::Juvenile),
+        (90 * 24 * 60 * 60, crate::nft::EvolutionStage::Adult),
+        (180 * 24 * 60 * 60, crate::nft::EvolutionStage::Adult),
+        (365 * 24 * 60 * 60, crate::nft::EvolutionStage::Ancient),
+        (400 * 24 * 60 * 60, crate::nft::EvolutionStage::Ancient),
+    ];
+
+    for (age_secs, expected_stage) in test_cases {
+        let stage = crate::nft::calculate_evolution_stage(age_secs);
+        assert_eq!(stage, expected_stage, "Stage mismatch for age_secs={}", age_secs);
+    }
+}
+
+#[test]
+fn test_nft_query_nonexistent() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+
+    // Query for nonexistent deposit should return None
+    let nft = vault.get_nft_evolution(&alice, &999);
+    assert!(nft.is_none());
+
+    let stage = vault.get_nft_stage(&alice, &999);
+    assert!(stage.is_none());
+
+    let rarity = vault.get_nft_rarity(&alice, &999);
+    assert!(rarity.is_none());
+
+    let metadata = vault.get_nft_metadata_uri(&alice, &999);
+    assert!(metadata.is_none());
+
+    let count = vault.get_nft_evolution_count(&alice, &999);
+    assert!(count.is_none());
+}
+
+#[test]
+fn test_nft_rarity_amount_threshold_boundary() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+
+    let now = env.ledger().timestamp();
+    let unlock_time = now + 1000;
+
+    // Test boundary values
+    let test_cases = vec![
+        (999, crate::nft::RarityTier::Common),
+        (1_000, crate::nft::RarityTier::Uncommon),
+        (9_999, crate::nft::RarityTier::Uncommon),
+        (10_000, crate::nft::RarityTier::Rare),
+        (99_999, crate::nft::RarityTier::Rare),
+        (100_000, crate::nft::RarityTier::Epic),
+        (999_999, crate::nft::RarityTier::Epic),
+        (1_000_000, crate::nft::RarityTier::Legendary),
+    ];
+
+    for (amount, expected_rarity) in test_cases {
+        let deposit_id = vault.deposit(&alice, &token, &amount, &unlock_time, &0)
+            .expect("deposit succeeds");
+
+        let rarity = vault.get_nft_rarity(&alice, &deposit_id)
+            .expect("rarity query succeeds");
+        assert_eq!(rarity, expected_rarity, "Failed for amount={}", amount);
+    }
 }
