@@ -27,6 +27,9 @@ const MIN_COMPOUND_FREQUENCY_SECS: u64 = 60;
 /// In production this could be made configurable, but per the issue scope it is fixed.
 const ANNUAL_INTEREST_BPS: u128 = 500;
 
+/// Flash loan fee charged on each borrowed amount. 10 bps = 0.10%.
+const FLASH_LOAN_FEE_BPS: u32 = 10;
+
 /// Seconds in a year (non-leap) used for pro-rata interest calculations.
 const SECS_PER_YEAR: u128 = 31_536_000;
 
@@ -2349,6 +2352,125 @@ impl SafeHaven {
 
     pub fn get_fee_recipient(env: Env) -> Option<Address> {
         storage::get_fee_recipient(&env)
+    }
+
+    pub fn flash_borrow(env: Env, borrower: Address, token: Address, amount: i128) -> Result<i128, VaultError> {
+        borrower.require_auth();
+        if storage::is_paused(&env) {
+            return Err(VaultError::ContractPaused);
+        }
+        if amount <= 0 {
+            return Err(VaultError::InvalidAmount);
+        }
+        if storage::is_flash_loan_guard_active(&env) {
+            return Err(VaultError::FlashLoanReentrancy);
+        }
+
+        let contract = env.current_contract_address();
+        let token_client = token::Client::new(&env, &token);
+        let available = token_client.balance(&contract);
+        if available < amount {
+            return Err(VaultError::FlashLoanInsufficientLiquidity);
+        }
+
+        let fee = (amount * FLASH_LOAN_FEE_BPS as i128) / 10_000;
+        let state = crate::types::FlashLoanState {
+            borrower: borrower.clone(),
+            token: token.clone(),
+            amount,
+            fee,
+            repaid: false,
+        };
+        storage::set_flash_loan_state(&env, &borrower, &token, &state);
+        storage::set_flash_loan_guard(&env, true);
+        token_client.transfer(&contract, &borrower, &amount);
+        Ok(amount)
+    }
+
+    pub fn flash_repay(env: Env, borrower: Address, token: Address, repayment: i128) -> Result<i128, VaultError> {
+        borrower.require_auth();
+        if storage::is_paused(&env) {
+            return Err(VaultError::ContractPaused);
+        }
+
+        let state = storage::get_flash_loan_state(&env, &borrower, &token)
+            .ok_or(VaultError::NoDepositFound)?;
+        let due = state.amount.saturating_add(state.fee);
+        if repayment < due {
+            return Err(VaultError::InvalidAmount);
+        }
+
+        let token_client = token::Client::new(&env, &token);
+        token_client.transfer(&borrower, &env.current_contract_address(), &repayment);
+
+        let mut total_fee = state.fee;
+        if total_fee > 0 {
+            let mut assigned_total = 0i128;
+            let depositor_list = storage::get_all_depositors_raw(&env);
+            let mut total_weight = 0i128;
+            let mut fee_map: soroban_sdk::Vec<(Address, i128)> = soroban_sdk::Vec::new(&env);
+
+            for depositor in depositor_list.iter() {
+                let mut weight = 0i128;
+                let ids = storage::get_deposit_ids(&env, &depositor);
+                for id in ids.iter() {
+                    if let Some(entry) = storage::get_deposit_readonly(&env, &depositor, id) {
+                        if entry.token == token {
+                            weight = weight.saturating_add(entry.amount);
+                        }
+                    }
+                }
+                if weight > 0 {
+                    total_weight = total_weight.saturating_add(weight);
+                    fee_map.push_back((depositor.clone(), weight));
+                }
+            }
+
+            if total_weight > 0 {
+                for entry in fee_map.iter() {
+                    let (depositor, weight) = entry;
+                    let share = (weight * total_fee) / total_weight;
+                    if share > 0 {
+                        let current_balance = storage::get_flash_loan_fee_balance(&env, &token, &depositor);
+                        storage::set_flash_loan_fee_balance(&env, &token, &depositor, current_balance.saturating_add(share));
+                        assigned_total = assigned_total.saturating_add(share);
+                    }
+                }
+                if assigned_total < total_fee {
+                    let mut remainder = total_fee.saturating_sub(assigned_total);
+                    if let Some(first) = fee_map.first() {
+                        let (depositor, _) = first;
+                        let current_balance = storage::get_flash_loan_fee_balance(&env, &token, &depositor);
+                        storage::set_flash_loan_fee_balance(&env, &token, &depositor, current_balance.saturating_add(remainder));
+                    }
+                }
+            }
+        }
+
+        storage::remove_flash_loan_state(&env, &borrower, &token);
+        storage::set_flash_loan_guard(&env, false);
+        let refund = repayment.saturating_sub(due);
+        if refund > 0 {
+            token_client.transfer(&env.current_contract_address(), &borrower, &refund);
+        }
+        events::flash_loan_executed(&env, &borrower, &token, state.amount, state.fee, repayment);
+        Ok(due)
+    }
+
+    pub fn claim_flash_loan_fees(env: Env, depositor: Address, token: Address) -> Result<i128, VaultError> {
+        depositor.require_auth();
+        let fee = storage::get_flash_loan_fee_balance(&env, &token, &depositor);
+        if fee <= 0 {
+            return Ok(0);
+        }
+        let token_client = token::Client::new(&env, &token);
+        token_client.transfer(&env.current_contract_address(), &depositor, &fee);
+        storage::set_flash_loan_fee_balance(&env, &token, &depositor, 0);
+        Ok(fee)
+    }
+
+    pub fn get_flash_loan_fee_balance(env: Env, token: Address, depositor: Address) -> i128 {
+        storage::get_flash_loan_fee_balance(&env, &token, &depositor)
     }
 
     pub fn is_token_allowed(env: Env, token: Address) -> bool {

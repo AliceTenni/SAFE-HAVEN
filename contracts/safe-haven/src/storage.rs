@@ -437,6 +437,66 @@ pub fn get_fee_recipient(env: &Env) -> Option<Address> {
     env.storage().persistent().get(&VaultKey::FeeRecipient)
 }
 
+/// Guard flag to prevent nested flash-loan re-entry in the same transaction.
+pub fn set_flash_loan_guard(env: &Env, active: bool) {
+    env.storage().persistent().set(&VaultKey::FlashLoanGuard, &active);
+    env.storage()
+        .persistent()
+        .extend_ttl(&VaultKey::FlashLoanGuard, BUMP_THRESHOLD, BUMP_TARGET);
+}
+
+pub fn is_flash_loan_guard_active(env: &Env) -> bool {
+    env.storage()
+        .persistent()
+        .get::<VaultKey, bool>(&VaultKey::FlashLoanGuard)
+        .unwrap_or(false)
+}
+
+pub fn set_flash_loan_state(
+    env: &Env,
+    borrower: &Address,
+    token: &Address,
+    state: &crate::types::FlashLoanState,
+) {
+    let key = VaultKey::FlashLoanState(borrower.clone(), token.clone());
+    env.storage().persistent().set(&key, state);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
+}
+
+pub fn get_flash_loan_state(
+    env: &Env,
+    borrower: &Address,
+    token: &Address,
+) -> Option<crate::types::FlashLoanState> {
+    let key = VaultKey::FlashLoanState(borrower.clone(), token.clone());
+    env.storage().persistent().get(&key)
+}
+
+pub fn remove_flash_loan_state(env: &Env, borrower: &Address, token: &Address) {
+    let key = VaultKey::FlashLoanState(borrower.clone(), token.clone());
+    env.storage().persistent().remove(&key);
+}
+
+pub fn set_flash_loan_fee_balance(
+    env: &Env,
+    token: &Address,
+    depositor: &Address,
+    balance: i128,
+) {
+    let key = VaultKey::FlashLoanFeeBalance(token.clone(), depositor.clone());
+    env.storage().persistent().set(&key, &balance);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
+}
+
+pub fn get_flash_loan_fee_balance(env: &Env, token: &Address, depositor: &Address) -> i128 {
+    let key = VaultKey::FlashLoanFeeBalance(token.clone(), depositor.clone());
+    env.storage().persistent().get(&key).unwrap_or(0)
+}
+
 // ----------------------------------------------------------------
 //  Depositor list helpers
 // ----------------------------------------------------------------

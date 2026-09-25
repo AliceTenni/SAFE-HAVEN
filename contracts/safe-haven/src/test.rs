@@ -119,6 +119,39 @@ fn advance_time(env: &Env, seconds: u64) {
     });
 }
 
+#[test]
+fn test_flash_borrow_repay_and_fee_distribution() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    let borrower: Address = Address::generate(&env);
+    let unlock_time = env.ledger().timestamp() + 3600;
+
+    vault.deposit(&alice, &token, &10_000, &unlock_time, &0);
+    let borrowed = vault.flash_borrow(&borrower, &token, &5_000);
+    assert_eq!(borrowed, 5_000);
+
+    let due = vault.flash_repay(&borrower, &token, &5_000 + 5_000 * 10 / 10_000);
+    assert_eq!(due, 5_000 + 5);
+    assert_eq!(vault.get_flash_loan_fee_balance(&token, &alice), 5);
+
+    let claimed = vault.claim_flash_loan_fees(&alice, &token);
+    assert_eq!(claimed, 5);
+    assert_eq!(vault.get_flash_loan_fee_balance(&token, &alice), 0);
+}
+
+#[test]
+fn test_flash_borrow_rejects_reentrant_call() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    let borrower: Address = Address::generate(&env);
+    let unlock_time = env.ledger().timestamp() + 3600;
+    vault.deposit(&alice, &token, &10_000, &unlock_time, &0);
+
+    let _ = vault.flash_borrow(&borrower, &token, &1_000);
+    let result = vault.try_flash_borrow(&borrower, &token, &1_000);
+    assert_eq!(result, Err(Ok(VaultError::FlashLoanReentrancy)));
+
+    vault.flash_repay(&borrower, &token, &1_000 + 1_000 * 10 / 10_000);
+}
+
 struct UpgradeHarness {
     env: Env,
     vault: SafeHavenClient<'static>,

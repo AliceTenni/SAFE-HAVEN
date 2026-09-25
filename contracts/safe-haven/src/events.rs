@@ -233,3 +233,16 @@ pub fn identity_linked(
     env.events()
         .publish(topics, (deposit_id, did_method.clone(), verifier.clone()));
 }
+
+/// Emitted after a flash loan is executed against the contract's locked deposits.
+pub fn flash_loan_executed(
+    env: &Env,
+    borrower: &Address,
+    token: &Address,
+    amount: i128,
+    fee: i128,
+    repayment: i128,
+) {
+    let topics = (Symbol::new(env, "FlashLoanExecuted"), borrower.clone(), token.clone());
+    env.events().publish(topics, (amount, fee, repayment));
+}

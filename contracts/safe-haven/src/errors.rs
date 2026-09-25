@@ -50,4 +50,6 @@ pub enum VaultError {
     TimelockActive = 35,
     ProposalRejected = 36,
     ProposalAlreadyExecuted = 37,
+    FlashLoanInsufficientLiquidity = 38,
+    FlashLoanReentrancy = 39,
 }

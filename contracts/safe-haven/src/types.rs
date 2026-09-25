@@ -67,6 +67,12 @@ pub enum VaultKey {
     /// Persists the schema version written by the last `migrate()` call (or 1
     /// for contracts that were initialized before versioning was introduced).
     StorageVersion,
+    /// Guards flash-loan execution against re-entrant nested calls.
+    FlashLoanGuard,
+    /// Active borrower state for a single-token flash loan.
+    FlashLoanState(Address, Address),
+    /// Fee share owed to a depositor for a token after flash-loan repayment.
+    FlashLoanFeeBalance(Address, Address),
     /// Staker entry: maps staker address to their stake amount
     Staker(Address),
     /// List of all registered stakers
@@ -191,6 +197,16 @@ pub struct QuantumSafePayload {
     pub entry: VaultEntry,
     pub deposit_id: u32,
     pub encrypted_metadata: Bytes,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FlashLoanState {
+    pub borrower: Address,
+    pub token: Address,
+    pub amount: i128,
+    pub fee: i128,
+    pub repaid: bool,
 }
 
 #[contracttype]
