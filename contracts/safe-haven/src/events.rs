@@ -68,6 +68,32 @@ pub fn withdraw(env: &Env, depositor: &Address, token: &Address, amount: i128, d
     env.events().publish(topics, (amount, deposit_id));
 }
 
+pub fn tax_loss_harvested(
+    env: &Env,
+    depositor: &Address,
+    original_token: &Address,
+    replacement_token: &Address,
+    realized_loss: i128,
+    tax_benefit: i128,
+    original_deposit_id: u32,
+    replacement_deposit_id: u32,
+    wash_sale_until: u64,
+) {
+    let topics = (Symbol::new(env, "tax_loss_harvested"), depositor.clone());
+    env.events().publish(
+        topics,
+        (
+            original_token.clone(),
+            replacement_token.clone(),
+            realized_loss,
+            tax_benefit,
+            original_deposit_id,
+            replacement_deposit_id,
+            wash_sale_until,
+        ),
+    );
+}
+
 /// Emitted when a multi-token deposit is withdrawn (issue #330).
 pub fn multi_withdraw(env: &Env, depositor: &Address, recipient: &Address, deposit_id: u32, token_count: u32) {
     let topics = (Symbol::new(env, "multi_wdraw"), depositor.clone());
@@ -137,6 +163,17 @@ pub fn paused(env: &Env, admin: &Address) {
 pub fn unpaused(env: &Env, admin: &Address) {
     let topics = (Symbol::new(env, "unpaused"), admin.clone());
     env.events().publish(topics, ());
+}
+
+pub fn circuit_breaker_tripped(
+    env: &Env,
+    admin: &Address,
+    ledger: u32,
+    amount: i128,
+    threshold: i128,
+) {
+    let topics = (Symbol::new(env, "CircuitBreakerTripped"), admin.clone(), ledger);
+    env.events().publish(topics, (amount, threshold));
 }
 
 pub fn token_proposed(env: &Env, token: &Address, proposer: &Address) {

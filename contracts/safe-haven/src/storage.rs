@@ -1,6 +1,7 @@
 use soroban_sdk::{token, Address, Env, Vec};
 
-use crate::types::{MultiTokenVaultEntry, VaultEntry, VaultKey, LedgerVaultEntry, MAX_LOCK_DURATION_SECS};
+use crate::types::{DepositSubscription, MultiTokenVaultEntry, SubscriptionExecution, SubscriptionStats, TaxLossHarvest, VaultEntry, VaultKey, LedgerVaultEntry, MAX_LOCK_DURATION_SECS};
+use crate::types::CircuitBreakerActivation;
 
 // ================================================================
 // LEDGER_SECONDS: Average time between Stellar ledger closes
@@ -101,6 +102,26 @@ pub fn get_deposit_ids(env: &Env, depositor: &Address) -> Vec<u32> {
     get_active_ids(env, depositor)
 }
 
+pub fn set_session_key(env: &Env, wallet: &Address, session_key: &Address, expires_at: u64) {
+    let key = VaultKey::SessionKey(wallet.clone(), session_key.clone());
+    env.storage().persistent().set(&key, &expires_at);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
+}
+
+pub fn get_session_key_expiry(env: &Env, wallet: &Address, session_key: &Address) -> Option<u64> {
+    env.storage()
+        .persistent()
+        .get(&VaultKey::SessionKey(wallet.clone(), session_key.clone()))
+}
+
+pub fn remove_session_key(env: &Env, wallet: &Address, session_key: &Address) {
+    env.storage()
+        .persistent()
+        .remove(&VaultKey::SessionKey(wallet.clone(), session_key.clone()));
+}
+
 pub fn get_voting_power(env: &Env, voter: &Address) -> i128 {
     let mut total = 0i128;
     for deposit_id in get_active_ids(env, voter).iter() {
@@ -146,6 +167,46 @@ pub fn remove_deposit(env: &Env, depositor: &Address, deposit_id: u32) {
     let key = VaultKey::Deposit(depositor.clone(), deposit_id);
     env.storage().persistent().remove(&key);
     remove_active_deposit_id(env, depositor, deposit_id);
+}
+
+pub fn add_tax_loss_harvest(env: &Env, depositor: &Address, harvest: &TaxLossHarvest) {
+    let key = VaultKey::TaxLossHarvests(depositor.clone());
+    let mut records: Vec<TaxLossHarvest> = env
+        .storage()
+        .persistent()
+        .get(&key)
+        .unwrap_or_else(|| Vec::new(env));
+    records.push_back(harvest.clone());
+    env.storage().persistent().set(&key, &records);
+    env.storage().persistent().extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
+}
+
+pub fn get_tax_loss_harvests(env: &Env, depositor: &Address) -> Vec<TaxLossHarvest> {
+    env.storage()
+        .persistent()
+        .get(&VaultKey::TaxLossHarvests(depositor.clone()))
+        .unwrap_or_else(|| Vec::new(env))
+}
+
+pub fn set_tax_wash_sale_until(
+    env: &Env,
+    depositor: &Address,
+    token: &Address,
+    until: u64,
+) {
+    let key = VaultKey::TaxWashSaleUntil(depositor.clone(), token.clone());
+    env.storage().persistent().set(&key, &until);
+    env.storage().persistent().extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
+}
+
+pub fn get_tax_wash_sale_until(
+    env: &Env,
+    depositor: &Address,
+    token: &Address,
+) -> Option<u64> {
+    env.storage()
+        .persistent()
+        .get(&VaultKey::TaxWashSaleUntil(depositor.clone(), token.clone()))
 }
 
 // ----------------------------------------------------------------
@@ -1011,6 +1072,86 @@ pub fn get_emergency_withdrawal_per_ledger(env: &Env, ledger: u32) -> i128 {
 /// Get the cumulative emergency withdrawal amount for the current ledger.
 pub fn get_current_ledger_emergency_withdrawal(env: &Env) -> i128 {
     get_emergency_withdrawal_per_ledger(env, env.ledger().sequence())
+}
+
+pub fn record_circuit_breaker_activation(env: &Env, activation: &CircuitBreakerActivation) {
+    let key = VaultKey::CircuitBreakerHistory;
+    let mut history: Vec<CircuitBreakerActivation> = env
+        .storage()
+        .persistent()
+        .get(&key)
+        .unwrap_or_else(|| Vec::new(env));
+    history.push_back(activation.clone());
+    env.storage().persistent().set(&key, &history);
+    env.storage().persistent().extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
+}
+
+pub fn get_circuit_breaker_history(env: &Env) -> Vec<CircuitBreakerActivation> {
+    env.storage()
+        .persistent()
+        .get(&VaultKey::CircuitBreakerHistory)
+        .unwrap_or_else(|| Vec::new(env))
+}
+
+pub fn next_subscription_id(env: &Env, depositor: &Address) -> u32 {
+    let key = VaultKey::SubscriptionCounter(depositor.clone());
+    let id: u32 = env.storage().persistent().get(&key).unwrap_or(0);
+    env.storage().persistent().set(&key, &id.saturating_add(1));
+    env.storage().persistent().extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
+    id
+}
+
+pub fn set_subscription(env: &Env, depositor: &Address, id: u32, subscription: &DepositSubscription) {
+    let key = VaultKey::Subscription(depositor.clone(), id);
+    env.storage().persistent().set(&key, subscription);
+    env.storage().persistent().extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
+    let ids_key = VaultKey::SubscriptionIds(depositor.clone());
+    let mut ids: Vec<u32> = env.storage().persistent().get(&ids_key).unwrap_or_else(|| Vec::new(env));
+    let already_present = ids.iter().any(|existing| existing == id);
+    if !already_present {
+        ids.push_back(id);
+        env.storage().persistent().set(&ids_key, &ids);
+    }
+    env.storage().persistent().extend_ttl(&ids_key, BUMP_THRESHOLD, BUMP_TARGET);
+}
+
+pub fn get_subscription(env: &Env, depositor: &Address, id: u32) -> Option<DepositSubscription> {
+    let key = VaultKey::Subscription(depositor.clone(), id);
+    let subscription = env.storage().persistent().get(&key);
+    if subscription.is_some() {
+        env.storage().persistent().extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
+    }
+    subscription
+}
+
+pub fn get_subscription_readonly(env: &Env, depositor: &Address, id: u32) -> Option<DepositSubscription> {
+    env.storage().persistent().get(&VaultKey::Subscription(depositor.clone(), id))
+}
+
+pub fn get_subscription_ids(env: &Env, depositor: &Address) -> Vec<u32> {
+    env.storage().persistent().get(&VaultKey::SubscriptionIds(depositor.clone())).unwrap_or_else(|| Vec::new(env))
+}
+
+pub fn record_subscription_execution(env: &Env, depositor: &Address, id: u32, execution: &SubscriptionExecution) {
+    let key = VaultKey::SubscriptionHistory(depositor.clone(), id);
+    let mut history: Vec<SubscriptionExecution> = env.storage().persistent().get(&key).unwrap_or_else(|| Vec::new(env));
+    history.push_back(execution.clone());
+    env.storage().persistent().set(&key, &history);
+    env.storage().persistent().extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
+}
+
+pub fn get_subscription_history(env: &Env, depositor: &Address, id: u32) -> Vec<SubscriptionExecution> {
+    env.storage().persistent().get(&VaultKey::SubscriptionHistory(depositor.clone(), id)).unwrap_or_else(|| Vec::new(env))
+}
+
+pub fn set_subscription_stats(env: &Env, depositor: &Address, id: u32, stats: &SubscriptionStats) {
+    let key = VaultKey::SubscriptionStats(depositor.clone(), id);
+    env.storage().persistent().set(&key, stats);
+    env.storage().persistent().extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
+}
+
+pub fn get_subscription_stats(env: &Env, depositor: &Address, id: u32) -> SubscriptionStats {
+    env.storage().persistent().get(&VaultKey::SubscriptionStats(depositor.clone(), id)).unwrap_or(SubscriptionStats { deposit_count: 0, total_amount: 0, last_execution_time: 0 })
 }
 
 // ----------------------------------------------------------------

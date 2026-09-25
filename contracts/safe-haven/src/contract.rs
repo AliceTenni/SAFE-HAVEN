@@ -29,6 +29,41 @@ const ANNUAL_INTEREST_BPS: u128 = 500;
 /// Seconds in a year (non-leap) used for pro-rata interest calculations.
 const SECS_PER_YEAR: u128 = 31_536_000;
 
+fn auto_pause(env: &Env, amount: i128) {
+    let ledger = env.ledger().sequence();
+    let activation = CircuitBreakerActivation {
+        ledger,
+        amount,
+        threshold: MAX_EMERGENCY_WITHDRAWAL_PER_LEDGER,
+    };
+    storage::set_paused(env, true);
+    storage::record_circuit_breaker_activation(env, &activation);
+    let admin = storage::get_admin(env).expect("initialized contract must have admin");
+    events::circuit_breaker_tripped(
+        env,
+        &admin,
+        ledger,
+        amount,
+        MAX_EMERGENCY_WITHDRAWAL_PER_LEDGER,
+    );
+}
+
+fn check_emergency_withdrawal_limit(env: &Env, amount: i128) -> Result<(), VaultError> {
+    let total = storage::get_current_ledger_emergency_withdrawal(env);
+    if total.saturating_add(amount) > MAX_EMERGENCY_WITHDRAWAL_PER_LEDGER {
+        Err(VaultError::EmergencyWithdrawalLimitExceeded)
+    } else {
+        Ok(())
+    }
+}
+
+fn record_emergency_withdrawal(env: &Env, amount: i128) {
+    let total = storage::add_emergency_withdrawal(env, amount);
+    if total >= MAX_EMERGENCY_WITHDRAWAL_PER_LEDGER && !storage::is_paused(env) {
+        auto_pause(env, total);
+    }
+}
+
 #[contract]
 pub struct SafeHaven;
 
@@ -102,6 +137,19 @@ fn check_whitelist(
             }
         }
         return Err(VaultError::RecipientNotWhitelisted);
+    }
+    Ok(())
+}
+
+fn check_tax_wash_sale(
+    env: &Env,
+    depositor: &Address,
+    token: &Address,
+) -> Result<(), VaultError> {
+    if let Some(until) = storage::get_tax_wash_sale_until(env, depositor, token) {
+        if env.ledger().timestamp() < until {
+            return Err(VaultError::TaxWashSalePeriodActive);
+        }
     }
     Ok(())
 }
@@ -304,6 +352,80 @@ impl SafeHaven {
     }
 
     // ----------------------------------------------------------------
+    //  Smart-wallet and session-key authorization
+    // ----------------------------------------------------------------
+
+    /// Authorize a delegated key for deposits attributed to `wallet`.
+    ///
+    /// The wallet signs this one-time authorization. The delegated entrypoint
+    /// still transfers tokens from the session key, never from the wallet.
+    pub fn authorize_session_key(
+        env: Env,
+        wallet: Address,
+        session_key: Address,
+        expires_at: u64,
+    ) -> Result<(), VaultError> {
+        wallet.require_auth();
+        if expires_at <= env.ledger().timestamp() {
+            return Err(VaultError::InvalidSessionKeyExpiry);
+        }
+        storage::set_session_key(&env, &wallet, &session_key, expires_at);
+        Ok(())
+    }
+
+    pub fn revoke_session_key(
+        env: Env,
+        wallet: Address,
+        session_key: Address,
+    ) -> Result<(), VaultError> {
+        wallet.require_auth();
+        storage::remove_session_key(&env, &wallet, &session_key);
+        Ok(())
+    }
+
+    pub fn is_session_key_authorized(
+        env: Env,
+        wallet: Address,
+        session_key: Address,
+    ) -> bool {
+        storage::get_session_key_expiry(&env, &wallet, &session_key)
+            .map(|expires_at| expires_at > env.ledger().timestamp())
+            .unwrap_or(false)
+    }
+
+    /// Deposit using a wallet-authorized delegated key.
+    ///
+    /// The session key is the payer and the wallet is the depositor. This
+    /// preserves the wallet's multisig/account-abstraction boundary: a session
+    /// key can submit an approved operation, but cannot spend wallet funds.
+    pub fn deposit_with_session_key(
+        env: Env,
+        session_key: Address,
+        wallet: Address,
+        token: Address,
+        amount: i128,
+        unlock_time: u64,
+        penalty_bps: u32,
+    ) -> Result<u32, VaultError> {
+        session_key.require_auth();
+        match storage::get_session_key_expiry(&env, &wallet, &session_key) {
+            Some(expires_at) if expires_at > env.ledger().timestamp() => {}
+            Some(_) => return Err(VaultError::SessionKeyExpired),
+            None => return Err(VaultError::SessionKeyNotAuthorized),
+        }
+
+        Self::deposit_for(
+            env,
+            session_key,
+            wallet,
+            token,
+            amount,
+            unlock_time,
+            penalty_bps,
+        )
+    }
+
+    // ----------------------------------------------------------------
     //  Core: Single-token Deposit
     // ----------------------------------------------------------------
 
@@ -328,6 +450,7 @@ impl SafeHaven {
         if storage::is_strict_token_allowlist(&env) && !storage::is_token_allowed(&env, &token) {
             return Err(VaultError::TokenNotAllowed);
         }
+        check_tax_wash_sale(&env, &depositor, &token)?;
 
         if amount <= 0 {
             return Err(VaultError::InvalidAmount);
@@ -520,6 +643,7 @@ impl SafeHaven {
         if storage::is_strict_token_allowlist(&env) && !storage::is_token_allowed(&env, &token) {
             return Err(VaultError::TokenNotAllowed);
         }
+        check_tax_wash_sale(&env, &depositor, &token)?;
 
         if amount <= 0 {
             return Err(VaultError::InvalidAmount);
@@ -635,6 +759,7 @@ impl SafeHaven {
         if storage::is_paused(&env) {
             return Err(VaultError::ContractPaused);
         }
+        check_tax_wash_sale(&env, &depositor, &token)?;
         if amount <= 0 {
             return Err(VaultError::InvalidAmount);
         }
@@ -705,6 +830,7 @@ impl SafeHaven {
         if storage::is_strict_token_allowlist(&env) && !storage::is_token_allowed(&env, &token) {
             return Err(VaultError::TokenNotAllowed);
         }
+        check_tax_wash_sale(&env, &depositor, &token)?;
 
         if amount <= 0 {
             return Err(VaultError::InvalidAmount);
@@ -1586,6 +1712,110 @@ impl SafeHaven {
         Err(VaultError::NoDepositFound)
     }
 
+    /// Realize an explicit loss and replace the position with a non-identical token.
+    /// `current_value` and `tax_rate_bps` are supplied by the caller because this
+    /// contract has no price oracle and does not provide tax advice.
+    pub fn harvest_tax_losses(
+        env: Env,
+        depositor: Address,
+        deposit_id: u32,
+        current_value: i128,
+        replacement_token: Address,
+        replacement_amount: i128,
+        tax_rate_bps: u32,
+        wash_sale_period_secs: u64,
+    ) -> Result<TaxLossHarvest, VaultError> {
+        depositor.require_auth();
+
+        if current_value <= 0 || replacement_amount <= 0 || tax_rate_bps > 10_000 {
+            return Err(VaultError::InvalidTaxLossHarvest);
+        }
+        if storage::is_strict_token_allowlist(&env)
+            && !storage::is_token_allowed(&env, &replacement_token)
+        {
+            return Err(VaultError::ReplacementTokenNotAllowed);
+        }
+
+        let mut entry = storage::get_deposit(&env, &depositor, deposit_id)
+            .ok_or(VaultError::NoDepositFound)?;
+        if entry.token == replacement_token {
+            return Err(VaultError::InvalidTaxLossHarvest);
+        }
+
+        let now = env.ledger().timestamp();
+        entry.amount = compute_accrued_amount(
+            entry.amount,
+            entry.compound_frequency_secs,
+            entry.last_accrual_timestamp,
+            now,
+        );
+        if current_value >= entry.amount {
+            return Err(VaultError::InvalidTaxLossHarvest);
+        }
+
+        let original_token = entry.token.clone();
+        let cost_basis = entry.amount;
+        let realized_loss = cost_basis.saturating_sub(current_value);
+        let tax_benefit = realized_loss.saturating_mul(tax_rate_bps as i128) / 10_000;
+        let wash_sale_until = now.saturating_add(wash_sale_period_secs);
+        let replacement_unlock = entry.unlock_time.max(wash_sale_until);
+        let replacement_deposit_id = storage::next_deposit_id(&env, &depositor);
+
+        let contract = env.current_contract_address();
+        token::Client::new(&env, &original_token).transfer(&contract, &depositor, &cost_basis);
+        token::Client::new(&env, &replacement_token).transfer(
+            &depositor,
+            &contract,
+            &replacement_amount,
+        );
+
+        storage::remove_deposit(&env, &depositor, deposit_id);
+        storage::remove_withdrawal_whitelist(&env, &depositor, deposit_id);
+        storage::set_deposit(
+            &env,
+            &depositor,
+            replacement_deposit_id,
+            &VaultEntry {
+                token: replacement_token.clone(),
+                amount: replacement_amount,
+                unlock_time: replacement_unlock,
+                depositor: depositor.clone(),
+                penalty_bps: entry.penalty_bps,
+                compound_frequency_secs: entry.compound_frequency_secs,
+                last_accrual_timestamp: now,
+            },
+        );
+        storage::add_depositor(&env, &depositor);
+
+        let harvest = TaxLossHarvest {
+            depositor: depositor.clone(),
+            original_token: original_token.clone(),
+            replacement_token: replacement_token.clone(),
+            original_deposit_id: deposit_id,
+            replacement_deposit_id,
+            cost_basis,
+            current_value,
+            realized_loss,
+            tax_benefit,
+            harvested_at: now,
+            wash_sale_until,
+        };
+        storage::add_tax_loss_harvest(&env, &depositor, &harvest);
+        storage::set_tax_wash_sale_until(&env, &depositor, &original_token, wash_sale_until);
+        events::tax_loss_harvested(
+            &env,
+            &depositor,
+            &original_token,
+            &replacement_token,
+            realized_loss,
+            tax_benefit,
+            deposit_id,
+            replacement_deposit_id,
+            wash_sale_until,
+        );
+        Ok(harvest)
+    }
+
     /// Withdraw to a specific recipient address.
     ///
     /// If a whitelist has been set for this deposit, `recipient` must be in it.
@@ -1716,6 +1946,7 @@ impl SafeHaven {
 
         // Try timestamp-based deposit first.
         if let Some(entry) = storage::get_deposit_readonly(&env, &depositor, deposit_id) {
+            check_emergency_withdrawal_limit(&env, entry.amount)?;
             storage::remove_deposit(&env, &depositor, deposit_id);
             storage::remove_withdrawal_whitelist(&env, &depositor, deposit_id);
             if storage::get_deposit_ids(&env, &depositor).len() == 0 {
@@ -1724,6 +1955,7 @@ impl SafeHaven {
 
             let token_client = token::Client::new(&env, &entry.token);
             token_client.transfer(&env.current_contract_address(), &depositor, &entry.amount);
+            record_emergency_withdrawal(&env, entry.amount);
 
             events::emergency_withdraw(
                 &env,
@@ -1738,6 +1970,7 @@ impl SafeHaven {
 
         // Try ledger-based deposit.
         if let Some(entry) = storage::get_deposit_by_ledger_readonly(&env, &depositor, deposit_id) {
+            check_emergency_withdrawal_limit(&env, entry.amount)?;
             storage::remove_deposit_by_ledger(&env, &depositor, deposit_id);
             storage::remove_withdrawal_whitelist(&env, &depositor, deposit_id);
             if storage::get_deposit_ids(&env, &depositor).len() == 0 {
@@ -1746,6 +1979,7 @@ impl SafeHaven {
 
             let token_client = token::Client::new(&env, &entry.token);
             token_client.transfer(&env.current_contract_address(), &depositor, &entry.amount);
+            record_emergency_withdrawal(&env, entry.amount);
 
             events::emergency_withdraw(
                 &env,
@@ -1760,6 +1994,11 @@ impl SafeHaven {
 
         // Try multi-token deposit.
         if let Some(entry) = storage::get_multi_deposit_readonly(&env, &depositor, deposit_id) {
+            let total = entry
+                .tokens
+                .iter()
+                .fold(0i128, |total, token| total.saturating_add(token.amount));
+            check_emergency_withdrawal_limit(&env, total)?;
             storage::remove_multi_deposit(&env, &depositor, deposit_id);
             storage::remove_withdrawal_whitelist(&env, &depositor, deposit_id);
             if storage::get_deposit_ids(&env, &depositor).len() == 0 {
@@ -1772,6 +2011,7 @@ impl SafeHaven {
                 token_client.transfer(&contract, &depositor, &td.amount);
                 events::emergency_withdraw(&env, &admin, &depositor, &td.token, td.amount, deposit_id);
             }
+            record_emergency_withdrawal(&env, total);
             return Ok(());
         }
 
@@ -2334,6 +2574,10 @@ impl SafeHaven {
         storage::get_deposit_ids(&env, &depositor)
     }
 
+    pub fn get_tax_loss_harvests(env: Env, depositor: Address) -> Vec<TaxLossHarvest> {
+        storage::get_tax_loss_harvests(&env, &depositor)
+    }
+
     pub fn get_time(env: Env) -> u64 {
         env.ledger().timestamp()
     }
@@ -2503,6 +2747,10 @@ impl SafeHaven {
         storage::get_emergency_withdrawal_per_ledger(&env, ledger)
     }
 
+    pub fn get_circuit_breaker_history(env: Env) -> Vec<CircuitBreakerActivation> {
+        storage::get_circuit_breaker_history(&env)
+    }
+
     // ----------------------------------------------------------------
     //  Read-only: Paginated flat deposits view
     // ----------------------------------------------------------------
@@ -2628,7 +2876,7 @@ impl SafeHaven {
         let sub_id = storage::next_subscription_id(&env, &depositor);
         let now = env.ledger().timestamp();
 
-        let sub = RecurringDeposit {
+        let sub = DepositSubscription {
             depositor: depositor.clone(),
             token: token.clone(),
             amount,
@@ -2639,6 +2887,7 @@ impl SafeHaven {
             penalty_bps,
             // First execution is due immediately.
             next_execution_time: now,
+            paused: false,
             cancelled: false,
         };
 
@@ -2654,6 +2903,28 @@ impl SafeHaven {
         );
 
         Ok(sub_id)
+    }
+
+    pub fn subscribe(
+        env: Env,
+        depositor: Address,
+        token: Address,
+        amount: i128,
+        interval_secs: u64,
+        total_count: u32,
+        lock_duration_secs: u64,
+        penalty_bps: u32,
+    ) -> Result<u32, VaultError> {
+        Self::create_subscription(
+            env,
+            depositor,
+            token,
+            amount,
+            interval_secs,
+            total_count,
+            lock_duration_secs,
+            penalty_bps,
+        )
     }
 
     /// Cancels an active subscription.
@@ -2674,12 +2945,26 @@ impl SafeHaven {
         if sub.cancelled {
             return Err(VaultError::SubscriptionCancelled);
         }
+
+        if sub.paused {
+            return Err(VaultError::SubscriptionPaused);
+        }
         if sub.executed_count >= sub.total_count {
             return Err(VaultError::SubscriptionCompleted);
         }
 
         sub.cancelled = true;
         storage::set_subscription(&env, &depositor, sub_id, &sub);
+        storage::record_subscription_execution(&env, &depositor, sub_id, &SubscriptionExecution {
+            deposit_id,
+            amount: sub.amount,
+            executed_at: now,
+        });
+        storage::set_subscription_stats(&env, &depositor, sub_id, &SubscriptionStats {
+            deposit_count: sub.executed_count,
+            total_amount: sub.amount.saturating_mul(sub.executed_count as i128),
+            last_execution_time: now,
+        });
 
         events::subscription_cancelled(&env, &depositor, sub_id, sub.executed_count);
         Ok(())
@@ -2740,6 +3025,8 @@ impl SafeHaven {
             unlock_time,
             depositor: depositor.clone(),
             penalty_bps: sub.penalty_bps,
+            compound_frequency_secs: 0,
+            last_accrual_timestamp: now,
         };
         storage::set_deposit(&env, &depositor, deposit_id, &entry);
         storage::add_depositor(&env, &depositor);
@@ -2762,13 +3049,45 @@ impl SafeHaven {
         Ok(deposit_id)
     }
 
-    /// Returns the `RecurringDeposit` struct for the given `(depositor, sub_id)`,
+    pub fn pause_subscription(env: Env, depositor: Address, sub_id: u32) -> Result<(), VaultError> {
+        depositor.require_auth();
+        let mut sub = storage::get_subscription(&env, &depositor, sub_id).ok_or(VaultError::NoSubscriptionFound)?;
+        if sub.cancelled { return Err(VaultError::SubscriptionCancelled); }
+        if sub.executed_count >= sub.total_count { return Err(VaultError::SubscriptionCompleted); }
+        if sub.paused { return Err(VaultError::SubscriptionPaused); }
+        sub.paused = true;
+        storage::set_subscription(&env, &depositor, sub_id, &sub);
+        events::subscription_paused(&env, &depositor, sub_id);
+        Ok(())
+    }
+
+    pub fn resume_subscription(env: Env, depositor: Address, sub_id: u32) -> Result<(), VaultError> {
+        depositor.require_auth();
+        let mut sub = storage::get_subscription(&env, &depositor, sub_id).ok_or(VaultError::NoSubscriptionFound)?;
+        if sub.cancelled { return Err(VaultError::SubscriptionCancelled); }
+        if sub.executed_count >= sub.total_count { return Err(VaultError::SubscriptionCompleted); }
+        if !sub.paused { return Ok(()); }
+        sub.paused = false;
+        storage::set_subscription(&env, &depositor, sub_id, &sub);
+        events::subscription_resumed(&env, &depositor, sub_id);
+        Ok(())
+    }
+
+    pub fn get_subscription_history(env: Env, depositor: Address, sub_id: u32) -> Vec<SubscriptionExecution> {
+        storage::get_subscription_history(&env, &depositor, sub_id)
+    }
+
+    pub fn get_subscription_stats(env: Env, depositor: Address, sub_id: u32) -> SubscriptionStats {
+        storage::get_subscription_stats(&env, &depositor, sub_id)
+    }
+
+    /// Returns the `DepositSubscription` struct for the given `(depositor, sub_id)`,
     /// or `None` if not found.
     pub fn get_subscription(
         env: Env,
         depositor: Address,
         sub_id: u32,
-    ) -> Option<RecurringDeposit> {
+    ) -> Option<DepositSubscription> {
         storage::get_subscription_readonly(&env, &depositor, sub_id)
     }
 

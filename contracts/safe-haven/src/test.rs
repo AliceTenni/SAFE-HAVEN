@@ -709,6 +709,74 @@ fn test_deposit_for_same_address_succeeds() {
 }
 
 #[test]
+fn test_contract_account_can_deposit_without_eoa_assumption() {
+    let (env, vault, token, _admin, _alice, _fee) = setup();
+    let smart_wallet = env.register(SafeHaven, ());
+    StellarAssetClient::new(&env, &token).mint(&smart_wallet, &2_000);
+
+    let unlock_time = env.ledger().timestamp() + 3600;
+    let id = vault.deposit(&smart_wallet, &token, &1_000, &unlock_time, &0);
+
+    let entry = vault.get_vault(&smart_wallet, &id).expect("entry should exist");
+    assert_eq!(entry.depositor, smart_wallet);
+    assert_eq!(TokenClient::new(&env, &token).balance(&vault.address), 1_000);
+}
+
+#[test]
+fn test_session_key_deposit_is_scoped_and_expires() {
+    let (env, vault, token, _admin, _alice, _fee) = setup();
+    let wallet = Address::generate(&env);
+    let session_key = Address::generate(&env);
+    StellarAssetClient::new(&env, &token).mint(&session_key, &2_000);
+
+    let expires_at = env.ledger().timestamp() + 600;
+    vault.authorize_session_key(&wallet, &session_key, &expires_at);
+    assert!(vault.is_session_key_authorized(&wallet, &session_key));
+
+    let unlock_time = env.ledger().timestamp() + 3600;
+    let id = vault.deposit_with_session_key(
+        &session_key,
+        &wallet,
+        &token,
+        &1_000,
+        &unlock_time,
+        &0,
+    );
+    let entry = vault.get_vault(&wallet, &id).expect("entry should exist");
+    assert_eq!(entry.depositor, wallet);
+    assert_eq!(TokenClient::new(&env, &token).balance(&session_key), 1_000);
+
+    advance_time(&env, 601);
+    assert!(!vault.is_session_key_authorized(&wallet, &session_key));
+    assert_eq!(
+        vault.try_deposit_with_session_key(
+            &session_key,
+            &wallet,
+            &token,
+            &1_000,
+            &(env.ledger().timestamp() + 3600),
+            &0,
+        ),
+        Err(Ok(VaultError::SessionKeyExpired))
+    );
+
+    vault.authorize_session_key(&wallet, &session_key, &(env.ledger().timestamp() + 600));
+    vault.revoke_session_key(&wallet, &session_key);
+    assert!(!vault.is_session_key_authorized(&wallet, &session_key));
+    assert_eq!(
+        vault.try_deposit_with_session_key(
+            &session_key,
+            &wallet,
+            &token,
+            &1_000,
+            &(env.ledger().timestamp() + 3600),
+            &0,
+        ),
+        Err(Ok(VaultError::SessionKeyNotAuthorized))
+    );
+}
+
+#[test]
 fn test_deposit_for_payer_has_no_access() {
     let (env, vault, token, _admin, alice, _fee) = setup();
     let bob: Address = Address::generate(&env);
@@ -932,6 +1000,71 @@ fn test_cancel_deposit_penalty_stored_in_vault_entry() {
     let unlock_time = env.ledger().timestamp() + 3600;
     vault.deposit(&alice, &token, &1_000, &unlock_time, &500);
     assert_eq!(vault.get_vault(&alice, &0).unwrap().penalty_bps, 500);
+}
+
+#[test]
+fn test_harvest_tax_losses_replaces_position_and_records_tax_impact() {
+    let (env, vault, token, admin, alice, _fee) = setup();
+    let replacement_id = env.register_stellar_asset_contract_v2(admin.clone());
+    let replacement_token = replacement_id.address();
+    StellarAssetClient::new(&env, &replacement_token).mint(&alice, &1_000);
+    let token_client = TokenClient::new(&env, &token);
+    let replacement_client = TokenClient::new(&env, &replacement_token);
+    let unlock_time = env.ledger().timestamp() + 3_600;
+
+    vault.deposit(&alice, &token, &1_000, &unlock_time, &0);
+    let harvest = vault.harvest_tax_losses(
+        &alice,
+        &0,
+        &700,
+        &replacement_token,
+        &700,
+        &500,
+        &86_400,
+    );
+
+    assert_eq!(harvest.original_deposit_id, 0);
+    assert_eq!(harvest.replacement_deposit_id, 1);
+    assert_eq!(harvest.cost_basis, 1_000);
+    assert_eq!(harvest.realized_loss, 300);
+    assert_eq!(harvest.tax_benefit, 15);
+    assert_eq!(harvest.wash_sale_until, env.ledger().timestamp() + 86_400);
+    assert!(vault.get_vault(&alice, &0).is_none());
+    assert_eq!(vault.get_vault(&alice, &1).unwrap().token, replacement_token);
+    assert_eq!(vault.get_tax_loss_harvests(&alice).len(), 1);
+    assert_eq!(token_client.balance(&alice), 10_000);
+    assert_eq!(replacement_client.balance(&alice), 300);
+
+    assert_eq!(
+        vault.try_deposit(
+            &alice,
+            &token,
+            &100,
+            &(env.ledger().timestamp() + 3_600),
+            &0,
+        ),
+        Err(Ok(VaultError::TaxWashSalePeriodActive))
+    );
+}
+
+#[test]
+fn test_harvest_tax_losses_rejects_same_token_replacement() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    let unlock_time = env.ledger().timestamp() + 3_600;
+    vault.deposit(&alice, &token, &1_000, &unlock_time, &0);
+
+    assert_eq!(
+        vault.try_harvest_tax_losses(
+            &alice,
+            &0,
+            &700,
+            &token,
+            &700,
+            &500,
+            &86_400,
+        ),
+        Err(Ok(VaultError::InvalidTaxLossHarvest))
+    );
 }
 
 // ================================================================
@@ -4157,6 +4290,45 @@ fn test_get_subscription_ids_returns_all() {
     assert_eq!(ids.get(2).unwrap(), 2);
 }
 
+#[test]
+fn test_subscription_can_be_paused_and_resumed() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    let sub_id = create_default_subscription(&vault, &env, &alice, &token);
+
+    vault.pause_subscription(&alice, &sub_id);
+    let paused = vault.get_subscription(&alice, &sub_id).unwrap();
+    assert!(paused.paused);
+    assert_eq!(
+        vault.try_execute_subscription(&alice, &sub_id),
+        Err(Ok(VaultError::SubscriptionPaused))
+    );
+
+    vault.resume_subscription(&alice, &sub_id);
+    let resumed = vault.get_subscription(&alice, &sub_id).unwrap();
+    assert!(!resumed.paused);
+    vault.execute_subscription(&alice, &sub_id);
+}
+
+#[test]
+fn test_subscription_history_and_statistics_track_executions() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    let sub_id = create_default_subscription(&vault, &env, &alice, &token);
+
+    let first_deposit_id = vault.execute_subscription(&alice, &sub_id);
+    advance_time(&env, 121);
+    let second_deposit_id = vault.execute_subscription(&alice, &sub_id);
+
+    let history = vault.get_subscription_history(&alice, &sub_id);
+    assert_eq!(history.len(), 2);
+    assert_eq!(history.get(0).unwrap().deposit_id, first_deposit_id);
+    assert_eq!(history.get(1).unwrap().deposit_id, second_deposit_id);
+
+    let stats = vault.get_subscription_stats(&alice, &sub_id);
+    assert_eq!(stats.deposit_count, 2);
+    assert_eq!(stats.total_amount, 2_000);
+    assert!(stats.last_execution_time > 0);
+}
+
 // ================================================================
 //  Issue #334 — Deposit insurance pool tests
 // ================================================================
@@ -4839,6 +5011,42 @@ fn test_emergency_withdrawal_limit_cumulative_tracking() {
     // Verify total is now 30M
     let total = vault.get_emergency_withdrawal_total(&env, env.ledger().sequence());
     assert_eq!(total, 30_000_000);
+}
+
+#[test]
+fn test_emergency_withdrawal_circuit_breaker_trips_at_threshold() {
+    let (env, vault, token, admin, alice, _fee) = setup();
+    use crate::types::MAX_EMERGENCY_WITHDRAWAL_PER_LEDGER;
+
+    StellarAssetClient::new(&env, &token).mint(&alice, &MAX_EMERGENCY_WITHDRAWAL_PER_LEDGER);
+    let unlock_time = env.ledger().timestamp() + 3600;
+    let deposit_id = vault.deposit(&alice, &token, &MAX_EMERGENCY_WITHDRAWAL_PER_LEDGER, &unlock_time, &0);
+
+    vault.emergency_withdraw(&admin, &alice, &deposit_id);
+
+    assert!(vault.is_paused());
+    let history = vault.get_circuit_breaker_history();
+    assert_eq!(history.len(), 1);
+    assert_eq!(history.get(0).unwrap().ledger, env.ledger().sequence());
+    assert_eq!(history.get(0).unwrap().amount, MAX_EMERGENCY_WITHDRAWAL_PER_LEDGER);
+}
+
+#[test]
+fn test_emergency_withdrawal_circuit_breaker_rejects_above_threshold() {
+    let (env, vault, token, admin, alice, _fee) = setup();
+    use crate::types::MAX_EMERGENCY_WITHDRAWAL_PER_LEDGER;
+
+    let amount = MAX_EMERGENCY_WITHDRAWAL_PER_LEDGER + 1;
+    StellarAssetClient::new(&env, &token).mint(&alice, &amount);
+    let unlock_time = env.ledger().timestamp() + 3600;
+    let deposit_id = vault.deposit(&alice, &token, &amount, &unlock_time, &0);
+
+    assert_eq!(
+        vault.try_emergency_withdraw(&admin, &alice, &deposit_id),
+        Err(Ok(VaultError::EmergencyWithdrawalLimitExceeded))
+    );
+    assert!(!vault.is_paused());
+    assert!(vault.get_vault(&alice, &deposit_id).is_some());
 }
 
 #[test]

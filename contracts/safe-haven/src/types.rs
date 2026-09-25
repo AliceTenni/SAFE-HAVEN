@@ -6,6 +6,8 @@ pub const MIN_LOCK_DURATION_SECS: u64 = 60;
 
 /// Maximum number of tokens allowed in a single multi-token deposit (issue #330).
 pub const MAX_TOKENS_PER_DEPOSIT: u32 = 5;
+/// Emergency withdrawals at or above this cumulative amount in one ledger trip the circuit breaker.
+pub const MAX_EMERGENCY_WITHDRAWAL_PER_LEDGER: i128 = 100_000_000;
 
 /// Current storage schema version. Bump this constant when the on-chain
 /// layout of a `contracttype` struct changes so `migrate()` can detect
@@ -105,6 +107,22 @@ pub struct VaultEntry {
     pub compound_frequency_secs: u64,
     /// Timestamp of last compound accrual (issue #332).
     pub last_accrual_timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TaxLossHarvest {
+    pub depositor: Address,
+    pub original_token: Address,
+    pub replacement_token: Address,
+    pub original_deposit_id: u32,
+    pub replacement_deposit_id: u32,
+    pub cost_basis: i128,
+    pub current_value: i128,
+    pub realized_loss: i128,
+    pub tax_benefit: i128,
+    pub harvested_at: u64,
+    pub wash_sale_until: u64,
 }
 
 #[contracttype]

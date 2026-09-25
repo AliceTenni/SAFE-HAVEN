@@ -220,6 +220,11 @@ Locks tokens. Returns the deposit ID.
 #### `deposit_for(payer, depositor, token, amount, unlock_time, penalty_bps) -> u32`
 Payer funds a vault for a different beneficiary.
 
+#### Smart wallets and delegated deposits
+Smart wallets use their contract address as `depositor`; the vault relies on Soroban `require_auth()` and does not require an EOA. Multisig and account-abstraction wallets keep their own approval policy and authorize the vault and token calls.
+
+For time-bounded delegated funding, use `authorize_session_key`, `deposit_with_session_key`, and `revoke_session_key`. The session key is the payer, while the smart wallet remains the deposit owner. See [Smart Wallet Integration](docs/SMART_WALLETS.md) for the security model and integration checklist.
+
 #### `deposit_by_ledger(depositor, token, amount, unlock_ledger, penalty_bps) -> u32`
 Locks tokens until a specific Stellar ledger sequence number is reached, instead of a wall-clock timestamp.
 
