@@ -207,3 +207,42 @@ pub fn interest_accrued(
     env.events()
         .publish(topics, (deposit_id, old_amount, new_amount));
 }
+
+/// Emitted when a time-lock proof is generated (issue #xyz).
+pub fn proof_generated(
+    env: &Env,
+    depositor: &Address,
+    deposit_id: u32,
+    proof_id: u32,
+    proof_timestamp: u64,
+) {
+    let topics = (Symbol::new(env, "proof_gen"), depositor.clone());
+    env.events()
+        .publish(topics, (deposit_id, proof_id, proof_timestamp));
+}
+
+/// Emitted when a time-lock proof is verified (issue #xyz).
+pub fn proof_verified(
+    env: &Env,
+    depositor: &Address,
+    deposit_id: u32,
+    proof_id: u32,
+    is_valid: bool,
+) {
+    let topics = (Symbol::new(env, "proof_verify"), depositor.clone());
+    env.events()
+        .publish(topics, (deposit_id, proof_id, is_valid));
+}
+
+/// Emitted when a time-lock proof is exported (issue #xyz).
+pub fn proof_exported(
+    env: &Env,
+    depositor: &Address,
+    deposit_id: u32,
+    proof_id: u32,
+    export_timestamp: u64,
+) {
+    let topics = (Symbol::new(env, "proof_export"), depositor.clone());
+    env.events()
+        .publish(topics, (deposit_id, proof_id, export_timestamp));
+}

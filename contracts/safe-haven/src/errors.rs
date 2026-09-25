@@ -29,4 +29,10 @@ pub enum VaultError {
     RecipientNotWhitelisted = 18,
     /// Compound frequency must be >= 60 seconds if non-zero (issue #332).
     InvalidCompoundFrequency = 19,
+    /// Proof generation failed or proof not found
+    ProofGenerationFailed = 20,
+    /// Proof validation failed — tampered or invalid signature
+    ProofValidationFailed = 21,
+    /// Proof has expired
+    ProofExpired = 22,
 }

@@ -823,6 +823,95 @@ pub fn get_stakers_list(env: &Env) -> Vec<Address> {
 }
 
 // ----------------------------------------------------------------
+//  Time-lock proof helpers (issue #xyz)
+// ----------------------------------------------------------------
+
+use crate::types::TimeLockProof;
+
+/// Generate the next proof ID for a depositor. Monotonically increasing.
+pub fn next_proof_id(env: &Env, depositor: &Address) -> u32 {
+    let key = VaultKey::ProofCounter(depositor.clone());
+    let id: u32 = env.storage().persistent().get(&key).unwrap_or(0);
+    env.storage().persistent().set(&key, &(id.saturating_add(1)));
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
+    id
+}
+
+/// Store a generated time-lock proof.
+pub fn set_timelock_proof(
+    env: &Env,
+    depositor: &Address,
+    deposit_id: u32,
+    proof: &TimeLockProof,
+) {
+    let key = VaultKey::TimeLockProof(depositor.clone(), deposit_id);
+    env.storage().persistent().set(&key, proof);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
+}
+
+/// Retrieve a stored time-lock proof.
+pub fn get_timelock_proof(
+    env: &Env,
+    depositor: &Address,
+    deposit_id: u32,
+) -> Option<TimeLockProof> {
+    let key = VaultKey::TimeLockProof(depositor.clone(), deposit_id);
+    let proof: Option<TimeLockProof> = env.storage().persistent().get(&key);
+    if proof.is_some() {
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
+    }
+    proof
+}
+
+/// Retrieve a stored time-lock proof (read-only, does not extend TTL).
+pub fn get_timelock_proof_readonly(
+    env: &Env,
+    depositor: &Address,
+    deposit_id: u32,
+) -> Option<TimeLockProof> {
+    let key = VaultKey::TimeLockProof(depositor.clone(), deposit_id);
+    env.storage().persistent().get(&key)
+}
+
+/// Remove a time-lock proof from storage (called when deposit is withdrawn).
+pub fn remove_timelock_proof(env: &Env, depositor: &Address, deposit_id: u32) {
+    let key = VaultKey::TimeLockProof(depositor.clone(), deposit_id);
+    if env.storage().persistent().has(&key) {
+        env.storage().persistent().remove(&key);
+    }
+}
+
+/// Store proof metadata (timestamps and generation details).
+pub fn set_proof_metadata(
+    env: &Env,
+    depositor: &Address,
+    deposit_id: u32,
+    metadata: &soroban_sdk::String,
+) {
+    let key = VaultKey::ProofMetadata(depositor.clone(), deposit_id);
+    env.storage().persistent().set(&key, metadata);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
+}
+
+/// Retrieve proof metadata.
+pub fn get_proof_metadata(
+    env: &Env,
+    depositor: &Address,
+    deposit_id: u32,
+) -> Option<soroban_sdk::String> {
+    let key = VaultKey::ProofMetadata(depositor.clone(), deposit_id);
+    env.storage().persistent().get(&key)
+}
+
+// ----------------------------------------------------------------
 //  Archived deposit helpers
 // ----------------------------------------------------------------
 

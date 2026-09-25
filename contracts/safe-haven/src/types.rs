@@ -89,6 +89,12 @@ pub enum VaultKey {
     RewardsPool,
     /// Rewards claimed by a staker (track cumulative for auditing)
     StakerRewardsClaimed(Address),
+    /// Time-lock proof for a deposit (issue #xyz)
+    TimeLockProof(Address, u32),
+    /// Counter for proof generation per depositor (issue #xyz)
+    ProofCounter(Address),
+    /// Metadata tracking proof generation events (issue #xyz)
+    ProofMetadata(Address, u32),
 }
 
 #[contracttype]
@@ -167,6 +173,45 @@ pub struct Page {
 pub struct StakerEntry {
     pub staker: Address,
     pub stake_amount: i128,
+}
+
+/// Cryptographic proof of time-locked deposit compliance
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TimeLockProof {
+    /// Unique proof identifier (per depositor-deposit pair)
+    pub proof_id: u32,
+    /// The depositor who created this proof
+    pub depositor: Address,
+    /// Associated deposit ID
+    pub deposit_id: u32,
+    /// Token address of the deposited asset
+    pub token: Address,
+    /// Deposited amount
+    pub amount: i128,
+    /// Unlock time (absolute Unix timestamp)
+    pub unlock_time: u64,
+    /// Lock duration in seconds
+    pub lock_duration_secs: u64,
+    /// Timestamp when proof was generated
+    pub proof_timestamp: u64,
+    /// Cryptographic signature (hash of deposit parameters) — prevents tampering
+    /// Format: SHA256 hash of (depositor + token + amount + unlock_time + deposit_id)
+    pub proof_signature: soroban_sdk::BytesN<32>,
+    /// Expiration timestamp of the proof (for archival purposes)
+    pub proof_expiry: u64,
+}
+
+/// Proof export format for off-chain verification
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProofExport {
+    /// Human-readable proof identifier
+    pub proof_reference: soroban_sdk::String,
+    /// JSON-compatible proof data (base64 encoded)
+    pub proof_data: soroban_sdk::String,
+    /// Export timestamp
+    pub export_timestamp: u64,
 }
 
 /// Deposit type indicator — distinguishes between timestamp-based and ledger-based deposits

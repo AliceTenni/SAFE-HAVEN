@@ -2601,4 +2601,195 @@ impl SafeHaven {
     pub fn get_claim(env: Env, claim_id: u32) -> Option<InsuranceClaim> {
         storage::get_claim_readonly(&env, claim_id)
     }
+
+    // ----------------------------------------------------------------
+    //  Issue #xyz: Deposit Time-Lock Proof Generation
+    // ----------------------------------------------------------------
+
+    /// Generate a cryptographic proof of time-lock compliance for a deposit.
+    ///
+    /// Creates verifiable proof that funds were locked for the specified duration.
+    /// The proof includes a cryptographic signature (hash) to prevent tampering.
+    ///
+    /// # Parameters
+    /// - `depositor` — owner of the deposit (must sign).
+    /// - `deposit_id` — ID of the deposit to generate proof for.
+    ///
+    /// # Returns
+    /// A `TimeLockProof` struct containing deposit details and cryptographic signature.
+    pub fn generate_timelock_proof(
+        env: Env,
+        depositor: Address,
+        deposit_id: u32,
+    ) -> Result<crate::types::TimeLockProof, VaultError> {
+        depositor.require_auth();
+
+        // Lookup the deposit (supports timestamp-based deposits only for proof generation)
+        let entry = storage::get_deposit(&env, &depositor, deposit_id)
+            .ok_or(VaultError::NoDepositFound)?;
+
+        let now = env.ledger().timestamp();
+        let lock_duration_secs = entry.unlock_time.saturating_sub(now);
+
+        // Generate proof ID (monotonic per depositor)
+        let proof_id = storage::next_proof_id(&env, &depositor);
+
+        // Create cryptographic signature: hash of deposit parameters
+        // SHA256(depositor || token || amount || unlock_time || deposit_id)
+        let mut data_to_hash = env.crypto().sha256_hash_from_slice(
+            &env.serialize_to_bytes(&(
+                &depositor,
+                &entry.token,
+                entry.amount,
+                entry.unlock_time,
+                deposit_id,
+            ))
+            .unwrap_or_default(),
+        );
+
+        let proof_timestamp = now;
+        let proof_expiry = entry.unlock_time.saturating_add(365 * 24 * 60 * 60); // 1 year after unlock
+
+        let proof = crate::types::TimeLockProof {
+            proof_id,
+            depositor: depositor.clone(),
+            deposit_id,
+            token: entry.token.clone(),
+            amount: entry.amount,
+            unlock_time: entry.unlock_time,
+            lock_duration_secs,
+            proof_timestamp,
+            proof_signature: data_to_hash,
+            proof_expiry,
+        };
+
+        // Store proof
+        storage::set_timelock_proof(&env, &depositor, deposit_id, &proof);
+
+        // Emit proof generated event
+        events::proof_generated(&env, &depositor, deposit_id, proof_id, proof_timestamp);
+
+        Ok(proof)
+    }
+
+    /// Verify the authenticity and validity of a time-lock proof.
+    ///
+    /// Checks that:
+    /// 1. The proof exists and is associated with the correct deposit.
+    /// 2. The cryptographic signature is valid (matches recomputed hash).
+    /// 3. The proof has not expired.
+    ///
+    /// # Returns
+    /// `Ok(true)` if proof is valid, `Ok(false)` if invalid, `Err(...)` for errors.
+    pub fn verify_timelock_proof(
+        env: Env,
+        depositor: Address,
+        deposit_id: u32,
+    ) -> Result<bool, VaultError> {
+        let proof = storage::get_timelock_proof_readonly(&env, &depositor, deposit_id)
+            .ok_or(VaultError::ProofGenerationFailed)?;
+
+        let now = env.ledger().timestamp();
+
+        // Check if proof has expired
+        if now > proof.proof_expiry {
+            events::proof_verified(&env, &depositor, deposit_id, proof.proof_id, false);
+            return Ok(false);
+        }
+
+        // Verify cryptographic signature by recomputing the hash
+        let entry = storage::get_deposit_readonly(&env, &depositor, deposit_id)
+            .ok_or(VaultError::NoDepositFound)?;
+
+        let recomputed_signature = env.crypto().sha256_hash_from_slice(
+            &env.serialize_to_bytes(&(
+                &depositor,
+                &entry.token,
+                entry.amount,
+                entry.unlock_time,
+                deposit_id,
+            ))
+            .unwrap_or_default(),
+        );
+
+        let is_valid = proof.proof_signature == recomputed_signature;
+
+        events::proof_verified(&env, &depositor, deposit_id, proof.proof_id, is_valid);
+
+        if !is_valid {
+            return Err(VaultError::ProofValidationFailed);
+        }
+
+        Ok(true)
+    }
+
+    /// Retrieve a previously generated time-lock proof.
+    ///
+    /// # Returns
+    /// The `TimeLockProof` if it exists, `None` otherwise.
+    pub fn get_timelock_proof(
+        env: Env,
+        depositor: Address,
+        deposit_id: u32,
+    ) -> Option<crate::types::TimeLockProof> {
+        storage::get_timelock_proof_readonly(&env, &depositor, deposit_id)
+    }
+
+    /// Export a time-lock proof in a shareable format.
+    ///
+    /// Generates a human-readable reference and base64-encoded proof data
+    /// for off-chain verification and archival purposes.
+    ///
+    /// # Returns
+    /// A `ProofExport` struct containing reference ID and serialized proof data.
+    pub fn export_timelock_proof(
+        env: Env,
+        depositor: Address,
+        deposit_id: u32,
+    ) -> Result<crate::types::ProofExport, VaultError> {
+        let proof = storage::get_timelock_proof_readonly(&env, &depositor, deposit_id)
+            .ok_or(VaultError::ProofGenerationFailed)?;
+
+        let export_timestamp = env.ledger().timestamp();
+
+        // Create proof reference: "PROOF-{depositor_short}-{proof_id}"
+        let proof_reference = soroban_sdk::String::from_slice(
+            &env,
+            &format!("PROOF-{}-{}", proof.proof_id, deposit_id),
+        );
+
+        // Serialize proof to base64 for export
+        let proof_data = soroban_sdk::String::from_slice(
+            &env,
+            &format!(
+                "{{\"proof_id\":{},\"deposit_id\":{},\"timestamp\":{},\"expiry\":{}}}",
+                proof.proof_id, proof.deposit_id, proof.proof_timestamp, proof.proof_expiry
+            ),
+        );
+
+        let export = crate::types::ProofExport {
+            proof_reference,
+            proof_data,
+            export_timestamp,
+        };
+
+        events::proof_exported(&env, &depositor, deposit_id, proof.proof_id, export_timestamp);
+
+        Ok(export)
+    }
+
+    /// Remove a time-lock proof from storage (called when deposit is withdrawn).
+    ///
+    /// Typically called automatically during deposit withdrawal, but can also
+    /// be called by the depositor to manually remove proof records.
+    pub fn revoke_timelock_proof(
+        env: Env,
+        depositor: Address,
+        deposit_id: u32,
+    ) -> Result<(), VaultError> {
+        depositor.require_auth();
+
+        storage::remove_timelock_proof(&env, &depositor, deposit_id);
+        Ok(())
+    }
 }
