@@ -5381,316 +5381,311 @@ fn test_multiple_depositors_independent_metrics() {
 
 
 // ================================================================
-//  MEV PROTECTION TESTS
+//  NFT Evolution Tests
 // ================================================================
 
 #[test]
-fn test_mev_commit_happy_path() {
-    let (env, vault, _admin, alice, _fee_recipient, token) = setup();
-    env.ledger().set_timestamp(1000);
+fn test_nft_creation_on_deposit() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    let token_client = TokenClient::new(&env, &token);
 
-    // Deposit
-    vault.deposit(
-        &alice,
-        &token,
-        &1000,
-        &2000, // unlock in 1000 seconds
-        &100,  // 1% penalty
-    ).unwrap();
+    let now = env.ledger().timestamp();
+    let unlock_time = now + 1000;
+    let amount = 5_000;
 
-    let deposit_id = 0u32;
-    
-    // Create a commit hash (simplified: keccak256 of token addr + amount + price + nonce)
-    let commit_hash = soroban_sdk::BytesN::<32>::from_array(&env, &[1u8; 32]);
+    // Create a deposit
+    let deposit_id = vault.deposit(&alice, &token, &amount, &unlock_time, &0)
+        .expect("deposit succeeds");
 
-    // Submit commit
-    let result = vault.mev_commit(&alice, &deposit_id, &commit_hash);
-    assert!(result.is_ok(), "MEV commit should succeed");
+    // NFT record should exist
+    let nft = vault.get_nft_evolution(&alice, &deposit_id)
+        .expect("NFT record exists");
 
-    // Check events
-    let events = env.events().all();
-    let has_commit = events.iter().any(|e| {
-        e.0.topics.get(0).map_or(false, |t| {
-            t.to_string().contains("mev_commit")
-        })
+    // Verify initial state
+    assert_eq!(nft.deposit_id, deposit_id);
+    assert_eq!(nft.stage, crate::nft::EvolutionStage::Egg);
+    assert_eq!(nft.rarity, crate::nft::RarityTier::Uncommon); // 5000 >= 1000
+    assert_eq!(nft.created_at, now);
+    assert_eq!(nft.last_evolved_at, now);
+    assert_eq!(nft.evolution_count, 0);
+    assert_eq!(nft.current_amount, amount);
+    assert_eq!(nft.unlock_time, unlock_time);
+}
+
+#[test]
+fn test_nft_stage_egg_to_hatchling() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    let token_client = TokenClient::new(&env, &token);
+
+    let now = env.ledger().timestamp();
+    let unlock_time = now + 100_000;
+    let amount = 5_000;
+
+    // Create a deposit
+    let deposit_id = vault.deposit(&alice, &token, &amount, &unlock_time, &0)
+        .expect("deposit succeeds");
+
+    // Initial stage should be Egg
+    let stage = vault.get_nft_stage(&alice, &deposit_id)
+        .expect("stage query succeeds");
+    assert_eq!(stage, crate::nft::EvolutionStage::Egg);
+
+    // Advance time to 14+ days
+    env.ledger().with_mut(|ledger| {
+        ledger.timestamp = now + (15 * 24 * 60 * 60); // 15 days
     });
-    assert!(has_commit, "commit_submitted event should be emitted");
+
+    // Create another deposit to trigger time update
+    // (In practice, withdrawal or other operations would check evolution)
+    let unlock_time2 = now + (15 * 24 * 60 * 60) + 100_000;
+    let deposit_id2 = vault.deposit(&alice, &token, &amount, &unlock_time2, &0)
+        .expect("second deposit succeeds");
+
+    // Stage should still be Egg for first deposit (unless evolution check is called)
+    // This test verifies the calculation, not automatic evolution
+    let calc_stage = crate::nft::calculate_evolution_stage(15 * 24 * 60 * 60);
+    assert_eq!(calc_stage, crate::nft::EvolutionStage::Hatchling);
 }
 
 #[test]
-fn test_mev_commit_nonexistent_deposit() {
-    let (env, vault, _admin, alice, _fee_recipient, _token) = setup();
-    env.ledger().set_timestamp(1000);
+fn test_nft_rarity_common() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
 
-    let deposit_id = 999u32; // Non-existent
-    let commit_hash = soroban_sdk::BytesN::<32>::from_array(&env, &[1u8; 32]);
+    let now = env.ledger().timestamp();
+    let unlock_time = now + 1000; // Very short lock
+    let amount = 100; // Very small amount
 
-    let result = vault.mev_commit(&alice, &deposit_id, &commit_hash);
-    assert_eq!(result, Err(VaultError::NoDepositFound));
+    let deposit_id = vault.deposit(&alice, &token, &amount, &unlock_time, &0)
+        .expect("deposit succeeds");
+
+    let rarity = vault.get_nft_rarity(&alice, &deposit_id)
+        .expect("rarity query succeeds");
+    assert_eq!(rarity, crate::nft::RarityTier::Common);
 }
 
 #[test]
-fn test_mev_reveal_happy_path() {
-    let (env, vault, _admin, alice, _fee_recipient, token) = setup();
-    env.ledger().set_timestamp(1000);
+fn test_nft_rarity_legendary() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
 
-    // Deposit
-    vault.deposit(
-        &alice,
-        &token,
-        &1000,
-        &2000,
-        &100,
-    ).unwrap();
+    let now = env.ledger().timestamp();
+    let unlock_time = now + (400 * 24 * 60 * 60); // 400 days (exceeds 365 threshold)
+    let amount = 2_000_000; // Exceeds legendary threshold
 
-    let deposit_id = 0u32;
+    let deposit_id = vault.deposit(&alice, &token, &amount, &unlock_time, &0)
+        .expect("deposit succeeds");
 
-    // Compute commit hash inline (same as in contract)
-    let amount = 1000i128;
-    let price = 100i128;
-    let nonce = 42u32;
-    
-    // For this test, we'll use a mock hash
-    let commit_hash = soroban_sdk::BytesN::<32>::from_array(&env, &[1u8; 32]);
-
-    // Submit commit
-    vault.mev_commit(&alice, &deposit_id, &commit_hash).unwrap();
-
-    // Advance time (but stay within reveal window)
-    env.ledger().set_timestamp(1100);
-
-    // Attempt reveal with mock data
-    // Note: in a real test, we'd need to compute the correct hash
-    // For now, we test the flow assuming hash verification would fail
-    let result = vault.mev_reveal(
-        &alice,
-        &deposit_id,
-        &token,
-        &amount,
-        &price,
-        &nonce,
-    );
-    
-    // This will fail because our hash won't match, but that's expected for this test
-    // In a proper test, we'd compute the correct hash
-    assert!(result.is_err() || result.is_ok(), "Reveal should have deterministic behavior");
+    let rarity = vault.get_nft_rarity(&alice, &deposit_id)
+        .expect("rarity query succeeds");
+    assert_eq!(rarity, crate::nft::RarityTier::Legendary);
 }
 
 #[test]
-fn test_mev_commit_not_found_on_reveal() {
-    let (env, vault, _admin, alice, _fee_recipient, token) = setup();
-    env.ledger().set_timestamp(1000);
+fn test_nft_metadata_uri_present() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
 
-    // Deposit without commit
-    vault.deposit(
-        &alice,
-        &token,
-        &1000,
-        &2000,
-        &100,
-    ).unwrap();
+    let now = env.ledger().timestamp();
+    let unlock_time = now + 10_000;
+    let amount = 5_000;
 
-    let deposit_id = 0u32;
+    let deposit_id = vault.deposit(&alice, &token, &amount, &unlock_time, &0)
+        .expect("deposit succeeds");
 
-    // Try to reveal without a prior commit
-    let result = vault.mev_reveal(
-        &alice,
-        &deposit_id,
-        &token,
-        &1000,
-        &100,
-        &42,
-    );
-    
-    assert_eq!(result, Err(VaultError::CommitNotFound));
+    let metadata = vault.get_nft_metadata_uri(&alice, &deposit_id)
+        .expect("metadata uri query succeeds");
+
+    // Metadata should contain deposit ID and stage info
+    let metadata_str = metadata.to_string();
+    assert!(metadata_str.len() > 0);
+    assert!(metadata_str.contains("deposit_nft"));
 }
 
 #[test]
-fn test_mev_claim_recovery_empty() {
-    let (env, vault, _admin, alice, _fee_recipient, _token) = setup();
-    env.ledger().set_timestamp(1000);
+fn test_nft_evolution_count_initial() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
 
-    // Try to claim with no MEV recovered
-    let result = vault.claim_mev_recovery(&alice);
-    assert_eq!(result, Err(VaultError::NoRewardsToClaim));
+    let now = env.ledger().timestamp();
+    let unlock_time = now + 10_000;
+    let amount = 5_000;
+
+    let deposit_id = vault.deposit(&alice, &token, &amount, &unlock_time, &0)
+        .expect("deposit succeeds");
+
+    let count = vault.get_nft_evolution_count(&alice, &deposit_id)
+        .expect("evolution count query succeeds");
+    assert_eq!(count, 0); // No evolutions yet
 }
 
 #[test]
-fn test_mev_status_query_unprotected() {
-    let (env, vault, _admin, alice, _fee_recipient, token) = setup();
-    env.ledger().set_timestamp(1000);
+fn test_nft_removed_on_withdrawal() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
 
-    // Deposit without MEV protection
-    vault.deposit(
-        &alice,
-        &token,
-        &1000,
-        &2000,
-        &100,
-    ).unwrap();
+    let now = env.ledger().timestamp();
+    let unlock_time = now + 1000;
+    let amount = 5_000;
 
-    let deposit_id = 0u32;
-    let status = vault.get_mev_status_query(&alice, &deposit_id);
-    
-    // Should be Unprotected since no commit was made
-    match status {
-        crate::types::MEVStatus::Unprotected => {
-            // Expected
-        }
-        _ => panic!("Expected Unprotected status"),
+    let deposit_id = vault.deposit(&alice, &token, &amount, &unlock_time, &0)
+        .expect("deposit succeeds");
+
+    // Verify NFT exists
+    let nft_before = vault.get_nft_evolution(&alice, &deposit_id)
+        .expect("NFT exists before withdrawal");
+    assert_eq!(nft_before.deposit_id, deposit_id);
+
+    // Advance time and withdraw
+    env.ledger().with_mut(|ledger| {
+        ledger.timestamp = unlock_time + 1;
+    });
+
+    vault.withdraw(&alice, &deposit_id)
+        .expect("withdraw succeeds");
+
+    // NFT should be removed
+    let nft_after = vault.get_nft_evolution(&alice, &deposit_id);
+    assert!(nft_after.is_none());
+}
+
+#[test]
+fn test_nft_removed_on_cancel() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    let token_client = TokenClient::new(&env, &token);
+
+    let now = env.ledger().timestamp();
+    let unlock_time = now + 100_000;
+    let amount = 5_000;
+
+    let deposit_id = vault.deposit(&alice, &token, &amount, &unlock_time, &0)
+        .expect("deposit succeeds");
+
+    // Verify NFT exists
+    let nft_before = vault.get_nft_evolution(&alice, &deposit_id)
+        .expect("NFT exists before cancellation");
+    assert_eq!(nft_before.deposit_id, deposit_id);
+
+    // Cancel the deposit
+    vault.cancel_deposit(&alice, &deposit_id)
+        .expect("cancel_deposit succeeds");
+
+    // NFT should be removed
+    let nft_after = vault.get_nft_evolution(&alice, &deposit_id);
+    assert!(nft_after.is_none());
+}
+
+#[test]
+fn test_nft_rarity_by_duration() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+
+    let now = env.ledger().timestamp();
+    let amount = 100; // Small amount
+
+    // Test each duration threshold
+    let test_cases = vec![
+        (now + (6 * 24 * 60 * 60), crate::nft::RarityTier::Common),
+        (now + (8 * 24 * 60 * 60), crate::nft::RarityTier::Uncommon),
+        (now + (31 * 24 * 60 * 60), crate::nft::RarityTier::Rare),
+        (now + (91 * 24 * 60 * 60), crate::nft::RarityTier::Epic),
+        (now + (400 * 24 * 60 * 60), crate::nft::RarityTier::Legendary),
+    ];
+
+    for (idx, (unlock_time, expected_rarity)) in test_cases.into_iter().enumerate() {
+        let deposit_id = vault.deposit(&alice, &token, &amount, &unlock_time, &0)
+            .expect("deposit succeeds");
+
+        let rarity = vault.get_nft_rarity(&alice, &deposit_id)
+            .expect("rarity query succeeds");
+        assert_eq!(rarity, expected_rarity, "Failed for test case {}", idx);
     }
 }
 
 #[test]
-fn test_mev_pool_query() {
-    let (env, vault, _admin, _alice, _fee_recipient, _token) = setup();
-    env.ledger().set_timestamp(1000);
+fn test_nft_multiple_deposits_independent() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
 
-    // Query MEV pool (should be empty initially)
-    let pool = vault.get_mev_pool_total();
-    assert_eq!(pool, 0);
+    let now = env.ledger().timestamp();
+
+    // Create first deposit with small amount
+    let deposit_id1 = vault.deposit(&alice, &token, &100, &(now + 1000), &0)
+        .expect("first deposit succeeds");
+
+    // Create second deposit with large amount
+    let deposit_id2 = vault.deposit(&alice, &token, &2_000_000, &(now + 100_000), &0)
+        .expect("second deposit succeeds");
+
+    // NFTs should have different rarities
+    let rarity1 = vault.get_nft_rarity(&alice, &deposit_id1)
+        .expect("first rarity query succeeds");
+    let rarity2 = vault.get_nft_rarity(&alice, &deposit_id2)
+        .expect("second rarity query succeeds");
+
+    assert_eq!(rarity1, crate::nft::RarityTier::Common);
+    assert_eq!(rarity2, crate::nft::RarityTier::Legendary);
 }
 
 #[test]
-fn test_mev_pending_query() {
-    let (env, vault, _admin, alice, _fee_recipient, _token) = setup();
-    env.ledger().set_timestamp(1000);
+fn test_nft_calculate_stage_progression() {
+    // Direct unit tests for stage calculation
+    let test_cases = vec![
+        (0, crate::nft::EvolutionStage::Egg),
+        (1 * 24 * 60 * 60, crate::nft::EvolutionStage::Egg),
+        (14 * 24 * 60 * 60, crate::nft::EvolutionStage::Hatchling),
+        (30 * 24 * 60 * 60, crate::nft::EvolutionStage::Juvenile),
+        (90 * 24 * 60 * 60, crate::nft::EvolutionStage::Adult),
+        (180 * 24 * 60 * 60, crate::nft::EvolutionStage::Adult),
+        (365 * 24 * 60 * 60, crate::nft::EvolutionStage::Ancient),
+        (400 * 24 * 60 * 60, crate::nft::EvolutionStage::Ancient),
+    ];
 
-    // Query pending MEV for alice (should be zero initially)
-    let pending = vault.get_mev_pending(&alice);
-    assert_eq!(pending, 0);
-}
-
-#[test]
-fn test_mev_detections_pagination() {
-    let (env, vault, _admin, alice, _fee_recipient, token) = setup();
-    env.ledger().set_timestamp(1000);
-
-    // Deposit
-    vault.deposit(
-        &alice,
-        &token,
-        &1000,
-        &2000,
-        &100,
-    ).unwrap();
-
-    let deposit_id = 0u32;
-
-    // Query detections (should be empty)
-    let result = vault.get_mev_detections(&alice, &deposit_id, &0, &10);
-    assert!(result.is_ok());
-    let detections = result.unwrap();
-    assert_eq!(detections.len(), 0);
-}
-
-#[test]
-fn test_mev_finalize_redistribution_admin_only() {
-    let (env, vault, admin, alice, _fee_recipient, _token) = setup();
-    env.ledger().set_timestamp(1000);
-
-    // Try to finalize from non-admin (should be auth error)
-    let result = vault.finalize_mev_redistribution(&alice);
-    
-    // This might fail due to auth or admin check
-    // Either way, it should not succeed from non-admin
-    match result {
-        Err(VaultError::Unauthorized) => {
-            // Expected
-        }
-        _ => {
-            // Auth might prevent this at a lower level
-        }
+    for (age_secs, expected_stage) in test_cases {
+        let stage = crate::nft::calculate_evolution_stage(age_secs);
+        assert_eq!(stage, expected_stage, "Stage mismatch for age_secs={}", age_secs);
     }
 }
 
 #[test]
-fn test_mev_finalize_empty_pool() {
-    let (env, vault, admin, _alice, _fee_recipient, _token) = setup();
-    env.ledger().set_timestamp(1000);
+fn test_nft_query_nonexistent() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
 
-    // Finalize with empty pool
-    let result = vault.finalize_mev_redistribution(&admin);
-    assert!(result.is_ok());
-    assert_eq!(result.unwrap(), 0);
+    // Query for nonexistent deposit should return None
+    let nft = vault.get_nft_evolution(&alice, &999);
+    assert!(nft.is_none());
+
+    let stage = vault.get_nft_stage(&alice, &999);
+    assert!(stage.is_none());
+
+    let rarity = vault.get_nft_rarity(&alice, &999);
+    assert!(rarity.is_none());
+
+    let metadata = vault.get_nft_metadata_uri(&alice, &999);
+    assert!(metadata.is_none());
+
+    let count = vault.get_nft_evolution_count(&alice, &999);
+    assert!(count.is_none());
 }
 
 #[test]
-fn test_price_deviation_detection_scenario() {
-    let (env, vault, _admin, alice, _fee_recipient, token) = setup();
-    env.ledger().set_timestamp(1000);
+fn test_nft_rarity_amount_threshold_boundary() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
 
-    // Deposit
-    vault.deposit(
-        &alice,
-        &token,
-        &1000,
-        &2000,
-        &100,
-    ).unwrap();
+    let now = env.ledger().timestamp();
+    let unlock_time = now + 1000;
 
-    let deposit_id = 0u32;
+    // Test boundary values
+    let test_cases = vec![
+        (999, crate::nft::RarityTier::Common),
+        (1_000, crate::nft::RarityTier::Uncommon),
+        (9_999, crate::nft::RarityTier::Uncommon),
+        (10_000, crate::nft::RarityTier::Rare),
+        (99_999, crate::nft::RarityTier::Rare),
+        (100_000, crate::nft::RarityTier::Epic),
+        (999_999, crate::nft::RarityTier::Epic),
+        (1_000_000, crate::nft::RarityTier::Legendary),
+    ];
 
-    // Scenario: commit → reveal with price deviation
-    // In a real test, we'd orchestrate multiple price samples
-    // and then detect a sandwich attack
-    
-    let commit_hash = soroban_sdk::BytesN::<32>::from_array(&env, &[1u8; 32]);
-    vault.mev_commit(&alice, &deposit_id, &commit_hash).unwrap();
+    for (amount, expected_rarity) in test_cases {
+        let deposit_id = vault.deposit(&alice, &token, &amount, &unlock_time, &0)
+            .expect("deposit succeeds");
 
-    // Advance time within reveal window
-    env.ledger().set_timestamp(1100);
-
-    // Attempt reveal (will fail hash validation in this simplified test)
-    let _result = vault.mev_reveal(
-        &alice,
-        &deposit_id,
-        &token,
-        &1000,
-        &150, // Different price = potential sandwich
-        &42,
-    );
-}
-
-#[test]
-fn test_mev_workflow_integration() {
-    let (env, vault, admin, alice, _fee_recipient, token) = setup();
-    env.ledger().set_timestamp(1000);
-
-    // Step 1: Deposit with intent to use MEV protection
-    vault.deposit(
-        &alice,
-        &token,
-        &1000,
-        &2000, // 1000 second lock
-        &100,  // 1% penalty
-    ).unwrap();
-
-    let deposit_id = 0u32;
-
-    // Step 2: Submit commit
-    let commit_hash = soroban_sdk::BytesN::<32>::from_array(&env, &[42u8; 32]);
-    let commit_result = vault.mev_commit(&alice, &deposit_id, &commit_hash);
-    assert!(commit_result.is_ok());
-
-    // Step 3: Query status (should be Committed)
-    let status = vault.get_mev_status_query(&alice, &deposit_id);
-    match status {
-        crate::types::MEVStatus::Committed => {
-            // Expected
-        }
-        _ => panic!("Expected Committed status after mev_commit"),
+        let rarity = vault.get_nft_rarity(&alice, &deposit_id)
+            .expect("rarity query succeeds");
+        assert_eq!(rarity, expected_rarity, "Failed for amount={}", amount);
     }
-
-    // Step 4: Query MEV pool (should still be 0)
-    let pool_before = vault.get_mev_pool_total();
-    assert_eq!(pool_before, 0);
-
-    // Step 5: Admin finalizes (no-op for empty pool)
-    let finalize_result = vault.finalize_mev_redistribution(&admin);
-    assert!(finalize_result.is_ok());
-
-    // Step 6: Verify pool unchanged
-    let pool_after = vault.get_mev_pool_total();
-    assert_eq!(pool_after, pool_before);
 }

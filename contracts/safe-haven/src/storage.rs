@@ -1138,183 +1138,51 @@ pub fn set_milestone_bitmap(env: &Env, depositor: &Address, bitmap: u32) {
 
 
 // ================================================================
-//  MEV PROTECTION HELPERS
+//  NFT Evolution helpers
 // ================================================================
 
-use crate::types::{MEVCommitment, MEVDetection, MEVStatus, PriceSample};
-
-/// Get MEV commitment for a deposit
-pub fn get_mev_commitment(
+/// Store an NFT evolution record for a deposit.
+pub fn set_nft_evolution(
     env: &Env,
     depositor: &Address,
     deposit_id: u32,
-) -> Option<MEVCommitment> {
-    let key = VaultKey::MEVCommitment(depositor.clone(), deposit_id);
-    env.storage().persistent().get(&key)
-}
-
-/// Set MEV commitment for a deposit
-pub fn set_mev_commitment(
-    env: &Env,
-    depositor: &Address,
-    deposit_id: u32,
-    commitment: &MEVCommitment,
+    record: &crate::nft::NFTEvolutionRecord,
 ) {
-    let key = VaultKey::MEVCommitment(depositor.clone(), deposit_id);
-    env.storage().persistent().set(&key, commitment);
+    let key = crate::types::VaultKey::NFTEvolution(depositor.clone(), deposit_id);
+    env.storage().persistent().set(&key, record);
     env.storage()
         .persistent()
         .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
 }
 
-/// Remove MEV commitment (after successful reveal)
-pub fn remove_mev_commitment(env: &Env, depositor: &Address, deposit_id: u32) {
-    let key = VaultKey::MEVCommitment(depositor.clone(), deposit_id);
+/// Retrieve an NFT evolution record (mutable path — extends TTL).
+pub fn get_nft_evolution(
+    env: &Env,
+    depositor: &Address,
+    deposit_id: u32,
+) -> Option<crate::nft::NFTEvolutionRecord> {
+    let key = crate::types::VaultKey::NFTEvolution(depositor.clone(), deposit_id);
+    let record: Option<crate::nft::NFTEvolutionRecord> = env.storage().persistent().get(&key);
+    if record.is_some() {
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
+    }
+    record
+}
+
+/// Retrieve an NFT evolution record (read-only — does not extend TTL).
+pub fn get_nft_evolution_readonly(
+    env: &Env,
+    depositor: &Address,
+    deposit_id: u32,
+) -> Option<crate::nft::NFTEvolutionRecord> {
+    let key = crate::types::VaultKey::NFTEvolution(depositor.clone(), deposit_id);
+    env.storage().persistent().get(&key)
+}
+
+/// Remove an NFT evolution record from storage.
+pub fn remove_nft_evolution(env: &Env, depositor: &Address, deposit_id: u32) {
+    let key = crate::types::VaultKey::NFTEvolution(depositor.clone(), deposit_id);
     env.storage().persistent().remove(&key);
-}
-
-/// Get MEV status for a deposit
-pub fn get_mev_status(env: &Env, depositor: &Address, deposit_id: u32) -> MEVStatus {
-    let key = VaultKey::MEVStatus(depositor.clone(), deposit_id);
-    env.storage()
-        .persistent()
-        .get(&key)
-        .unwrap_or(MEVStatus::Unprotected)
-}
-
-/// Set MEV status for a deposit
-pub fn set_mev_status(
-    env: &Env,
-    depositor: &Address,
-    deposit_id: u32,
-    status: &MEVStatus,
-) {
-    let key = VaultKey::MEVStatus(depositor.clone(), deposit_id);
-    env.storage().persistent().set(&key, status);
-    env.storage()
-        .persistent()
-        .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
-}
-
-/// Get MEV detection by index
-pub fn get_mev_detection(
-    env: &Env,
-    depositor: &Address,
-    deposit_id: u32,
-    detection_id: u32,
-) -> Option<MEVDetection> {
-    let key = VaultKey::MEVDetection(depositor.clone(), deposit_id, detection_id);
-    env.storage().persistent().get(&key)
-}
-
-/// Set MEV detection record
-pub fn set_mev_detection(
-    env: &Env,
-    depositor: &Address,
-    deposit_id: u32,
-    detection_id: u32,
-    detection: &MEVDetection,
-) {
-    let key = VaultKey::MEVDetection(depositor.clone(), deposit_id, detection_id);
-    env.storage().persistent().set(&key, detection);
-    env.storage()
-        .persistent()
-        .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
-}
-
-/// Get MEV detection counter for a deposit
-pub fn get_mev_detection_counter(env: &Env, depositor: &Address, deposit_id: u32) -> u32 {
-    let key = VaultKey::MEVDetectionCounter(depositor.clone(), deposit_id);
-    env.storage().persistent().get(&key).unwrap_or(0)
-}
-
-/// Increment MEV detection counter
-pub fn next_mev_detection_id(env: &Env, depositor: &Address, deposit_id: u32) -> u32 {
-    let key = VaultKey::MEVDetectionCounter(depositor.clone(), deposit_id);
-    let id: u32 = env.storage().persistent().get(&key).unwrap_or(0);
-    env.storage().persistent().set(&key, &(id.saturating_add(1)));
-    env.storage()
-        .persistent()
-        .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
-    id
-}
-
-/// Get MEV pool (total recovered MEV ready for redistribution)
-pub fn get_mev_pool(env: &Env) -> i128 {
-    let key = VaultKey::MEVPool;
-    env.storage().persistent().get(&key).unwrap_or(0)
-}
-
-/// Set MEV pool
-pub fn set_mev_pool(env: &Env, amount: i128) {
-    let key = VaultKey::MEVPool;
-    env.storage().persistent().set(&key, &amount);
-    env.storage()
-        .persistent()
-        .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
-}
-
-/// Get MEV claimed by a depositor
-pub fn get_mev_claimed(env: &Env, depositor: &Address) -> i128 {
-    let key = VaultKey::MEVClaimed(depositor.clone());
-    env.storage().persistent().get(&key).unwrap_or(0)
-}
-
-/// Set MEV claimed by a depositor
-pub fn set_mev_claimed(env: &Env, depositor: &Address, amount: i128) {
-    let key = VaultKey::MEVClaimed(depositor.clone());
-    env.storage().persistent().set(&key, &amount);
-    env.storage()
-        .persistent()
-        .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
-}
-
-/// Add price sample to history
-pub fn add_price_sample(env: &Env, token: &Address, sample: &PriceSample) {
-    let timestamp_bucket = sample.timestamp / 3600; // Group by hour
-    let key = VaultKey::MEVPriceHistory(token.clone(), timestamp_bucket);
-    
-    let mut samples: Vec<PriceSample> = env.storage()
-        .persistent()
-        .get(&key)
-        .unwrap_or_else(|| Vec::new(env));
-    
-    samples.push_back(sample.clone());
-    
-    // Keep only the last 24 samples (24 hours of hourly data)
-    if samples.len() > 24 {
-        let samples_vec: Vec<PriceSample> = samples.into();
-        let mut trimmed = Vec::new(env);
-        for i in samples_vec.len().saturating_sub(24)..samples_vec.len() {
-            if let Some(s) = samples_vec.get(i as u32) {
-                trimmed.push_back(s);
-            }
-        }
-        env.storage().persistent().set(&key, &trimmed);
-    } else {
-        env.storage().persistent().set(&key, &samples);
-    }
-    
-    env.storage()
-        .persistent()
-        .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
-}
-
-/// Get price history for a token (within the last day)
-pub fn get_price_history(env: &Env, token: &Address, current_timestamp: u64) -> Vec<PriceSample> {
-    let mut all_samples = Vec::new(env);
-    
-    // Check the current hour and the previous 23 hours
-    for hour_offset in 0..24 {
-        let timestamp_bucket = (current_timestamp / 3600).saturating_sub(hour_offset as u64);
-        let key = VaultKey::MEVPriceHistory(token.clone(), timestamp_bucket);
-        
-        if let Some(samples) = env.storage().persistent().get::<VaultKey, Vec<PriceSample>>(&key) {
-            for sample in samples.iter() {
-                all_samples.push_back(sample);
-            }
-        }
-    }
-    
-    all_samples
 }

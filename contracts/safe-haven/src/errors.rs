@@ -29,14 +29,18 @@ pub enum VaultError {
     RecipientNotWhitelisted = 18,
     /// Compound frequency must be >= 60 seconds if non-zero (issue #332).
     InvalidCompoundFrequency = 19,
-    /// MEV attack detected — price deviation exceeds threshold
-    MEVAttackDetected = 20,
-    /// Commit hash not found for reveal
-    CommitNotFound = 21,
-    /// Commit hash does not match revealed values
-    CommitMismatch = 22,
-    /// Reveal window expired
-    RevealWindowExpired = 23,
-    /// Invalid price data for MEV detection
-    InvalidPriceData = 24,
+    /// Sponsorship fund not initialized
+    SponsorshipNotInitialized = 20,
+    /// User not eligible for sponsorship
+    NotEligibleForSponsorship = 21,
+    /// Sponsorship fund insufficient
+    InsufficientSponsorshipFund = 22,
+    /// User exceeded daily sponsorship limit
+    SponsorshipDailyLimitExceeded = 23,
+    /// User transaction cooldown still active
+    SponsorshipCooldownActive = 24,
+    /// Potential sybil attack detected
+    PotentialSybilAttack = 25,
+    /// Sponsorship configuration error
+    InvalidSponsorshipConfig = 26,
 }

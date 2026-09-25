@@ -89,32 +89,8 @@ pub enum VaultKey {
     RewardsPool,
     /// Rewards claimed by a staker (track cumulative for auditing)
     StakerRewardsClaimed(Address),
-    /// MEV commitment for a deposit: (depositor, deposit_id) -> MEVCommitment
-    MEVCommitment(Address, u32),
-    /// MEV detection record: (depositor, deposit_id, detection_id) -> MEVDetection
-    MEVDetection(Address, u32, u32),
-    /// MEV status for a deposit: (depositor, deposit_id) -> MEVStatus
-    MEVStatus(Address, u32),
-    /// Time-weighted average price history: (token, timestamp) -> Vec<PriceSample>
-    MEVPriceHistory(Address, u64),
-    /// Pool of recovered MEV ready for redistribution
-    MEVPool,
-    /// MEV recovered and claimed per depositor
-    MEVClaimed(Address),
-    /// Counter for MEV detections per deposit
-    MEVDetectionCounter(Address, u32),
-    /// Archived timestamp-based deposit (issue #XXX)
-    ArchivedDeposit(Address, u32),
-    /// Archived ledger-based deposit (issue #XXX)
-    ArchivedDepositByLedger(Address, u32),
-    /// Total carbon footprint for a depositor (sustainability tracking)
-    TotalCarbonFootprint(Address),
-    /// Total carbon offset for a depositor (sustainability tracking)
-    TotalCarbonOffset(Address),
-    /// Sustainability metrics for a single deposit
-    SustainabilityMetrics(Address, u32),
-    /// Bitmap of achieved sustainability milestones for a depositor
-    MilestoneAchieved(Address),
+    /// NFT evolution record: maps (depositor, deposit_id) to NFTEvolutionRecord
+    NFTEvolution(Address, u32),
 }
 
 #[contracttype]
@@ -195,114 +171,56 @@ pub struct StakerEntry {
     pub stake_amount: i128,
 }
 
-/// MEV protection: stores the hash of a private order commit
+/// Sponsorship fund configuration and state
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct MEVCommitment {
-    /// Keccak256 hash of (token, amount, price, nonce)
-    pub commit_hash: soroban_sdk::BytesN<32>,
-    /// Timestamp when the commit was submitted
-    pub timestamp: u64,
-    /// Depositor making the commitment
-    pub depositor: Address,
-    /// Whether the commitment has been revealed
-    pub revealed: bool,
+pub struct SponsorshipFund {
+    /// Balance of native tokens available for sponsorship
+    pub balance: i128,
+
+    /// Address that manages the sponsorship fund (typically admin)
+    pub sponsor_address: Address,
+
+    /// Maximum tokens to sponsor per transaction
+    pub max_per_txn: i128,
+
+    /// Maximum tokens to sponsor per user per day
+    pub max_per_user_day: i128,
+
+    /// Minimum native balance required to be eligible for sponsorship (KYC-lite)
+    pub min_eligible_balance: i128,
+
+    /// Cooldown period (in seconds) between sponsored transactions per user
+    pub cooldown_seconds: u64,
+
+    /// Timestamp of last update (for tracking replenishment frequency)
+    pub last_replenished: u64,
 }
 
-/// MEV detection record: tracks detected MEV attacks
+/// Per-user sponsorship tracking for a specific day
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct MEVDetection {
-    /// Detection timestamp
-    pub timestamp: u64,
-    /// Affected depositor
-    pub depositor: Address,
-    /// Detected deposit ID
-    pub deposit_id: u32,
-    /// Detected price deviation (in basis points)
-    pub price_deviation_bps: u32,
-    /// MEV recovered (in smallest units of token)
-    pub mev_recovered: i128,
-    /// Whether the detection has been resolved
-    pub resolved: bool,
+pub struct SponsorshipUsage {
+    /// Cumulative amount sponsored to this user today
+    pub amount_used_today: i128,
+
+    /// Timestamp of the last sponsored transaction for this user
+    pub last_sponsored_time: u64,
+
+    /// Counter of sponsored transactions for this user (for sybil detection)
+    pub transaction_count: u32,
 }
 
-/// MEV status for a deposit: commit-reveal state
+/// Result of sponsorship eligibility check
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum MEVStatus {
-    /// No MEV protection requested
-    Unprotected,
-    /// Commit submitted, waiting for reveal
-    Committed,
-    /// Reveal submitted and validated
-    Revealed,
-    /// MEV attack detected
-    AttackDetected,
-}
+pub struct SponsorshipEligibility {
+    /// User is eligible if they meet all criteria
+    pub is_eligible: bool,
 
-/// Price sample for time-weighted average calculation
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PriceSample {
-    /// Token address
-    pub token: Address,
-    /// Price (in smallest units)
-    pub price: i128,
-    /// Timestamp of price sample
-    pub timestamp: u64,
-}
+    /// Reason if not eligible (empty string if eligible)
+    pub reason: soroban_sdk::String,
 
-/// Extended VaultKey enum with MEV keys
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum MEVKey {
-    /// MEV commitment for a deposit: (depositor, deposit_id) -> MEVCommitment
-    Commitment(Address, u32),
-    /// MEV detection record: (depositor, deposit_id, detection_id) -> MEVDetection
-    Detection(Address, u32, u32),
-    /// MEV status for a deposit: (depositor, deposit_id) -> MEVStatus
-    Status(Address, u32),
-    /// Time-weighted average price history: (token, timestamp) -> Vec<PriceSample>
-    PriceHistory(Address, u64),
-    /// Pool of recovered MEV ready for redistribution
-    MEVPool,
-    /// Accumulated MEV recovered per depositor for claims
-    MEVClaimed(Address),
-}
-
-/// Archived timestamp-based deposit (issue #XXX)
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ArchivedVaultEntry {
-    pub token: Address,
-    pub amount: i128,
-    pub unlock_time: u64,
-    pub depositor: Address,
-    pub penalty_bps: u32,
-    pub archive_timestamp: u64,
-}
-
-/// Archived ledger-based deposit (issue #XXX)
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ArchivedLedgerVaultEntry {
-    pub token: Address,
-    pub amount: i128,
-    pub unlock_ledger: u32,
-    pub depositor: Address,
-    pub penalty_bps: u32,
-    pub archive_timestamp: u64,
-}
-
-/// Sustainability metrics for a single deposit
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SustainabilityMetrics {
-    pub deposit_id: u32,
-    pub depositor: Address,
-    pub carbon_footprint: i128,
-    pub renewable_energy_percent: u32,
-    pub carbon_offset_grams: i128,
-    pub timestamp: u64,
+    /// Amount available for this user today
+    pub available_today: i128,
 }
