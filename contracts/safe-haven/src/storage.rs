@@ -102,6 +102,26 @@ pub fn get_deposit_ids(env: &Env, depositor: &Address) -> Vec<u32> {
     get_active_ids(env, depositor)
 }
 
+pub fn set_session_key(env: &Env, wallet: &Address, session_key: &Address, expires_at: u64) {
+    let key = VaultKey::SessionKey(wallet.clone(), session_key.clone());
+    env.storage().persistent().set(&key, &expires_at);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
+}
+
+pub fn get_session_key_expiry(env: &Env, wallet: &Address, session_key: &Address) -> Option<u64> {
+    env.storage()
+        .persistent()
+        .get(&VaultKey::SessionKey(wallet.clone(), session_key.clone()))
+}
+
+pub fn remove_session_key(env: &Env, wallet: &Address, session_key: &Address) {
+    env.storage()
+        .persistent()
+        .remove(&VaultKey::SessionKey(wallet.clone(), session_key.clone()));
+}
+
 pub fn get_voting_power(env: &Env, voter: &Address) -> i128 {
     let mut total = 0i128;
     for deposit_id in get_active_ids(env, voter).iter() {

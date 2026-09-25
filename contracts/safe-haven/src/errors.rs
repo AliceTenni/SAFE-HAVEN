@@ -37,4 +37,10 @@ pub enum VaultError {
     SubscriptionCompleted = 24,
     SubscriptionNotDue = 25,
     SubscriptionPaused = 26,
+    /// The session key has not been authorized by the wallet.
+    SessionKeyNotAuthorized = 27,
+    /// The session key authorization has expired.
+    SessionKeyExpired = 28,
+    /// Session-key authorization must expire in the future.
+    InvalidSessionKeyExpiry = 29,
 }

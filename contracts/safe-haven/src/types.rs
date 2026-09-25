@@ -100,6 +100,8 @@ pub enum VaultKey {
     SubscriptionIds(Address),
     SubscriptionHistory(Address, u32),
     SubscriptionStats(Address, u32),
+    /// Expiration timestamp for a wallet-authorized session key.
+    SessionKey(Address, Address),
 }
 
 #[contracttype]

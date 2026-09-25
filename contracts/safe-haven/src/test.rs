@@ -709,6 +709,74 @@ fn test_deposit_for_same_address_succeeds() {
 }
 
 #[test]
+fn test_contract_account_can_deposit_without_eoa_assumption() {
+    let (env, vault, token, _admin, _alice, _fee) = setup();
+    let smart_wallet = env.register(SafeHaven, ());
+    StellarAssetClient::new(&env, &token).mint(&smart_wallet, &2_000);
+
+    let unlock_time = env.ledger().timestamp() + 3600;
+    let id = vault.deposit(&smart_wallet, &token, &1_000, &unlock_time, &0);
+
+    let entry = vault.get_vault(&smart_wallet, &id).expect("entry should exist");
+    assert_eq!(entry.depositor, smart_wallet);
+    assert_eq!(TokenClient::new(&env, &token).balance(&vault.address), 1_000);
+}
+
+#[test]
+fn test_session_key_deposit_is_scoped_and_expires() {
+    let (env, vault, token, _admin, _alice, _fee) = setup();
+    let wallet = Address::generate(&env);
+    let session_key = Address::generate(&env);
+    StellarAssetClient::new(&env, &token).mint(&session_key, &2_000);
+
+    let expires_at = env.ledger().timestamp() + 600;
+    vault.authorize_session_key(&wallet, &session_key, &expires_at);
+    assert!(vault.is_session_key_authorized(&wallet, &session_key));
+
+    let unlock_time = env.ledger().timestamp() + 3600;
+    let id = vault.deposit_with_session_key(
+        &session_key,
+        &wallet,
+        &token,
+        &1_000,
+        &unlock_time,
+        &0,
+    );
+    let entry = vault.get_vault(&wallet, &id).expect("entry should exist");
+    assert_eq!(entry.depositor, wallet);
+    assert_eq!(TokenClient::new(&env, &token).balance(&session_key), 1_000);
+
+    advance_time(&env, 601);
+    assert!(!vault.is_session_key_authorized(&wallet, &session_key));
+    assert_eq!(
+        vault.try_deposit_with_session_key(
+            &session_key,
+            &wallet,
+            &token,
+            &1_000,
+            &(env.ledger().timestamp() + 3600),
+            &0,
+        ),
+        Err(Ok(VaultError::SessionKeyExpired))
+    );
+
+    vault.authorize_session_key(&wallet, &session_key, &(env.ledger().timestamp() + 600));
+    vault.revoke_session_key(&wallet, &session_key);
+    assert!(!vault.is_session_key_authorized(&wallet, &session_key));
+    assert_eq!(
+        vault.try_deposit_with_session_key(
+            &session_key,
+            &wallet,
+            &token,
+            &1_000,
+            &(env.ledger().timestamp() + 3600),
+            &0,
+        ),
+        Err(Ok(VaultError::SessionKeyNotAuthorized))
+    );
+}
+
+#[test]
 fn test_deposit_for_payer_has_no_access() {
     let (env, vault, token, _admin, alice, _fee) = setup();
     let bob: Address = Address::generate(&env);

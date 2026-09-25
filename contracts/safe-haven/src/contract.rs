@@ -339,6 +339,80 @@ impl SafeHaven {
     }
 
     // ----------------------------------------------------------------
+    //  Smart-wallet and session-key authorization
+    // ----------------------------------------------------------------
+
+    /// Authorize a delegated key for deposits attributed to `wallet`.
+    ///
+    /// The wallet signs this one-time authorization. The delegated entrypoint
+    /// still transfers tokens from the session key, never from the wallet.
+    pub fn authorize_session_key(
+        env: Env,
+        wallet: Address,
+        session_key: Address,
+        expires_at: u64,
+    ) -> Result<(), VaultError> {
+        wallet.require_auth();
+        if expires_at <= env.ledger().timestamp() {
+            return Err(VaultError::InvalidSessionKeyExpiry);
+        }
+        storage::set_session_key(&env, &wallet, &session_key, expires_at);
+        Ok(())
+    }
+
+    pub fn revoke_session_key(
+        env: Env,
+        wallet: Address,
+        session_key: Address,
+    ) -> Result<(), VaultError> {
+        wallet.require_auth();
+        storage::remove_session_key(&env, &wallet, &session_key);
+        Ok(())
+    }
+
+    pub fn is_session_key_authorized(
+        env: Env,
+        wallet: Address,
+        session_key: Address,
+    ) -> bool {
+        storage::get_session_key_expiry(&env, &wallet, &session_key)
+            .map(|expires_at| expires_at > env.ledger().timestamp())
+            .unwrap_or(false)
+    }
+
+    /// Deposit using a wallet-authorized delegated key.
+    ///
+    /// The session key is the payer and the wallet is the depositor. This
+    /// preserves the wallet's multisig/account-abstraction boundary: a session
+    /// key can submit an approved operation, but cannot spend wallet funds.
+    pub fn deposit_with_session_key(
+        env: Env,
+        session_key: Address,
+        wallet: Address,
+        token: Address,
+        amount: i128,
+        unlock_time: u64,
+        penalty_bps: u32,
+    ) -> Result<u32, VaultError> {
+        session_key.require_auth();
+        match storage::get_session_key_expiry(&env, &wallet, &session_key) {
+            Some(expires_at) if expires_at > env.ledger().timestamp() => {}
+            Some(_) => return Err(VaultError::SessionKeyExpired),
+            None => return Err(VaultError::SessionKeyNotAuthorized),
+        }
+
+        Self::deposit_for(
+            env,
+            session_key,
+            wallet,
+            token,
+            amount,
+            unlock_time,
+            penalty_bps,
+        )
+    }
+
+    // ----------------------------------------------------------------
     //  Core: Single-token Deposit
     // ----------------------------------------------------------------
 
