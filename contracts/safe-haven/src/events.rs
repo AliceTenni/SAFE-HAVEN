@@ -207,3 +207,17 @@ pub fn interest_accrued(
     env.events()
         .publish(topics, (deposit_id, old_amount, new_amount));
 }
+
+/// Emitted after a verifier-authorized DID credential is linked to a deposit.
+/// Only commitments and the DID method are exposed; the raw DID is not emitted.
+pub fn identity_linked(
+    env: &Env,
+    depositor: &Address,
+    deposit_id: u32,
+    did_method: &Symbol,
+    verifier: &Address,
+) {
+    let topics = (Symbol::new(env, "IdentityLinked"), depositor.clone());
+    env.events()
+        .publish(topics, (deposit_id, did_method.clone(), verifier.clone()));
+}

@@ -1,6 +1,6 @@
 use soroban_sdk::{token, Address, Bytes, Env, Vec};
 
-use crate::types::{MultiTokenVaultEntry, VaultEntry, VaultKey, LedgerVaultEntry, MAX_LOCK_DURATION_SECS};
+use crate::types::{IdentityLink, MultiTokenVaultEntry, VaultEntry, VaultKey, LedgerVaultEntry, MAX_LOCK_DURATION_SECS};
 
 // ================================================================
 // LEDGER_SECONDS: Average time between Stellar ledger closes
@@ -85,6 +85,35 @@ pub fn get_quantum_safe_metadata(
 ) -> Option<Bytes> {
     let key = VaultKey::QuantumSafeMetadata(depositor.clone(), deposit_id);
     env.storage().persistent().get(&key)
+}
+
+pub fn set_identity(
+    env: &Env,
+    depositor: &Address,
+    deposit_id: u32,
+    identity: &IdentityLink,
+) {
+    let key = VaultKey::Identity(depositor.clone(), deposit_id);
+    env.storage().persistent().set(&key, identity);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
+}
+
+pub fn get_identity(
+    env: &Env,
+    depositor: &Address,
+    deposit_id: u32,
+) -> Option<IdentityLink> {
+    let key = VaultKey::Identity(depositor.clone(), deposit_id);
+    env.storage().persistent().get(&key)
+}
+
+pub fn remove_identity(env: &Env, depositor: &Address, deposit_id: u32) {
+    let key = VaultKey::Identity(depositor.clone(), deposit_id);
+    if env.storage().persistent().has(&key) {
+        env.storage().persistent().remove(&key);
+    }
 }
 
 // ----------------------------------------------------------------
@@ -179,6 +208,7 @@ pub fn get_deposit_readonly(env: &Env, depositor: &Address, deposit_id: u32) -> 
 pub fn remove_deposit(env: &Env, depositor: &Address, deposit_id: u32) {
     let key = VaultKey::Deposit(depositor.clone(), deposit_id);
     env.storage().persistent().remove(&key);
+    remove_identity(env, depositor, deposit_id);
     remove_active_deposit_id(env, depositor, deposit_id);
 }
 
@@ -212,6 +242,7 @@ pub fn get_deposit_by_ledger_readonly(
 pub fn remove_deposit_by_ledger(env: &Env, depositor: &Address, deposit_id: u32) {
     let key = VaultKey::DepositByLedger(depositor.clone(), deposit_id);
     env.storage().persistent().remove(&key);
+    remove_identity(env, depositor, deposit_id);
     remove_active_deposit_id(env, depositor, deposit_id);
 }
 
@@ -264,6 +295,7 @@ pub fn get_multi_deposit_readonly(
 pub fn remove_multi_deposit(env: &Env, depositor: &Address, deposit_id: u32) {
     let key = VaultKey::MultiDeposit(depositor.clone(), deposit_id);
     env.storage().persistent().remove(&key);
+    remove_identity(env, depositor, deposit_id);
     remove_active_deposit_id(env, depositor, deposit_id);
 }
 

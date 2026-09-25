@@ -33,4 +33,6 @@ pub enum VaultError {
     InvalidQuantumSafeKey = 20,
     /// The ML-DSA signature does not authorize the exact deposit payload.
     InvalidQuantumSafeSignature = 21,
+    /// The DID method is outside the supported W3C method set.
+    UnsupportedDidMethod = 22,
 }

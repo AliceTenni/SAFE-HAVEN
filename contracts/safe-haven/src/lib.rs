@@ -24,7 +24,8 @@ pub use constants::{
 };
 
 pub use types::{
-    DepositType, MultiTokenVaultEntry, Page, TokenDeposit, STORAGE_VERSION, MAX_TOKENS_PER_DEPOSIT,
+    DepositType, IdentityLink, MultiTokenVaultEntry, Page, TokenDeposit, STORAGE_VERSION,
+    MAX_TOKENS_PER_DEPOSIT,
 };
 pub use pq::{ML_DSA_PUBLIC_KEY_BYTES, ML_DSA_SIGNATURE_BYTES};
 

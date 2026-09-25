@@ -1,4 +1,4 @@
-use soroban_sdk::{contracttype, Address, Bytes, Vec};
+use soroban_sdk::{contracttype, Address, Bytes, BytesN, String, Vec};
 
 pub const MAX_DEPOSIT_AMOUNT: i128 = 1_000_000_000_000_000;
 pub const MAX_LOCK_DURATION_SECS: u64 = 157_788_000;
@@ -93,6 +93,22 @@ pub enum VaultKey {
     QuantumSafePublicKey(Address),
     /// Encrypted client-side metadata associated with a quantum-safe deposit.
     QuantumSafeMetadata(Address, u32),
+    /// Privacy-preserving identity association for a deposit.
+    Identity(Address, u32),
+}
+
+/// A verified decentralized identity association for a deposit.
+///
+/// The DID and credential claims are intentionally not stored. Callers provide
+/// their commitments, allowing verification without putting personal data on-chain.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IdentityLink {
+    pub did_method: String,
+    pub did_commitment: BytesN<32>,
+    pub credential_commitment: BytesN<32>,
+    pub verifier: Address,
+    pub verified_at: u64,
 }
 
 #[contracttype]

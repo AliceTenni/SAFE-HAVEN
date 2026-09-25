@@ -3,7 +3,7 @@
 //  Stellar Blockchain | Soroban SDK v22
 // ============================================================
 
-use soroban_sdk::{contract, contractimpl, token, Address, Bytes, Env, String, Vec};
+use soroban_sdk::{contract, contractimpl, token, Address, Bytes, Env, String, Symbol, Vec};
 
 use crate::{
     constants::{
@@ -13,7 +13,7 @@ use crate::{
     errors::VaultError,
     events, pq, storage,
     types::{
-        DepositType, MultiTokenVaultEntry, QuantumSafePayload, TokenDeposit, VaultEntry, LedgerVaultEntry, Page,
+        DepositType, IdentityLink, MultiTokenVaultEntry, QuantumSafePayload, TokenDeposit, VaultEntry, LedgerVaultEntry, Page,
         STORAGE_VERSION, MAX_TOKENS_PER_DEPOSIT,
     },
 };
@@ -1026,6 +1026,81 @@ impl SafeHaven {
         deposit_id: u32,
     ) -> Option<Vec<Address>> {
         storage::get_withdrawal_whitelist(&env, &depositor, deposit_id)
+    }
+
+    /// Link a verified W3C DID credential to a deposit.
+    ///
+    /// The verifier must authorize this call, proving that it attested the
+    /// credential. Only the SHA-256 DID commitment and credential commitment
+    /// are stored; raw identity claims never enter contract storage or events.
+    /// `did:key` and `did:ethr` are supported DID method identifiers.
+    pub fn link_identity(
+        env: Env,
+        depositor: Address,
+        deposit_id: u32,
+        did: String,
+        credential_commitment: soroban_sdk::BytesN<32>,
+        verifier: Address,
+    ) -> Result<(), VaultError> {
+        depositor.require_auth();
+        verifier.require_auth();
+
+        let did_bytes = did.to_bytes();
+        let did_method = if did_bytes.len() > 7
+            && did_bytes.get(0) == Some(b'd')
+            && did_bytes.get(1) == Some(b'i')
+            && did_bytes.get(2) == Some(b'd')
+            && did_bytes.get(3) == Some(b':')
+            && did_bytes.get(4) == Some(b'k')
+            && did_bytes.get(5) == Some(b'e')
+            && did_bytes.get(6) == Some(b'y')
+        {
+            String::from_slice(&env, "did:key")
+        } else if did_bytes.len() > 8
+            && did_bytes.get(0) == Some(b'd')
+            && did_bytes.get(1) == Some(b'i')
+            && did_bytes.get(2) == Some(b'd')
+            && did_bytes.get(3) == Some(b':')
+            && did_bytes.get(4) == Some(b'e')
+            && did_bytes.get(5) == Some(b't')
+            && did_bytes.get(6) == Some(b'h')
+            && did_bytes.get(7) == Some(b'r')
+        {
+            String::from_slice(&env, "did:ethr")
+        } else {
+            return Err(VaultError::UnsupportedDidMethod);
+        };
+
+        let deposit_exists = storage::get_deposit_readonly(&env, &depositor, deposit_id).is_some()
+            || storage::get_deposit_by_ledger_readonly(&env, &depositor, deposit_id).is_some()
+            || storage::get_multi_deposit_readonly(&env, &depositor, deposit_id).is_some();
+        if !deposit_exists {
+            return Err(VaultError::NoDepositFound);
+        }
+
+        let identity = IdentityLink {
+            did_method: did_method.clone(),
+            did_commitment: env.crypto().sha256(&did_bytes),
+            credential_commitment,
+            verifier: verifier.clone(),
+            verified_at: env.ledger().timestamp(),
+        };
+        storage::set_identity(&env, &depositor, deposit_id, &identity);
+        let event_method = if did_method == String::from_slice(&env, "did:key") {
+            Symbol::new(&env, "did_key")
+        } else {
+            Symbol::new(&env, "did_ethr")
+        };
+        events::identity_linked(&env, &depositor, deposit_id, &event_method, &verifier);
+        Ok(())
+    }
+
+    pub fn get_identity(
+        env: Env,
+        depositor: Address,
+        deposit_id: u32,
+    ) -> Option<IdentityLink> {
+        storage::get_identity(&env, &depositor, deposit_id)
     }
 
     // ----------------------------------------------------------------

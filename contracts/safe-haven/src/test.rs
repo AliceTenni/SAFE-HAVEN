@@ -65,7 +65,7 @@ extern crate std;
 use soroban_sdk::{
     testutils::{Address as _, Events, Ledger, LedgerInfo},
     token::{Client as TokenClient, StellarAssetClient},
-    Address, Bytes, Env, Vec,
+    Address, Bytes, BytesN, Env, String, Vec,
 };
 
 use crate::{
@@ -416,6 +416,56 @@ fn test_deposit_success() {
     // Event emission is verified by test_deposit_for_event_emitted; the
     // core assertions above (vault entry fields, id) are sufficient here.
     let _ = events; // suppress unused-variable warning
+}
+
+#[test]
+fn link_identity_stores_only_commitments_for_supported_did() {
+    let (env, vault, token, _admin, alice, fee) = setup();
+    let unlock_time = env.ledger().timestamp() + 3600;
+    let deposit_id = vault.deposit(&alice, &token, &1_000, &unlock_time, &0);
+    let credential_commitment = BytesN::from_array(&env, &[7; 32]);
+
+    vault.link_identity(
+        &alice,
+        &deposit_id,
+        &String::from_slice(&env, "did:key:z6Mkverified"),
+        &credential_commitment,
+        &fee,
+    );
+
+    let identity = vault.get_identity(&alice, &deposit_id).expect("identity link");
+    assert_eq!(identity.did_method, String::from_slice(&env, "did:key"));
+    assert_eq!(identity.credential_commitment, credential_commitment);
+    assert_eq!(identity.verifier, fee);
+    assert_eq!(identity.did_commitment, env.crypto().sha256(&String::from_slice(&env, "did:key:z6Mkverified").to_bytes()));
+}
+
+#[test]
+fn link_identity_supports_ethr_and_rejects_unknown_methods() {
+    let (env, vault, token, _admin, alice, fee) = setup();
+    let unlock_time = env.ledger().timestamp() + 3600;
+    let deposit_id = vault.deposit(&alice, &token, &1_000, &unlock_time, &0);
+    let credential_commitment = BytesN::from_array(&env, &[9; 32]);
+
+    vault.link_identity(
+        &alice,
+        &deposit_id,
+        &String::from_slice(&env, "did:ethr:0x1234"),
+        &credential_commitment,
+        &fee,
+    );
+    assert_eq!(vault.get_identity(&alice, &deposit_id).unwrap().did_method, String::from_slice(&env, "did:ethr"));
+
+    assert_eq!(
+        vault.try_link_identity(
+            &alice,
+            &deposit_id,
+            &String::from_slice(&env, "did:web:example.com"),
+            &credential_commitment,
+            &fee,
+        ),
+        Err(Ok(VaultError::UnsupportedDidMethod))
+    );
 }
 
 #[test]
