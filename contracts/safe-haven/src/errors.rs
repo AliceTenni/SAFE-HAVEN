@@ -29,24 +29,18 @@ pub enum VaultError {
     RecipientNotWhitelisted = 18,
     /// Compound frequency must be >= 60 seconds if non-zero (issue #332).
     InvalidCompoundFrequency = 19,
-    /// The emergency-withdrawal circuit-breaker threshold would be exceeded.
-    EmergencyWithdrawalLimitExceeded = 20,
-    InvalidSubscriptionParams = 21,
-    NoSubscriptionFound = 22,
-    SubscriptionCancelled = 23,
-    SubscriptionCompleted = 24,
-    SubscriptionNotDue = 25,
-    SubscriptionPaused = 26,
-    /// The session key has not been authorized by the wallet.
-    SessionKeyNotAuthorized = 27,
-    /// The session key authorization has expired.
-    SessionKeyExpired = 28,
-    /// Session-key authorization must expire in the future.
-    InvalidSessionKeyExpiry = 29,
-    /// A tax-loss harvest requires a loss and a non-identical replacement token.
-    InvalidTaxLossHarvest = 30,
-    /// The replacement token is not allowed by the token allowlist.
-    ReplacementTokenNotAllowed = 31,
-    /// The token is still inside its wash-sale cooldown.
-    TaxWashSalePeriodActive = 32,
+    /// Sponsorship fund not initialized
+    SponsorshipNotInitialized = 20,
+    /// User not eligible for sponsorship
+    NotEligibleForSponsorship = 21,
+    /// Sponsorship fund insufficient
+    InsufficientSponsorshipFund = 22,
+    /// User exceeded daily sponsorship limit
+    SponsorshipDailyLimitExceeded = 23,
+    /// User transaction cooldown still active
+    SponsorshipCooldownActive = 24,
+    /// Potential sybil attack detected
+    PotentialSybilAttack = 25,
+    /// Sponsorship configuration error
+    InvalidSponsorshipConfig = 26,
 }

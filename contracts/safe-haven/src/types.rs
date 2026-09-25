@@ -91,61 +91,8 @@ pub enum VaultKey {
     RewardsPool,
     /// Rewards claimed by a staker (track cumulative for auditing)
     StakerRewardsClaimed(Address),
-    /// Cumulative emergency withdrawals for a ledger.
-    EmergencyWithdrawalPerLedger(u32),
-    /// Historical circuit-breaker activations.
-    CircuitBreakerHistory,
-    SubscriptionCounter(Address),
-    Subscription(Address, u32),
-    SubscriptionIds(Address),
-    SubscriptionHistory(Address, u32),
-    SubscriptionStats(Address, u32),
-    /// Expiration timestamp for a wallet-authorized session key.
-    SessionKey(Address, Address),
-    /// Tax-loss harvest records for a depositor.
-    TaxLossHarvests(Address),
-    /// End timestamp for a harvested token's wash-sale period.
-    TaxWashSaleUntil(Address, Address),
-}
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CircuitBreakerActivation {
-    pub ledger: u32,
-    pub amount: i128,
-    pub threshold: i128,
-}
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DepositSubscription {
-    pub depositor: Address,
-    pub token: Address,
-    pub amount: i128,
-    pub interval_secs: u64,
-    pub total_count: u32,
-    pub executed_count: u32,
-    pub lock_duration_secs: u64,
-    pub penalty_bps: u32,
-    pub next_execution_time: u64,
-    pub paused: bool,
-    pub cancelled: bool,
-}
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SubscriptionExecution {
-    pub deposit_id: u32,
-    pub amount: i128,
-    pub executed_at: u64,
-}
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SubscriptionStats {
-    pub deposit_count: u32,
-    pub total_amount: i128,
-    pub last_execution_time: u64,
+    /// NFT evolution record: maps (depositor, deposit_id) to NFTEvolutionRecord
+    NFTEvolution(Address, u32),
 }
 
 #[contracttype]
@@ -242,4 +189,67 @@ pub struct StakerEntry {
     pub stake_amount: i128,
 }
 
-/// Deposit type indicator — distinguishes between timestamp-based and ledger-based deposits
+/// Sponsorship fund configuration and state
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SponsorshipFund {
+    /// Balance of native tokens available for sponsorship
+    pub balance: i128,
+
+    /// Address that manages the sponsorship fund (typically admin)
+    pub sponsor_address: Address,
+
+    /// Maximum tokens to sponsor per transaction
+    pub max_per_txn: i128,
+
+    /// Maximum tokens to sponsor per user per day
+    pub max_per_user_day: i128,
+
+    /// Minimum native balance required to be eligible for sponsorship (KYC-lite)
+    pub min_eligible_balance: i128,
+
+    /// Cooldown period (in seconds) between sponsored transactions per user
+    pub cooldown_seconds: u64,
+
+    /// Timestamp of last update (for tracking replenishment frequency)
+    pub last_replenished: u64,
+}
+
+/// Per-user sponsorship tracking for a specific day
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SponsorshipUsage {
+    /// Cumulative amount sponsored to this user today
+    pub amount_used_today: i128,
+
+    /// Timestamp of the last sponsored transaction for this user
+    pub last_sponsored_time: u64,
+
+    /// Counter of sponsored transactions for this user (for sybil detection)
+    pub transaction_count: u32,
+}
+
+/// Result of sponsorship eligibility check
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SponsorshipEligibility {
+    /// User is eligible if they meet all criteria
+    pub is_eligible: bool,
+
+    /// Reason if not eligible (empty string if eligible)
+    pub reason: soroban_sdk::String,
+
+    /// Amount available for this user today
+    pub available_today: i128,
+}
+
+/// Lockdown history entry to track emergency lockdowns
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LockdownEntry {
+    pub activated_at: u64,
+    pub deactivated_at: Option<u64>,
+    pub admin: Address,
+    pub reason: String,
+    pub duration_secs: Option<u64>,
+}

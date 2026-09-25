@@ -884,6 +884,82 @@ pub fn get_stakers_list(env: &Env) -> Vec<Address> {
 }
 
 // ----------------------------------------------------------------
+//  Emergency Lockdown helpers
+// ----------------------------------------------------------------
+
+/// Set the emergency lockdown flag to `true` to activate lockdown.
+pub fn set_emergency_lockdown(env: &Env, is_locked: bool) {
+    let key = VaultKey::EmergencyLockdown;
+    env.storage().persistent().set(&key, &is_locked);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
+}
+
+/// Get the current emergency lockdown status. Returns `false` if not set.
+pub fn is_emergency_lockdown(env: &Env) -> bool {
+    let key = VaultKey::EmergencyLockdown;
+    env.storage()
+        .persistent()
+        .get::<VaultKey, bool>(&key)
+        .unwrap_or(false)
+}
+
+/// Set the timestamp when lockdown was activated.
+pub fn set_lockdown_activated_at(env: &Env, timestamp: u64) {
+    let key = VaultKey::LockdownActivatedAt;
+    env.storage().persistent().set(&key, &timestamp);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
+}
+
+/// Get the timestamp when lockdown was activated.
+pub fn get_lockdown_activated_at(env: &Env) -> Option<u64> {
+    let key = VaultKey::LockdownActivatedAt;
+    env.storage().persistent().get(&key)
+}
+
+/// Set the reason for lockdown.
+pub fn set_lockdown_reason(env: &Env, reason: &soroban_sdk::String) {
+    let key = VaultKey::LockdownReason;
+    env.storage().persistent().set(&key, reason);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
+}
+
+/// Get the reason for lockdown.
+pub fn get_lockdown_reason(env: &Env) -> Option<soroban_sdk::String> {
+    let key = VaultKey::LockdownReason;
+    env.storage().persistent().get(&key)
+}
+
+/// Add a lockdown entry to the history list.
+pub fn add_lockdown_history(env: &Env, entry: &crate::types::LockdownEntry) {
+    let key = VaultKey::LockdownHistory;
+    let mut history: Vec<crate::types::LockdownEntry> = env
+        .storage()
+        .persistent()
+        .get(&key)
+        .unwrap_or_else(|| Vec::new(env));
+    history.push_back(entry.clone());
+    env.storage().persistent().set(&key, &history);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
+}
+
+/// Get the lockdown history.
+pub fn get_lockdown_history(env: &Env) -> Vec<crate::types::LockdownEntry> {
+    let key = VaultKey::LockdownHistory;
+    env.storage()
+        .persistent()
+        .get(&key)
+        .unwrap_or_else(|| Vec::new(env))
+}
+
+// ----------------------------------------------------------------
 //  Archived deposit helpers
 // ----------------------------------------------------------------
 
@@ -1275,4 +1351,55 @@ pub fn set_milestone_bitmap(env: &Env, depositor: &Address, bitmap: u32) {
     env.storage()
         .persistent()
         .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
+}
+
+
+// ================================================================
+//  NFT Evolution helpers
+// ================================================================
+
+/// Store an NFT evolution record for a deposit.
+pub fn set_nft_evolution(
+    env: &Env,
+    depositor: &Address,
+    deposit_id: u32,
+    record: &crate::nft::NFTEvolutionRecord,
+) {
+    let key = crate::types::VaultKey::NFTEvolution(depositor.clone(), deposit_id);
+    env.storage().persistent().set(&key, record);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
+}
+
+/// Retrieve an NFT evolution record (mutable path — extends TTL).
+pub fn get_nft_evolution(
+    env: &Env,
+    depositor: &Address,
+    deposit_id: u32,
+) -> Option<crate::nft::NFTEvolutionRecord> {
+    let key = crate::types::VaultKey::NFTEvolution(depositor.clone(), deposit_id);
+    let record: Option<crate::nft::NFTEvolutionRecord> = env.storage().persistent().get(&key);
+    if record.is_some() {
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
+    }
+    record
+}
+
+/// Retrieve an NFT evolution record (read-only — does not extend TTL).
+pub fn get_nft_evolution_readonly(
+    env: &Env,
+    depositor: &Address,
+    deposit_id: u32,
+) -> Option<crate::nft::NFTEvolutionRecord> {
+    let key = crate::types::VaultKey::NFTEvolution(depositor.clone(), deposit_id);
+    env.storage().persistent().get(&key)
+}
+
+/// Remove an NFT evolution record from storage.
+pub fn remove_nft_evolution(env: &Env, depositor: &Address, deposit_id: u32) {
+    let key = crate::types::VaultKey::NFTEvolution(depositor.clone(), deposit_id);
+    env.storage().persistent().remove(&key);
 }
