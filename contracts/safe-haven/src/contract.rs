@@ -3,7 +3,7 @@
 //  Stellar Blockchain | Soroban SDK v22
 // ============================================================
 
-use soroban_sdk::{contract, contractimpl, token, Address, Env, String, Vec};
+use soroban_sdk::{contract, contractimpl, token, Address, Bytes, Env, String, Symbol, Vec};
 
 use crate::{
     constants::{
@@ -25,6 +25,9 @@ const MIN_COMPOUND_FREQUENCY_SECS: u64 = 60;
 /// Annual interest rate used for compound accrual: 5% expressed as basis points (500).
 /// In production this could be made configurable, but per the issue scope it is fixed.
 const ANNUAL_INTEREST_BPS: u128 = 500;
+
+/// Flash loan fee charged on each borrowed amount. 10 bps = 0.10%.
+const FLASH_LOAN_FEE_BPS: u32 = 10;
 
 /// Seconds in a year (non-leap) used for pro-rata interest calculations.
 const SECS_PER_YEAR: u128 = 31_536_000;
@@ -428,6 +431,99 @@ impl SafeHaven {
     // ----------------------------------------------------------------
     //  Core: Single-token Deposit
     // ----------------------------------------------------------------
+
+    pub fn register_quantum_safe_key(
+        env: Env,
+        account: Address,
+        public_key: Bytes,
+    ) -> Result<(), VaultError> {
+        account.require_auth();
+        if !pq::is_valid_public_key(&public_key) {
+            return Err(VaultError::InvalidQuantumSafeKey);
+        }
+        storage::set_quantum_safe_public_key(&env, &account, &public_key);
+        Ok(())
+    }
+
+    pub fn get_quantum_safe_key(env: Env, account: Address) -> Option<Bytes> {
+        storage::get_quantum_safe_public_key(&env, &account)
+    }
+
+    /// Returns the exact bytes that must be signed for the next deposit.
+    /// The payload includes the current deposit nonce and encrypted metadata.
+    pub fn quantum_safe_message(
+        env: Env,
+        depositor: Address,
+        token: Address,
+        amount: i128,
+        unlock_time: u64,
+        penalty_bps: u32,
+        encrypted_metadata: Bytes,
+    ) -> Bytes {
+        quantum_safe_payload(
+            &env,
+            depositor.clone(),
+            token,
+            amount,
+            unlock_time,
+            penalty_bps,
+            encrypted_metadata,
+            storage::peek_next_deposit_id(&env, &depositor),
+        )
+    }
+
+    /// Creates a deposit authorized by FIPS-204 ML-DSA-44 in addition to the
+    /// normal Stellar account authorization required by the token transfer.
+    pub fn deposit_quantum_safe(
+        env: Env,
+        depositor: Address,
+        token: Address,
+        amount: i128,
+        unlock_time: u64,
+        penalty_bps: u32,
+        encrypted_metadata: Bytes,
+        signature: Bytes,
+    ) -> Result<u32, VaultError> {
+        depositor.require_auth();
+        let public_key = storage::get_quantum_safe_public_key(&env, &depositor)
+            .ok_or(VaultError::InvalidQuantumSafeKey)?;
+        if !pq::has_valid_lengths(&public_key, &signature) {
+            return Err(VaultError::InvalidQuantumSafeKey);
+        }
+
+        let message = quantum_safe_payload(
+            &env,
+            depositor.clone(),
+            token.clone(),
+            amount,
+            unlock_time,
+            penalty_bps,
+            encrypted_metadata.clone(),
+            storage::peek_next_deposit_id(&env, &depositor),
+        );
+        if !pq::verify(&public_key, &signature, &message) {
+            return Err(VaultError::InvalidQuantumSafeSignature);
+        }
+
+        let deposit_id = Self::deposit(
+            env.clone(),
+            depositor.clone(),
+            token,
+            amount,
+            unlock_time,
+            penalty_bps,
+        )?;
+        storage::set_quantum_safe_metadata(&env, &depositor, deposit_id, &encrypted_metadata);
+        Ok(deposit_id)
+    }
+
+    pub fn get_quantum_safe_metadata(
+        env: Env,
+        depositor: Address,
+        deposit_id: u32,
+    ) -> Option<Bytes> {
+        storage::get_quantum_safe_metadata(&env, &depositor, deposit_id)
+    }
 
     pub fn deposit(
         env: Env,
@@ -1061,6 +1157,81 @@ impl SafeHaven {
         deposit_id: u32,
     ) -> Option<Vec<Address>> {
         storage::get_withdrawal_whitelist(&env, &depositor, deposit_id)
+    }
+
+    /// Link a verified W3C DID credential to a deposit.
+    ///
+    /// The verifier must authorize this call, proving that it attested the
+    /// credential. Only the SHA-256 DID commitment and credential commitment
+    /// are stored; raw identity claims never enter contract storage or events.
+    /// `did:key` and `did:ethr` are supported DID method identifiers.
+    pub fn link_identity(
+        env: Env,
+        depositor: Address,
+        deposit_id: u32,
+        did: String,
+        credential_commitment: soroban_sdk::BytesN<32>,
+        verifier: Address,
+    ) -> Result<(), VaultError> {
+        depositor.require_auth();
+        verifier.require_auth();
+
+        let did_bytes = did.to_bytes();
+        let did_method = if did_bytes.len() > 7
+            && did_bytes.get(0) == Some(b'd')
+            && did_bytes.get(1) == Some(b'i')
+            && did_bytes.get(2) == Some(b'd')
+            && did_bytes.get(3) == Some(b':')
+            && did_bytes.get(4) == Some(b'k')
+            && did_bytes.get(5) == Some(b'e')
+            && did_bytes.get(6) == Some(b'y')
+        {
+            String::from_slice(&env, "did:key")
+        } else if did_bytes.len() > 8
+            && did_bytes.get(0) == Some(b'd')
+            && did_bytes.get(1) == Some(b'i')
+            && did_bytes.get(2) == Some(b'd')
+            && did_bytes.get(3) == Some(b':')
+            && did_bytes.get(4) == Some(b'e')
+            && did_bytes.get(5) == Some(b't')
+            && did_bytes.get(6) == Some(b'h')
+            && did_bytes.get(7) == Some(b'r')
+        {
+            String::from_slice(&env, "did:ethr")
+        } else {
+            return Err(VaultError::UnsupportedDidMethod);
+        };
+
+        let deposit_exists = storage::get_deposit_readonly(&env, &depositor, deposit_id).is_some()
+            || storage::get_deposit_by_ledger_readonly(&env, &depositor, deposit_id).is_some()
+            || storage::get_multi_deposit_readonly(&env, &depositor, deposit_id).is_some();
+        if !deposit_exists {
+            return Err(VaultError::NoDepositFound);
+        }
+
+        let identity = IdentityLink {
+            did_method: did_method.clone(),
+            did_commitment: env.crypto().sha256(&did_bytes),
+            credential_commitment,
+            verifier: verifier.clone(),
+            verified_at: env.ledger().timestamp(),
+        };
+        storage::set_identity(&env, &depositor, deposit_id, &identity);
+        let event_method = if did_method == String::from_slice(&env, "did:key") {
+            Symbol::new(&env, "did_key")
+        } else {
+            Symbol::new(&env, "did_ethr")
+        };
+        events::identity_linked(&env, &depositor, deposit_id, &event_method, &verifier);
+        Ok(())
+    }
+
+    pub fn get_identity(
+        env: Env,
+        depositor: Address,
+        deposit_id: u32,
+    ) -> Option<IdentityLink> {
+        storage::get_identity(&env, &depositor, deposit_id)
     }
 
     // ----------------------------------------------------------------
@@ -2303,6 +2474,45 @@ impl SafeHaven {
     //  Governance: proposal, weighted voting, and timelocked execution
     // ----------------------------------------------------------------
 
+    pub fn propose_change(
+        env: Env,
+        proposer: Address,
+        mode: GovernanceMode,
+        proposal_type: ProposalType,
+        value: i128,
+    ) -> Result<u32, VaultError> {
+        proposer.require_auth();
+        if matches!(mode, GovernanceMode::AdminVote) {
+            storage::require_admin(&env, &proposer)?;
+        }
+
+        let created_at = env.ledger().timestamp();
+        let proposal_id = storage::next_proposal_id(&env);
+        let action = match proposal_type {
+            ProposalType::Pause => GovernanceAction::Pause,
+            ProposalType::MaxDeposit => GovernanceAction::SetMaxDeposit(value),
+            ProposalType::MaxLockDuration => GovernanceAction::SetMaxLockSecs(value as u64),
+            ProposalType::FeeRate => GovernanceAction::SetFeeRate(value),
+            ProposalType::FeatureFlag => GovernanceAction::ToggleFeature(value != 0),
+        };
+
+        storage::set_governance_proposal(&env, proposal_id, &GovernanceProposal {
+            proposer: proposer.clone(),
+            action,
+            mode,
+            created_at,
+            voting_ends_at: created_at.saturating_add(crate::constants::GOVERNANCE_VOTING_PERIOD_SECS),
+            executable_at: created_at
+                .saturating_add(crate::constants::GOVERNANCE_VOTING_PERIOD_SECS)
+                .saturating_add(crate::constants::GOVERNANCE_TIMELOCK_SECS),
+            for_votes: 0,
+            against_votes: 0,
+            executed: false,
+        });
+        events::proposal_created(&env, proposal_id, &proposer);
+        Ok(proposal_id)
+    }
+
     pub fn propose_pause(env: Env, proposer: Address, mode: GovernanceMode) -> Result<u32, VaultError> {
         proposer.require_auth();
         if matches!(mode, GovernanceMode::AdminVote) {
@@ -2377,10 +2587,21 @@ impl SafeHaven {
         }
         match proposal.action {
             GovernanceAction::Pause => storage::set_paused(&env, true),
+            GovernanceAction::SetMaxDeposit(value) => storage::set_max_deposit(&env, value),
+            GovernanceAction::SetMaxLockSecs(value) => storage::set_max_lock_secs(&env, value),
+            GovernanceAction::SetFeeRate(_value) => {},
+            GovernanceAction::ToggleFeature(enabled) => {
+                if enabled {
+                    storage::set_paused(&env, false);
+                }
+            }
+            GovernanceAction::SetFeeRecipient(recipient) => {
+                storage::set_fee_recipient(&env, &recipient);
+            }
         }
         proposal.executed = true;
         storage::set_governance_proposal(&env, proposal_id, &proposal);
-        events::governance_executed(&env, proposal_id);
+        events::proposal_executed(&env, proposal_id);
         Ok(())
     }
 
@@ -2645,6 +2866,125 @@ impl SafeHaven {
 
     pub fn get_fee_recipient(env: Env) -> Option<Address> {
         storage::get_fee_recipient(&env)
+    }
+
+    pub fn flash_borrow(env: Env, borrower: Address, token: Address, amount: i128) -> Result<i128, VaultError> {
+        borrower.require_auth();
+        if storage::is_paused(&env) {
+            return Err(VaultError::ContractPaused);
+        }
+        if amount <= 0 {
+            return Err(VaultError::InvalidAmount);
+        }
+        if storage::is_flash_loan_guard_active(&env) {
+            return Err(VaultError::FlashLoanReentrancy);
+        }
+
+        let contract = env.current_contract_address();
+        let token_client = token::Client::new(&env, &token);
+        let available = token_client.balance(&contract);
+        if available < amount {
+            return Err(VaultError::FlashLoanInsufficientLiquidity);
+        }
+
+        let fee = (amount * FLASH_LOAN_FEE_BPS as i128) / 10_000;
+        let state = crate::types::FlashLoanState {
+            borrower: borrower.clone(),
+            token: token.clone(),
+            amount,
+            fee,
+            repaid: false,
+        };
+        storage::set_flash_loan_state(&env, &borrower, &token, &state);
+        storage::set_flash_loan_guard(&env, true);
+        token_client.transfer(&contract, &borrower, &amount);
+        Ok(amount)
+    }
+
+    pub fn flash_repay(env: Env, borrower: Address, token: Address, repayment: i128) -> Result<i128, VaultError> {
+        borrower.require_auth();
+        if storage::is_paused(&env) {
+            return Err(VaultError::ContractPaused);
+        }
+
+        let state = storage::get_flash_loan_state(&env, &borrower, &token)
+            .ok_or(VaultError::NoDepositFound)?;
+        let due = state.amount.saturating_add(state.fee);
+        if repayment < due {
+            return Err(VaultError::InvalidAmount);
+        }
+
+        let token_client = token::Client::new(&env, &token);
+        token_client.transfer(&borrower, &env.current_contract_address(), &repayment);
+
+        let mut total_fee = state.fee;
+        if total_fee > 0 {
+            let mut assigned_total = 0i128;
+            let depositor_list = storage::get_all_depositors_raw(&env);
+            let mut total_weight = 0i128;
+            let mut fee_map: soroban_sdk::Vec<(Address, i128)> = soroban_sdk::Vec::new(&env);
+
+            for depositor in depositor_list.iter() {
+                let mut weight = 0i128;
+                let ids = storage::get_deposit_ids(&env, &depositor);
+                for id in ids.iter() {
+                    if let Some(entry) = storage::get_deposit_readonly(&env, &depositor, id) {
+                        if entry.token == token {
+                            weight = weight.saturating_add(entry.amount);
+                        }
+                    }
+                }
+                if weight > 0 {
+                    total_weight = total_weight.saturating_add(weight);
+                    fee_map.push_back((depositor.clone(), weight));
+                }
+            }
+
+            if total_weight > 0 {
+                for entry in fee_map.iter() {
+                    let (depositor, weight) = entry;
+                    let share = (weight * total_fee) / total_weight;
+                    if share > 0 {
+                        let current_balance = storage::get_flash_loan_fee_balance(&env, &token, &depositor);
+                        storage::set_flash_loan_fee_balance(&env, &token, &depositor, current_balance.saturating_add(share));
+                        assigned_total = assigned_total.saturating_add(share);
+                    }
+                }
+                if assigned_total < total_fee {
+                    let mut remainder = total_fee.saturating_sub(assigned_total);
+                    if let Some(first) = fee_map.first() {
+                        let (depositor, _) = first;
+                        let current_balance = storage::get_flash_loan_fee_balance(&env, &token, &depositor);
+                        storage::set_flash_loan_fee_balance(&env, &token, &depositor, current_balance.saturating_add(remainder));
+                    }
+                }
+            }
+        }
+
+        storage::remove_flash_loan_state(&env, &borrower, &token);
+        storage::set_flash_loan_guard(&env, false);
+        let refund = repayment.saturating_sub(due);
+        if refund > 0 {
+            token_client.transfer(&env.current_contract_address(), &borrower, &refund);
+        }
+        events::flash_loan_executed(&env, &borrower, &token, state.amount, state.fee, repayment);
+        Ok(due)
+    }
+
+    pub fn claim_flash_loan_fees(env: Env, depositor: Address, token: Address) -> Result<i128, VaultError> {
+        depositor.require_auth();
+        let fee = storage::get_flash_loan_fee_balance(&env, &token, &depositor);
+        if fee <= 0 {
+            return Ok(0);
+        }
+        let token_client = token::Client::new(&env, &token);
+        token_client.transfer(&env.current_contract_address(), &depositor, &fee);
+        storage::set_flash_loan_fee_balance(&env, &token, &depositor, 0);
+        Ok(fee)
+    }
+
+    pub fn get_flash_loan_fee_balance(env: Env, token: Address, depositor: Address) -> i128 {
+        storage::get_flash_loan_fee_balance(&env, &token, &depositor)
     }
 
     pub fn is_token_allowed(env: Env, token: Address) -> bool {

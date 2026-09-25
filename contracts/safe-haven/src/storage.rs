@@ -1,4 +1,4 @@
-use soroban_sdk::{token, Address, Env, Vec};
+use soroban_sdk::{token, Address, Bytes, Env, Vec};
 
 use crate::types::{DepositSubscription, MultiTokenVaultEntry, SubscriptionExecution, SubscriptionStats, TaxLossHarvest, VaultEntry, VaultKey, LedgerVaultEntry, MAX_LOCK_DURATION_SECS};
 use crate::types::CircuitBreakerActivation;
@@ -52,6 +52,69 @@ pub fn next_deposit_id(env: &Env, depositor: &Address) -> u32 {
         .persistent()
         .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
     id
+}
+
+pub fn peek_next_deposit_id(env: &Env, depositor: &Address) -> u32 {
+    let key = VaultKey::DepositCounter(depositor.clone());
+    env.storage().persistent().get(&key).unwrap_or(0)
+}
+
+pub fn set_quantum_safe_public_key(env: &Env, account: &Address, public_key: &Bytes) {
+    let key = VaultKey::QuantumSafePublicKey(account.clone());
+    env.storage().persistent().set(&key, public_key);
+}
+
+pub fn get_quantum_safe_public_key(env: &Env, account: &Address) -> Option<Bytes> {
+    let key = VaultKey::QuantumSafePublicKey(account.clone());
+    env.storage().persistent().get(&key)
+}
+
+pub fn set_quantum_safe_metadata(
+    env: &Env,
+    depositor: &Address,
+    deposit_id: u32,
+    metadata: &Bytes,
+) {
+    let key = VaultKey::QuantumSafeMetadata(depositor.clone(), deposit_id);
+    env.storage().persistent().set(&key, metadata);
+}
+
+pub fn get_quantum_safe_metadata(
+    env: &Env,
+    depositor: &Address,
+    deposit_id: u32,
+) -> Option<Bytes> {
+    let key = VaultKey::QuantumSafeMetadata(depositor.clone(), deposit_id);
+    env.storage().persistent().get(&key)
+}
+
+pub fn set_identity(
+    env: &Env,
+    depositor: &Address,
+    deposit_id: u32,
+    identity: &IdentityLink,
+) {
+    let key = VaultKey::Identity(depositor.clone(), deposit_id);
+    env.storage().persistent().set(&key, identity);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
+}
+
+pub fn get_identity(
+    env: &Env,
+    depositor: &Address,
+    deposit_id: u32,
+) -> Option<IdentityLink> {
+    let key = VaultKey::Identity(depositor.clone(), deposit_id);
+    env.storage().persistent().get(&key)
+}
+
+pub fn remove_identity(env: &Env, depositor: &Address, deposit_id: u32) {
+    let key = VaultKey::Identity(depositor.clone(), deposit_id);
+    if env.storage().persistent().has(&key) {
+        env.storage().persistent().remove(&key);
+    }
 }
 
 // ----------------------------------------------------------------
@@ -166,6 +229,7 @@ pub fn get_deposit_readonly(env: &Env, depositor: &Address, deposit_id: u32) -> 
 pub fn remove_deposit(env: &Env, depositor: &Address, deposit_id: u32) {
     let key = VaultKey::Deposit(depositor.clone(), deposit_id);
     env.storage().persistent().remove(&key);
+    remove_identity(env, depositor, deposit_id);
     remove_active_deposit_id(env, depositor, deposit_id);
 }
 
@@ -239,6 +303,7 @@ pub fn get_deposit_by_ledger_readonly(
 pub fn remove_deposit_by_ledger(env: &Env, depositor: &Address, deposit_id: u32) {
     let key = VaultKey::DepositByLedger(depositor.clone(), deposit_id);
     env.storage().persistent().remove(&key);
+    remove_identity(env, depositor, deposit_id);
     remove_active_deposit_id(env, depositor, deposit_id);
 }
 
@@ -291,6 +356,7 @@ pub fn get_multi_deposit_readonly(
 pub fn remove_multi_deposit(env: &Env, depositor: &Address, deposit_id: u32) {
     let key = VaultKey::MultiDeposit(depositor.clone(), deposit_id);
     env.storage().persistent().remove(&key);
+    remove_identity(env, depositor, deposit_id);
     remove_active_deposit_id(env, depositor, deposit_id);
 }
 
@@ -430,6 +496,66 @@ pub fn set_fee_recipient(env: &Env, recipient: &Address) {
 
 pub fn get_fee_recipient(env: &Env) -> Option<Address> {
     env.storage().persistent().get(&VaultKey::FeeRecipient)
+}
+
+/// Guard flag to prevent nested flash-loan re-entry in the same transaction.
+pub fn set_flash_loan_guard(env: &Env, active: bool) {
+    env.storage().persistent().set(&VaultKey::FlashLoanGuard, &active);
+    env.storage()
+        .persistent()
+        .extend_ttl(&VaultKey::FlashLoanGuard, BUMP_THRESHOLD, BUMP_TARGET);
+}
+
+pub fn is_flash_loan_guard_active(env: &Env) -> bool {
+    env.storage()
+        .persistent()
+        .get::<VaultKey, bool>(&VaultKey::FlashLoanGuard)
+        .unwrap_or(false)
+}
+
+pub fn set_flash_loan_state(
+    env: &Env,
+    borrower: &Address,
+    token: &Address,
+    state: &crate::types::FlashLoanState,
+) {
+    let key = VaultKey::FlashLoanState(borrower.clone(), token.clone());
+    env.storage().persistent().set(&key, state);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
+}
+
+pub fn get_flash_loan_state(
+    env: &Env,
+    borrower: &Address,
+    token: &Address,
+) -> Option<crate::types::FlashLoanState> {
+    let key = VaultKey::FlashLoanState(borrower.clone(), token.clone());
+    env.storage().persistent().get(&key)
+}
+
+pub fn remove_flash_loan_state(env: &Env, borrower: &Address, token: &Address) {
+    let key = VaultKey::FlashLoanState(borrower.clone(), token.clone());
+    env.storage().persistent().remove(&key);
+}
+
+pub fn set_flash_loan_fee_balance(
+    env: &Env,
+    token: &Address,
+    depositor: &Address,
+    balance: i128,
+) {
+    let key = VaultKey::FlashLoanFeeBalance(token.clone(), depositor.clone());
+    env.storage().persistent().set(&key, &balance);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
+}
+
+pub fn get_flash_loan_fee_balance(env: &Env, token: &Address, depositor: &Address) -> i128 {
+    let key = VaultKey::FlashLoanFeeBalance(token.clone(), depositor.clone());
+    env.storage().persistent().get(&key).unwrap_or(0)
 }
 
 // ----------------------------------------------------------------

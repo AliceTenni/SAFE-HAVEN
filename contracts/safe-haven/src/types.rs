@@ -1,4 +1,4 @@
-use soroban_sdk::{contracttype, Address, Vec};
+use soroban_sdk::{contracttype, Address, Bytes, BytesN, String, Vec};
 
 pub const MAX_DEPOSIT_AMOUNT: i128 = 1_000_000_000_000_000;
 pub const MAX_LOCK_DURATION_SECS: u64 = 157_788_000;
@@ -19,25 +19,11 @@ pub const INSURANCE_POOL_BPS: u32 = 500; // 5% in basis points
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum DepositType {
-    TimeBased,
-    LedgerBased,
-}
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DepositRequest {
     pub token: Address,
     pub amount: i128,
     pub unlock_time: u64,
     pub penalty_bps: u32,
-}
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum DepositType {
-    TimeBased,
-    LedgerBased,
 }
 
 #[contracttype]
@@ -76,9 +62,19 @@ pub enum VaultKey {
     ProposalCounter,
     GovernanceProposal(u32),
     GovernanceVote(u32, Address),
+    NextUpgradeId,
+    UpgradeProposal(u32),
+    UpgradeVote(u32, Address),
+    UpgradeVeto(u32, Address),
     /// Persists the schema version written by the last `migrate()` call (or 1
     /// for contracts that were initialized before versioning was introduced).
     StorageVersion,
+    /// Guards flash-loan execution against re-entrant nested calls.
+    FlashLoanGuard,
+    /// Active borrower state for a single-token flash loan.
+    FlashLoanState(Address, Address),
+    /// Fee share owed to a depositor for a token after flash-loan repayment.
+    FlashLoanFeeBalance(Address, Address),
     /// Staker entry: maps staker address to their stake amount
     Staker(Address),
     /// List of all registered stakers

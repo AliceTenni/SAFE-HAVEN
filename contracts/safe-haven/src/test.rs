@@ -65,14 +65,17 @@ extern crate std;
 use soroban_sdk::{
     testutils::{Address as _, Events, Ledger, LedgerInfo},
     token::{Client as TokenClient, StellarAssetClient},
-    Address, Env, Vec,
+    Address, Bytes, BytesN, Env, String, Vec,
 };
 
 use crate::{
     constants::MIN_LOCK_LEDGERS,
     contract::{SafeHaven, SafeHavenClient},
     errors::VaultError,
-    types::{DepositType, VaultEntry, VaultKey, MAX_DEPOSIT_AMOUNT, MAX_LOCK_DURATION_SECS},
+    types::{
+        DepositType, GovernanceMode, ProposalType, VaultEntry, VaultKey, MAX_DEPOSIT_AMOUNT,
+        MAX_LOCK_DURATION_SECS,
+    },
 };
 
 fn setup() -> (
@@ -114,6 +117,39 @@ fn advance_time(env: &Env, seconds: u64) {
         min_persistent_entry_ttl: 4096,
         max_entry_ttl: 33_000_000,
     });
+}
+
+#[test]
+fn test_flash_borrow_repay_and_fee_distribution() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    let borrower: Address = Address::generate(&env);
+    let unlock_time = env.ledger().timestamp() + 3600;
+
+    vault.deposit(&alice, &token, &10_000, &unlock_time, &0);
+    let borrowed = vault.flash_borrow(&borrower, &token, &5_000);
+    assert_eq!(borrowed, 5_000);
+
+    let due = vault.flash_repay(&borrower, &token, &5_000 + 5_000 * 10 / 10_000);
+    assert_eq!(due, 5_000 + 5);
+    assert_eq!(vault.get_flash_loan_fee_balance(&token, &alice), 5);
+
+    let claimed = vault.claim_flash_loan_fees(&alice, &token);
+    assert_eq!(claimed, 5);
+    assert_eq!(vault.get_flash_loan_fee_balance(&token, &alice), 0);
+}
+
+#[test]
+fn test_flash_borrow_rejects_reentrant_call() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    let borrower: Address = Address::generate(&env);
+    let unlock_time = env.ledger().timestamp() + 3600;
+    vault.deposit(&alice, &token, &10_000, &unlock_time, &0);
+
+    let _ = vault.flash_borrow(&borrower, &token, &1_000);
+    let result = vault.try_flash_borrow(&borrower, &token, &1_000);
+    assert_eq!(result, Err(Ok(VaultError::FlashLoanReentrancy)));
+
+    vault.flash_repay(&borrower, &token, &1_000 + 1_000 * 10 / 10_000);
 }
 
 struct UpgradeHarness {
@@ -184,6 +220,18 @@ impl UpgradeHarness {
 fn test_initialize_sets_admin() {
     let (_env, vault, _token, admin, _alice, _fee) = setup();
     assert_eq!(vault.get_admin(), Some(admin));
+}
+
+#[test]
+fn quantum_safe_key_registration_rejects_invalid_encoding() {
+    let (env, vault, _token, _admin, alice, _fee) = setup();
+    let invalid_key = Bytes::from_slice(&env, &[0; 32]);
+
+    assert_eq!(
+        vault.try_register_quantum_safe_key(&alice, &invalid_key),
+        Err(Ok(VaultError::InvalidQuantumSafeKey))
+    );
+    assert_eq!(vault.get_quantum_safe_key(&alice), None);
 }
 
 #[test]
@@ -381,6 +429,28 @@ fn test_admin_governance_requires_admin_and_prevents_double_vote() {
     );
 }
 
+#[test]
+fn test_parameter_change_governance_executes_max_deposit_update() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    let bob: Address = Address::generate(&env);
+    StellarAssetClient::new(&env, &token).mint(&alice, &1_000);
+    StellarAssetClient::new(&env, &token).mint(&bob, &2_000);
+
+    let unlock_time = env.ledger().timestamp() + 3600;
+    vault.deposit(&alice, &token, &1_000, &unlock_time, &0);
+    vault.deposit(&bob, &token, &2_000, &unlock_time, &0);
+
+    let proposal_id = vault.propose_change(&alice, &GovernanceMode::CommunityVote, &ProposalType::MaxDeposit, &5_000);
+    assert_eq!(vault.vote(&proposal_id, &alice, &true), 1_000);
+    assert_eq!(vault.vote(&proposal_id, &bob, &false), 2_000);
+
+    advance_time(&env, 86_400 + 86_400);
+    vault.execute_proposal(&proposal_id);
+
+    let (max_deposit, _max_lock) = vault.get_constants();
+    assert_eq!(max_deposit, 5_000);
+}
+
 // ================================================================
 //  Deposit — happy path
 // ================================================================
@@ -404,6 +474,56 @@ fn test_deposit_success() {
     // Event emission is verified by test_deposit_for_event_emitted; the
     // core assertions above (vault entry fields, id) are sufficient here.
     let _ = events; // suppress unused-variable warning
+}
+
+#[test]
+fn link_identity_stores_only_commitments_for_supported_did() {
+    let (env, vault, token, _admin, alice, fee) = setup();
+    let unlock_time = env.ledger().timestamp() + 3600;
+    let deposit_id = vault.deposit(&alice, &token, &1_000, &unlock_time, &0);
+    let credential_commitment = BytesN::from_array(&env, &[7; 32]);
+
+    vault.link_identity(
+        &alice,
+        &deposit_id,
+        &String::from_slice(&env, "did:key:z6Mkverified"),
+        &credential_commitment,
+        &fee,
+    );
+
+    let identity = vault.get_identity(&alice, &deposit_id).expect("identity link");
+    assert_eq!(identity.did_method, String::from_slice(&env, "did:key"));
+    assert_eq!(identity.credential_commitment, credential_commitment);
+    assert_eq!(identity.verifier, fee);
+    assert_eq!(identity.did_commitment, env.crypto().sha256(&String::from_slice(&env, "did:key:z6Mkverified").to_bytes()));
+}
+
+#[test]
+fn link_identity_supports_ethr_and_rejects_unknown_methods() {
+    let (env, vault, token, _admin, alice, fee) = setup();
+    let unlock_time = env.ledger().timestamp() + 3600;
+    let deposit_id = vault.deposit(&alice, &token, &1_000, &unlock_time, &0);
+    let credential_commitment = BytesN::from_array(&env, &[9; 32]);
+
+    vault.link_identity(
+        &alice,
+        &deposit_id,
+        &String::from_slice(&env, "did:ethr:0x1234"),
+        &credential_commitment,
+        &fee,
+    );
+    assert_eq!(vault.get_identity(&alice, &deposit_id).unwrap().did_method, String::from_slice(&env, "did:ethr"));
+
+    assert_eq!(
+        vault.try_link_identity(
+            &alice,
+            &deposit_id,
+            &String::from_slice(&env, "did:web:example.com"),
+            &credential_commitment,
+            &fee,
+        ),
+        Err(Ok(VaultError::UnsupportedDidMethod))
+    );
 }
 
 #[test]
