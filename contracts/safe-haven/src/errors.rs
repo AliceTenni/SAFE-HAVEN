@@ -29,4 +29,6 @@ pub enum VaultError {
     RecipientNotWhitelisted = 18,
     /// Compound frequency must be >= 60 seconds if non-zero (issue #332).
     InvalidCompoundFrequency = 19,
+    /// Caller does not have the required ACL permission for this operation.
+    PermissionDenied = 20,
 }

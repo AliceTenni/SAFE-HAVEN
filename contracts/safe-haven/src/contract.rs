@@ -14,7 +14,7 @@ use crate::{
     events, storage,
     types::{
         DepositType, MultiTokenVaultEntry, TokenDeposit, VaultEntry, LedgerVaultEntry, Page,
-        STORAGE_VERSION, MAX_TOKENS_PER_DEPOSIT,
+        PermissionType, STORAGE_VERSION, MAX_TOKENS_PER_DEPOSIT,
     },
 };
 
@@ -255,6 +255,64 @@ impl SafeHaven {
     }
 
     // ----------------------------------------------------------------
+    //  ACL — Access Control List
+    // ----------------------------------------------------------------
+
+    /// Grant `permission` to `grantee`. Only the admin may call this.
+    ///
+    /// Multiple calls accumulate permissions (bitmask OR). To grant all
+    /// permissions at once, call `grant_permission` for each one.
+    ///
+    /// # Events
+    /// Emits `perm_granted(admin, grantee, permission_mask)`.
+    pub fn grant_permission(
+        env: Env,
+        admin: Address,
+        grantee: Address,
+        permission: PermissionType,
+    ) -> Result<(), VaultError> {
+        admin.require_auth();
+        storage::require_admin(&env, &admin)?;
+        storage::grant_permission(&env, &grantee, permission);
+        events::permission_granted(&env, &admin, &grantee, permission.mask());
+        Ok(())
+    }
+
+    /// Revoke `permission` from `grantee`. Only the admin may call this.
+    ///
+    /// Revoking a permission the address does not hold is a no-op (idempotent).
+    ///
+    /// # Events
+    /// Emits `perm_revoked(admin, grantee, permission_mask)`.
+    pub fn revoke_permission(
+        env: Env,
+        admin: Address,
+        grantee: Address,
+        permission: PermissionType,
+    ) -> Result<(), VaultError> {
+        admin.require_auth();
+        storage::require_admin(&env, &admin)?;
+        storage::revoke_permission(&env, &grantee, permission);
+        events::permission_revoked(&env, &admin, &grantee, permission.mask());
+        Ok(())
+    }
+
+    /// Return the raw permission bitmask for `address`.
+    ///
+    /// The bitmask encodes which `PermissionType` bits are set:
+    /// - bit 0 (`0x01`): `ViewVault`
+    /// - bit 1 (`0x02`): `Deposit`
+    /// - bit 2 (`0x04`): `Withdraw`
+    /// - bit 3 (`0x08`): `CancelDeposit`
+    /// - bit 4 (`0x10`): `Manage`
+    ///
+    /// A value of `0` means no permissions have been granted. The admin
+    /// address implicitly has all permissions regardless of this value.
+    pub fn get_permissions(env: Env, address: Address) -> u32 {
+        storage::get_acl_bitmask(&env, &address)
+    }
+
+    // ----------------------------------------------------------------
     //  Initialization
     // ----------------------------------------------------------------
 
@@ -315,6 +373,7 @@ impl SafeHaven {
         penalty_bps: u32,
     ) -> Result<u32, VaultError> {
         depositor.require_auth();
+        storage::require_permission(&env, &depositor, PermissionType::Deposit)?;
 
         if storage::is_paused(&env) {
             return Err(VaultError::ContractPaused);
@@ -420,6 +479,7 @@ impl SafeHaven {
         deposits: Vec<DepositRequest>,
     ) -> Result<Vec<u32>, VaultError> {
         depositor.require_auth();
+        storage::require_permission(&env, &depositor, PermissionType::Deposit)?;
 
         if deposits.len() > MAX_BATCH_SIZE {
             return Err(VaultError::BatchTooLarge);
@@ -497,6 +557,7 @@ impl SafeHaven {
         penalty_bps: u32,
     ) -> Result<u32, VaultError> {
         payer.require_auth();
+        storage::require_permission(&env, &payer, PermissionType::Deposit)?;
 
         if storage::is_paused(&env) {
             return Err(VaultError::ContractPaused);
@@ -606,6 +667,7 @@ impl SafeHaven {
         withdrawal_delay_secs: u64,
     ) -> Result<u32, VaultError> {
         depositor.require_auth();
+        storage::require_permission(&env, &depositor, PermissionType::Deposit)?;
 
         if storage::is_paused(&env) {
             return Err(VaultError::ContractPaused);
@@ -672,6 +734,7 @@ impl SafeHaven {
         penalty_bps: u32,
     ) -> Result<u32, VaultError> {
         depositor.require_auth();
+        storage::require_permission(&env, &depositor, PermissionType::Deposit)?;
 
         if storage::is_paused(&env) {
             return Err(VaultError::ContractPaused);
@@ -783,6 +846,7 @@ impl SafeHaven {
         penalty_bps: u32,
     ) -> Result<u32, VaultError> {
         depositor.require_auth();
+        storage::require_permission(&env, &depositor, PermissionType::Deposit)?;
 
         if storage::is_paused(&env) {
             return Err(VaultError::ContractPaused);

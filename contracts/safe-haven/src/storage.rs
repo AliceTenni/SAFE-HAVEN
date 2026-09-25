@@ -1135,3 +1135,73 @@ pub fn set_milestone_bitmap(env: &Env, depositor: &Address, bitmap: u32) {
         .persistent()
         .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
 }
+
+// ----------------------------------------------------------------
+//  ACL (Access Control List) helpers
+// ----------------------------------------------------------------
+
+use crate::types::PermissionType;
+
+/// Read the raw permission bitmask for `address`.
+/// Returns 0 if no ACL entry exists (no permissions granted).
+pub fn get_acl_bitmask(env: &Env, address: &Address) -> u32 {
+    let key = VaultKey::AclEntry(address.clone());
+    env.storage()
+        .persistent()
+        .get::<VaultKey, u32>(&key)
+        .unwrap_or(0)
+}
+
+/// Overwrite the raw permission bitmask for `address`.
+/// A value of 0 is stored as an absent entry (key removed).
+pub fn set_acl_bitmask(env: &Env, address: &Address, bitmask: u32) {
+    let key = VaultKey::AclEntry(address.clone());
+    if bitmask == 0 {
+        // No permissions remain — remove the key to keep storage clean.
+        if env.storage().persistent().has(&key) {
+            env.storage().persistent().remove(&key);
+        }
+    } else {
+        env.storage().persistent().set(&key, &bitmask);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
+    }
+}
+
+/// Grant `permission` to `address` (sets the corresponding bit in their bitmask).
+pub fn grant_permission(env: &Env, address: &Address, permission: PermissionType) {
+    let current = get_acl_bitmask(env, address);
+    set_acl_bitmask(env, address, current | permission.mask());
+}
+
+/// Revoke `permission` from `address` (clears the corresponding bit in their bitmask).
+pub fn revoke_permission(env: &Env, address: &Address, permission: PermissionType) {
+    let current = get_acl_bitmask(env, address);
+    set_acl_bitmask(env, address, current & !permission.mask());
+}
+
+/// Returns `true` if `address` has `permission` in its bitmask.
+pub fn has_permission(env: &Env, address: &Address, permission: PermissionType) -> bool {
+    get_acl_bitmask(env, address) & permission.mask() != 0
+}
+
+/// Returns `Ok(())` if `caller` is the admin OR has `permission`.
+/// Returns `Err(VaultError::PermissionDenied)` otherwise.
+pub fn require_permission(
+    env: &Env,
+    caller: &Address,
+    permission: PermissionType,
+) -> Result<(), crate::errors::VaultError> {
+    // Admin always bypasses ACL.
+    if let Some(ref admin) = get_admin(env) {
+        if admin == caller {
+            return Ok(());
+        }
+    }
+    if has_permission(env, caller, permission) {
+        Ok(())
+    } else {
+        Err(crate::errors::VaultError::PermissionDenied)
+    }
+}

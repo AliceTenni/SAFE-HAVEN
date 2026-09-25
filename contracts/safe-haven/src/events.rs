@@ -207,3 +207,19 @@ pub fn interest_accrued(
     env.events()
         .publish(topics, (deposit_id, old_amount, new_amount));
 }
+
+/// Emitted when a permission is granted to an address by the admin.
+/// `permission_mask` is the bitmask value of the permission(s) granted.
+pub fn permission_granted(env: &Env, admin: &Address, grantee: &Address, permission_mask: u32) {
+    let topics = (Symbol::new(env, "perm_granted"), admin.clone());
+    env.events()
+        .publish(topics, (grantee.clone(), permission_mask));
+}
+
+/// Emitted when a permission is revoked from an address by the admin.
+/// `permission_mask` is the bitmask value of the permission(s) revoked.
+pub fn permission_revoked(env: &Env, admin: &Address, grantee: &Address, permission_mask: u32) {
+    let topics = (Symbol::new(env, "perm_revoked"), admin.clone());
+    env.events()
+        .publish(topics, (grantee.clone(), permission_mask));
+}

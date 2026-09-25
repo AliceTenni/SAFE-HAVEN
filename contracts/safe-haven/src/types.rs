@@ -89,6 +89,8 @@ pub enum VaultKey {
     RewardsPool,
     /// Rewards claimed by a staker (track cumulative for auditing)
     StakerRewardsClaimed(Address),
+    /// ACL entry: maps an address to a bitmask of granted PermissionType bits.
+    AclEntry(Address),
 }
 
 #[contracttype]
@@ -175,4 +177,47 @@ pub struct StakerEntry {
 pub enum DepositType {
     TimeBased,
     LedgerBased,
+}
+
+// ----------------------------------------------------------------
+//  ACL — Access Control List
+// ----------------------------------------------------------------
+
+/// Granular permission types for the SAFE-HAVEN Access Control List.
+///
+/// Each variant maps to a single bit in a `u32` bitmask stored per address.
+/// The admin always bypasses ACL checks — these permissions apply to
+/// non-admin callers only.
+///
+/// # Bit layout
+/// | Permission        | Bit position | Mask value |
+/// |---|---|---|
+/// | `ViewVault`       | 0            | 0x0001 |
+/// | `Deposit`         | 1            | 0x0002 |
+/// | `Withdraw`        | 2            | 0x0004 |
+/// | `CancelDeposit`   | 3            | 0x0008 |
+/// | `Manage`          | 4            | 0x0010 |
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum PermissionType {
+    /// Allows the address to query vault entries via `get_vault` / `get_vault_batch`.
+    ViewVault = 0,
+    /// Allows the address to create deposits on behalf of themselves (`deposit`, `deposit_for`,
+    /// `deposit_by_ledger`, `multi_deposit`).
+    Deposit = 1,
+    /// Allows the address to call `withdraw` and `withdraw_to` for their own deposits.
+    Withdraw = 2,
+    /// Allows the address to call `cancel_deposit` for their own deposits.
+    CancelDeposit = 3,
+    /// Allows the address to call admin-adjacent operations such as `emergency_withdraw`,
+    /// `pause`, and `unpause`.  Typically granted only to trusted operator addresses.
+    Manage = 4,
+}
+
+impl PermissionType {
+    /// Returns the bit mask for this permission.
+    pub fn mask(self) -> u32 {
+        1u32 << (self as u32)
+    }
 }
