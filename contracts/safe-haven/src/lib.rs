@@ -14,9 +14,16 @@ mod constants;
 mod contract;
 mod errors;
 mod events;
-mod pq;
+mod nft;
 mod storage;
 mod types;
+
+// Prediction Market modules
+mod prediction_market;
+mod prediction_market_errors;
+mod prediction_market_events;
+mod prediction_market_storage;
+mod prediction_market_types;
 
 pub use constants::{
     EPOCH_SIZE_LEDGERS, MAX_BATCH_SIZE, MAX_DEPOSIT_AMOUNT, MAX_LOCK_DURATION_SECS,
@@ -24,14 +31,20 @@ pub use constants::{
 };
 
 pub use types::{
-    DepositType, GovernanceAction, GovernanceMode, GovernanceProposal, IdentityLink,
-    MultiTokenVaultEntry, Page, ProposalType, TokenDeposit, STORAGE_VERSION,
-    MAX_TOKENS_PER_DEPOSIT,
+    CircuitBreakerActivation, DepositSubscription, DepositType, MultiTokenVaultEntry, Page,
+    SubscriptionExecution, SubscriptionStats, TaxLossHarvest, TokenDeposit, STORAGE_VERSION,
+    MAX_EMERGENCY_WITHDRAWAL_PER_LEDGER, MAX_TOKENS_PER_DEPOSIT,
 };
 pub use pq::{ML_DSA_PUBLIC_KEY_BYTES, ML_DSA_SIGNATURE_BYTES};
 
 pub use contract::SafeHaven;
 pub use contract::SafeHavenClient;
+
+// Prediction Market exports
+pub use prediction_market_types::{
+    PredictionMarket, MarketOutcome, Bet, MarketStatus, MarketConfig,
+};
+pub use prediction_market_errors::PredictionMarketError;
 
 #[cfg(test)]
 mod test;

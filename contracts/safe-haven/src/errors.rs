@@ -29,27 +29,18 @@ pub enum VaultError {
     RecipientNotWhitelisted = 18,
     /// Compound frequency must be >= 60 seconds if non-zero (issue #332).
     InvalidCompoundFrequency = 19,
-    /// The ML-DSA public key or signature has an invalid encoding or length.
-    InvalidQuantumSafeKey = 20,
-    /// The ML-DSA signature does not authorize the exact deposit payload.
-    InvalidQuantumSafeSignature = 21,
-    /// The DID method is outside the supported W3C method set.
-    UnsupportedDidMethod = 22,
-    UpgradeEvidenceRequired = 23,
-    UpgradeNotFound = 24,
-    UpgradeReviewRequired = 25,
-    UpgradeNotVoting = 26,
-    UpgradeAlreadyVoted = 27,
-    UpgradeNotApproved = 28,
-    UpgradeTimelocked = 29,
-    ProposalNotFound = 30,
-    VotingEnded = 31,
-    AlreadyVoted = 32,
-    NoVotingPower = 33,
-    VotingStillOpen = 34,
-    TimelockActive = 35,
-    ProposalRejected = 36,
-    ProposalAlreadyExecuted = 37,
-    FlashLoanInsufficientLiquidity = 38,
-    FlashLoanReentrancy = 39,
+    /// Sponsorship fund not initialized
+    SponsorshipNotInitialized = 20,
+    /// User not eligible for sponsorship
+    NotEligibleForSponsorship = 21,
+    /// Sponsorship fund insufficient
+    InsufficientSponsorshipFund = 22,
+    /// User exceeded daily sponsorship limit
+    SponsorshipDailyLimitExceeded = 23,
+    /// User transaction cooldown still active
+    SponsorshipCooldownActive = 24,
+    /// Potential sybil attack detected
+    PotentialSybilAttack = 25,
+    /// Sponsorship configuration error
+    InvalidSponsorshipConfig = 26,
 }

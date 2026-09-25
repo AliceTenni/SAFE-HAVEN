@@ -6,6 +6,8 @@ pub const MIN_LOCK_DURATION_SECS: u64 = 60;
 
 /// Maximum number of tokens allowed in a single multi-token deposit (issue #330).
 pub const MAX_TOKENS_PER_DEPOSIT: u32 = 5;
+/// Emergency withdrawals at or above this cumulative amount in one ledger trip the circuit breaker.
+pub const MAX_EMERGENCY_WITHDRAWAL_PER_LEDGER: i128 = 100_000_000;
 
 /// Current storage schema version. Bump this constant when the on-chain
 /// layout of a `contracttype` struct changes so `migrate()` can detect
@@ -85,96 +87,8 @@ pub enum VaultKey {
     RewardsPool,
     /// Rewards claimed by a staker (track cumulative for auditing)
     StakerRewardsClaimed(Address),
-    /// ML-DSA public key registered for quantum-safe deposit authorization.
-    QuantumSafePublicKey(Address),
-    /// Encrypted client-side metadata associated with a quantum-safe deposit.
-    QuantumSafeMetadata(Address, u32),
-    /// Privacy-preserving identity association for a deposit.
-    Identity(Address, u32),
-}
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum UpgradeStatus {
-    Review,
-    Voting,
-    Approved,
-    Executed,
-    Vetoed,
-}
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct UpgradeProposal {
-    pub id: u32,
-    pub proposer: Address,
-    pub old_version: String,
-    pub new_version: String,
-    pub diff_url: String,
-    pub audit_url: String,
-    pub review_url: String,
-    pub wasm_hash: BytesN<32>,
-    pub status: UpgradeStatus,
-    pub approval_votes: u32,
-    pub rejection_votes: u32,
-    pub veto_votes: u32,
-    pub approved_at: Option<u64>,
-}
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum GovernanceMode {
-    AdminVote,
-    CommunityVote,
-}
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum ProposalType {
-    Pause,
-    MaxDeposit,
-    MaxLockDuration,
-    FeeRate,
-    FeatureFlag,
-}
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum GovernanceAction {
-    Pause,
-    SetMaxDeposit(i128),
-    SetMaxLockSecs(u64),
-    SetFeeRate(i128),
-    ToggleFeature(bool),
-    SetFeeRecipient(Address),
-}
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct GovernanceProposal {
-    pub proposer: Address,
-    pub action: GovernanceAction,
-    pub mode: GovernanceMode,
-    pub created_at: u64,
-    pub voting_ends_at: u64,
-    pub executable_at: u64,
-    pub for_votes: i128,
-    pub against_votes: i128,
-    pub executed: bool,
-}
-
-/// A verified decentralized identity association for a deposit.
-///
-/// The DID and credential claims are intentionally not stored. Callers provide
-/// their commitments, allowing verification without putting personal data on-chain.
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct IdentityLink {
-    pub did_method: String,
-    pub did_commitment: BytesN<32>,
-    pub credential_commitment: BytesN<32>,
-    pub verifier: Address,
-    pub verified_at: u64,
+    /// NFT evolution record: maps (depositor, deposit_id) to NFTEvolutionRecord
+    NFTEvolution(Address, u32),
 }
 
 #[contracttype]
@@ -193,20 +107,18 @@ pub struct VaultEntry {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct QuantumSafePayload {
-    pub entry: VaultEntry,
-    pub deposit_id: u32,
-    pub encrypted_metadata: Bytes,
-}
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct FlashLoanState {
-    pub borrower: Address,
-    pub token: Address,
-    pub amount: i128,
-    pub fee: i128,
-    pub repaid: bool,
+pub struct TaxLossHarvest {
+    pub depositor: Address,
+    pub original_token: Address,
+    pub replacement_token: Address,
+    pub original_deposit_id: u32,
+    pub replacement_deposit_id: u32,
+    pub cost_basis: i128,
+    pub current_value: i128,
+    pub realized_loss: i128,
+    pub tax_benefit: i128,
+    pub harvested_at: u64,
+    pub wash_sale_until: u64,
 }
 
 #[contracttype]
@@ -271,4 +183,69 @@ pub struct Page {
 pub struct StakerEntry {
     pub staker: Address,
     pub stake_amount: i128,
+}
+
+/// Sponsorship fund configuration and state
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SponsorshipFund {
+    /// Balance of native tokens available for sponsorship
+    pub balance: i128,
+
+    /// Address that manages the sponsorship fund (typically admin)
+    pub sponsor_address: Address,
+
+    /// Maximum tokens to sponsor per transaction
+    pub max_per_txn: i128,
+
+    /// Maximum tokens to sponsor per user per day
+    pub max_per_user_day: i128,
+
+    /// Minimum native balance required to be eligible for sponsorship (KYC-lite)
+    pub min_eligible_balance: i128,
+
+    /// Cooldown period (in seconds) between sponsored transactions per user
+    pub cooldown_seconds: u64,
+
+    /// Timestamp of last update (for tracking replenishment frequency)
+    pub last_replenished: u64,
+}
+
+/// Per-user sponsorship tracking for a specific day
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SponsorshipUsage {
+    /// Cumulative amount sponsored to this user today
+    pub amount_used_today: i128,
+
+    /// Timestamp of the last sponsored transaction for this user
+    pub last_sponsored_time: u64,
+
+    /// Counter of sponsored transactions for this user (for sybil detection)
+    pub transaction_count: u32,
+}
+
+/// Result of sponsorship eligibility check
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SponsorshipEligibility {
+    /// User is eligible if they meet all criteria
+    pub is_eligible: bool,
+
+    /// Reason if not eligible (empty string if eligible)
+    pub reason: soroban_sdk::String,
+
+    /// Amount available for this user today
+    pub available_today: i128,
+}
+
+/// Lockdown history entry to track emergency lockdowns
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LockdownEntry {
+    pub activated_at: u64,
+    pub deactivated_at: Option<u64>,
+    pub admin: Address,
+    pub reason: String,
+    pub duration_secs: Option<u64>,
 }
