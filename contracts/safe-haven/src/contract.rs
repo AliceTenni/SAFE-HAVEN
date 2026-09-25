@@ -320,6 +320,10 @@ impl SafeHaven {
             return Err(VaultError::ContractPaused);
         }
 
+        if storage::is_emergency_lockdown(&env) {
+            return Err(VaultError::EmergencyLockdown);
+        }
+
         if storage::is_strict_token_allowlist(&env) && !storage::is_token_allowed(&env, &token) {
             return Err(VaultError::TokenNotAllowed);
         }
@@ -786,6 +790,10 @@ impl SafeHaven {
 
         if storage::is_paused(&env) {
             return Err(VaultError::ContractPaused);
+        }
+
+        if storage::is_emergency_lockdown(&env) {
+            return Err(VaultError::EmergencyLockdown);
         }
 
         let count = tokens_and_amounts.len();
@@ -1286,6 +1294,10 @@ impl SafeHaven {
     pub fn withdraw(env: Env, depositor: Address, deposit_id: u32) -> Result<(), VaultError> {
         depositor.require_auth();
 
+        if storage::is_emergency_lockdown(&env) {
+            return Err(VaultError::EmergencyLockdown);
+        }
+
         // Try timestamp-based deposit first.
         if let Some(mut entry) = storage::get_deposit_readonly(&env, &depositor, deposit_id) {
             let now = env.ledger().timestamp();
@@ -1383,6 +1395,10 @@ impl SafeHaven {
         recipient: Address,
     ) -> Result<(), VaultError> {
         depositor.require_auth();
+
+        if storage::is_emergency_lockdown(&env) {
+            return Err(VaultError::EmergencyLockdown);
+        }
 
         // Try timestamp-based deposit first.
         if let Some(mut entry) = storage::get_deposit_readonly(&env, &depositor, deposit_id) {
@@ -1758,6 +1774,88 @@ impl SafeHaven {
 
     pub fn is_paused(env: Env) -> bool {
         storage::is_paused(&env)
+    }
+
+    // ----------------------------------------------------------------
+    //  Admin: Emergency Lockdown
+    // ----------------------------------------------------------------
+
+    /// Activate emergency lockdown. Only admin can call this.
+    /// Blocks all user operations while preserving deposit integrity.
+    pub fn activate_lockdown(
+        env: Env,
+        admin: Address,
+        reason: soroban_sdk::String,
+    ) -> Result<(), VaultError> {
+        admin.require_auth();
+        let stored_admin = storage::get_admin(&env).ok_or(VaultError::Unauthorized)?;
+        if admin != stored_admin {
+            return Err(VaultError::Unauthorized);
+        }
+
+        let now = env.ledger().timestamp();
+
+        // Set lockdown flag and track metadata
+        storage::set_emergency_lockdown(&env, true);
+        storage::set_lockdown_activated_at(&env, now);
+        storage::set_lockdown_reason(&env, &reason);
+
+        // Emit event
+        events::emergency_lockdown_activated(&env, &admin, &reason, now);
+
+        Ok(())
+    }
+
+    /// Deactivate emergency lockdown. Only admin can call this.
+    /// Requires verification by checking the lockdown was active.
+    pub fn deactivate_lockdown(env: Env, admin: Address) -> Result<(), VaultError> {
+        admin.require_auth();
+        let stored_admin = storage::get_admin(&env).ok_or(VaultError::Unauthorized)?;
+        if admin != stored_admin {
+            return Err(VaultError::Unauthorized);
+        }
+
+        // Verify lockdown is active
+        if !storage::is_emergency_lockdown(&env) {
+            return Err(VaultError::Unauthorized); // Not in lockdown
+        }
+
+        let now = env.ledger().timestamp();
+        let activated_at = storage::get_lockdown_activated_at(&env).ok_or(VaultError::Unauthorized)?;
+        let duration_secs = now.saturating_sub(activated_at);
+
+        // Get the reason for history tracking
+        let reason = storage
+            .get_lockdown_reason(&env)
+            .unwrap_or_else(|| soroban_sdk::String::from_slice(&env, ""));
+
+        // Create lockdown history entry
+        let entry = crate::types::LockdownEntry {
+            activated_at,
+            deactivated_at: Some(now),
+            admin: admin.clone(),
+            reason,
+            duration_secs: Some(duration_secs),
+        };
+        storage::add_lockdown_history(&env, &entry);
+
+        // Clear lockdown state
+        storage::set_emergency_lockdown(&env, false);
+
+        // Emit event
+        events::emergency_lockdown_deactivated(&env, &admin, now, duration_secs);
+
+        Ok(())
+    }
+
+    /// Check if contract is in emergency lockdown mode.
+    pub fn is_emergency_lockdown(env: Env) -> bool {
+        storage::is_emergency_lockdown(&env)
+    }
+
+    /// Get lockdown history for audit purposes.
+    pub fn get_lockdown_history(env: Env) -> Vec<crate::types::LockdownEntry> {
+        storage::get_lockdown_history(&env)
     }
 
     // ----------------------------------------------------------------

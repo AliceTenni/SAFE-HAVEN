@@ -5378,3 +5378,324 @@ fn test_multiple_depositors_independent_metrics() {
     assert_eq!(alice_metrics.depositor, alice);
     assert_eq!(bob_metrics.depositor, bob);
 }
+
+
+// ================================================================
+//  Emergency Lockdown Tests
+// ================================================================
+
+#[test]
+fn test_activate_lockdown_admin_only() {
+    let (env, vault, _token, admin, alice, _fee) = setup();
+
+    let reason = soroban_sdk::String::from_slice(&env, "Security incident detected");
+
+    // Admin can activate lockdown
+    assert!(vault.try_activate_lockdown(&admin, &reason).is_ok());
+    assert!(vault.is_emergency_lockdown());
+
+    // Non-admin cannot activate lockdown
+    assert_eq!(
+        vault.try_activate_lockdown(&alice, &reason),
+        Err(Ok(VaultError::Unauthorized))
+    );
+}
+
+#[test]
+fn test_lockdown_blocks_deposits() {
+    let (env, vault, token, admin, alice, _fee) = setup();
+
+    let unlock_time = env.ledger().timestamp() + 3600;
+    let reason = soroban_sdk::String::from_slice(&env, "Emergency maintenance");
+
+    // Activate lockdown
+    vault.activate_lockdown(&admin, &reason);
+
+    // Deposit should fail during lockdown
+    assert_eq!(
+        vault.try_deposit(&alice, &token, &1_000, &unlock_time, &0),
+        Err(Ok(VaultError::EmergencyLockdown))
+    );
+}
+
+#[test]
+fn test_lockdown_blocks_multi_deposits() {
+    let (env, vault, token, admin, alice, _fee) = setup();
+
+    let unlock_time = env.ledger().timestamp() + 3600;
+    let reason = soroban_sdk::String::from_slice(&env, "Critical bug found");
+
+    // Activate lockdown
+    vault.activate_lockdown(&admin, &reason);
+
+    // Multi-deposit should fail during lockdown
+    let mut deposits = Vec::new(&env);
+    deposits.push_back(crate::types::TokenDeposit {
+        token: token.clone(),
+        amount: 1_000,
+    });
+
+    assert_eq!(
+        vault.try_multi_deposit(&alice, &deposits, &unlock_time, &0),
+        Err(Ok(VaultError::EmergencyLockdown))
+    );
+}
+
+#[test]
+fn test_lockdown_blocks_withdrawals() {
+    let (env, vault, token, admin, alice, _fee) = setup();
+
+    let unlock_time = env.ledger().timestamp() + 3600;
+
+    // Deposit first (before lockdown)
+    let deposit_id = vault.deposit(&alice, &token, &1_000, &unlock_time, &0);
+
+    // Advance time past unlock
+    advance_time(&env, 3700);
+
+    let reason = soroban_sdk::String::from_slice(&env, "Detected attack");
+
+    // Activate lockdown
+    vault.activate_lockdown(&admin, &reason);
+
+    // Withdrawal should fail during lockdown even though funds are unlocked
+    assert_eq!(
+        vault.try_withdraw(&alice, &deposit_id),
+        Err(Ok(VaultError::EmergencyLockdown))
+    );
+}
+
+#[test]
+fn test_lockdown_blocks_withdraw_to() {
+    let (env, vault, token, admin, alice, _fee) = setup();
+
+    let unlock_time = env.ledger().timestamp() + 3600;
+    let recipient = Address::generate(&env);
+
+    // Deposit first (before lockdown)
+    let deposit_id = vault.deposit(&alice, &token, &1_000, &unlock_time, &0);
+
+    // Advance time past unlock
+    advance_time(&env, 3700);
+
+    let reason = soroban_sdk::String::from_slice(&env, "Vulnerability patched");
+
+    // Activate lockdown
+    vault.activate_lockdown(&admin, &reason);
+
+    // withdraw_to should fail during lockdown
+    assert_eq!(
+        vault.try_withdraw_to(&alice, &deposit_id, &recipient),
+        Err(Ok(VaultError::EmergencyLockdown))
+    );
+}
+
+#[test]
+fn test_deactivate_lockdown_admin_only() {
+    let (env, vault, _token, admin, alice, _fee) = setup();
+
+    let reason = soroban_sdk::String::from_slice(&env, "Security incident");
+
+    // Activate lockdown first
+    vault.activate_lockdown(&admin, &reason);
+    assert!(vault.is_emergency_lockdown());
+
+    // Admin can deactivate lockdown
+    assert!(vault.try_deactivate_lockdown(&admin).is_ok());
+    assert!(!vault.is_emergency_lockdown());
+
+    // Non-admin cannot deactivate lockdown (reactivate first for testing)
+    vault.activate_lockdown(&admin, &reason);
+    assert_eq!(
+        vault.try_deactivate_lockdown(&alice),
+        Err(Ok(VaultError::Unauthorized))
+    );
+}
+
+#[test]
+fn test_deactivate_lockdown_tracks_history() {
+    let (env, vault, _token, admin, _alice, _fee) = setup();
+
+    let reason = soroban_sdk::String::from_slice(&env, "Test lockdown");
+    let initial_timestamp = env.ledger().timestamp();
+
+    // Activate lockdown
+    vault.activate_lockdown(&admin, &reason);
+
+    // Wait some time
+    advance_time(&env, 3600);
+
+    // Deactivate lockdown
+    vault.deactivate_lockdown(&admin);
+
+    // Check history
+    let history = vault.get_lockdown_history();
+    assert_eq!(history.len(), 1);
+
+    let entry = history.get(0).unwrap();
+    assert_eq!(entry.admin, admin);
+    assert_eq!(entry.activated_at, initial_timestamp);
+    assert!(entry.deactivated_at.is_some());
+    assert!(entry.duration_secs.is_some());
+    assert_eq!(entry.duration_secs.unwrap(), 3600);
+}
+
+#[test]
+fn test_lockdown_reason_tracked() {
+    let (env, vault, _token, admin, _alice, _fee) = setup();
+
+    let reason = soroban_sdk::String::from_slice(&env, "Suspicious activity detected");
+
+    // Activate lockdown with specific reason
+    vault.activate_lockdown(&admin, &reason);
+
+    // Deactivate lockdown
+    vault.deactivate_lockdown(&admin);
+
+    // Check history contains the reason
+    let history = vault.get_lockdown_history();
+    let entry = history.get(0).unwrap();
+    assert_eq!(entry.reason, reason);
+}
+
+#[test]
+fn test_cannot_deactivate_when_not_locked() {
+    let (env, vault, _token, admin, _alice, _fee) = setup();
+
+    // Try to deactivate when not in lockdown
+    assert_eq!(
+        vault.try_deactivate_lockdown(&admin),
+        Err(Ok(VaultError::Unauthorized))
+    );
+}
+
+#[test]
+fn test_operations_work_after_lockdown_deactivation() {
+    let (env, vault, token, admin, alice, _fee) = setup();
+
+    let unlock_time = env.ledger().timestamp() + 3600;
+    let reason = soroban_sdk::String::from_slice(&env, "Test lockdown cycle");
+
+    // Activate lockdown
+    vault.activate_lockdown(&admin, &reason);
+
+    // Deactivate lockdown
+    vault.deactivate_lockdown(&admin);
+
+    // Should now be able to deposit
+    let deposit_id = vault.deposit(&alice, &token, &1_000, &unlock_time, &0);
+    assert_eq!(vault.get_vault(&alice, &deposit_id).unwrap().amount, 1_000);
+
+    // Should be able to withdraw after unlock
+    advance_time(&env, 3700);
+    assert!(vault.try_withdraw(&alice, &deposit_id).is_ok());
+}
+
+#[test]
+fn test_lockdown_does_not_affect_admin_functions() {
+    let (env, vault, _token, admin, _alice, _fee) = setup();
+
+    let reason = soroban_sdk::String::from_slice(&env, "Admin lockdown test");
+
+    // Activate lockdown
+    vault.activate_lockdown(&admin, &reason.clone());
+    assert!(vault.is_emergency_lockdown());
+
+    // Admin should still be able to deactivate during lockdown
+    vault.deactivate_lockdown(&admin);
+    assert!(!vault.is_emergency_lockdown());
+
+    // Can activate again
+    vault.activate_lockdown(&admin, &reason);
+    assert!(vault.is_emergency_lockdown());
+}
+
+#[test]
+fn test_multiple_lockdown_cycles_tracked() {
+    let (env, vault, _token, admin, _alice, _fee) = setup();
+
+    let reason1 = soroban_sdk::String::from_slice(&env, "First incident");
+    let reason2 = soroban_sdk::String::from_slice(&env, "Second incident");
+
+    // First lockdown cycle
+    vault.activate_lockdown(&admin, &reason1);
+    advance_time(&env, 1800);
+    vault.deactivate_lockdown(&admin);
+
+    // Second lockdown cycle
+    vault.activate_lockdown(&admin, &reason2);
+    advance_time(&env, 2700);
+    vault.deactivate_lockdown(&admin);
+
+    // Check history contains both entries
+    let history = vault.get_lockdown_history();
+    assert_eq!(history.len(), 2);
+
+    let entry1 = history.get(0).unwrap();
+    let entry2 = history.get(1).unwrap();
+
+    assert_eq!(entry1.reason, reason1);
+    assert_eq!(entry1.duration_secs.unwrap(), 1800);
+
+    assert_eq!(entry2.reason, reason2);
+    assert_eq!(entry2.duration_secs.unwrap(), 2700);
+}
+
+#[test]
+fn test_lockdown_events_emitted() {
+    let (env, vault, _token, admin, _alice, _fee) = setup();
+
+    let reason = soroban_sdk::String::from_slice(&env, "Test events");
+
+    // Activate lockdown
+    vault.activate_lockdown(&admin, &reason);
+
+    // Check for lockdown_on event
+    let events = env.events().all();
+    let lockdown_on_found = events.iter().any(|(_, event)| {
+        let topics = &event.0;
+        topics.len() > 0
+            && topics.get(0).to_string().contains("lockdown_on")
+    });
+    assert!(lockdown_on_found, "lockdown_on event not emitted");
+
+    // Deactivate lockdown
+    vault.deactivate_lockdown(&admin);
+
+    // Check for lockdown_off event
+    let events = env.events().all();
+    let lockdown_off_found = events.iter().any(|(_, event)| {
+        let topics = &event.0;
+        topics.len() > 0
+            && topics.get(0).to_string().contains("lockdown_off")
+    });
+    assert!(lockdown_off_found, "lockdown_off event not emitted");
+}
+
+#[test]
+fn test_lockdown_preserves_existing_deposits() {
+    let (env, vault, token, admin, alice, _fee) = setup();
+
+    let unlock_time = env.ledger().timestamp() + 3600;
+
+    // Create deposit before lockdown
+    let deposit_id = vault.deposit(&alice, &token, &5_000, &unlock_time, &0);
+
+    // Verify deposit exists
+    assert_eq!(vault.get_vault(&alice, &deposit_id).unwrap().amount, 5_000);
+
+    // Activate lockdown
+    let reason = soroban_sdk::String::from_slice(&env, "Preserving deposits");
+    vault.activate_lockdown(&admin, &reason);
+
+    // Deposit data should still be intact
+    assert_eq!(vault.get_vault(&alice, &deposit_id).unwrap().amount, 5_000);
+
+    // Deactivate and withdraw should work
+    vault.deactivate_lockdown(&admin);
+    advance_time(&env, 3700);
+    vault.withdraw(&alice, &deposit_id);
+
+    // Deposit should be gone after withdrawal
+    assert!(vault.get_vault(&alice, &deposit_id).is_none());
+}

@@ -89,6 +89,14 @@ pub enum VaultKey {
     RewardsPool,
     /// Rewards claimed by a staker (track cumulative for auditing)
     StakerRewardsClaimed(Address),
+    /// Boolean flag indicating if contract is in emergency lockdown mode
+    EmergencyLockdown,
+    /// Timestamp when emergency lockdown was activated
+    LockdownActivatedAt,
+    /// Admin-provided reason for lockdown
+    LockdownReason,
+    /// List of lockdown history entries
+    LockdownHistory,
 }
 
 #[contracttype]
@@ -175,4 +183,15 @@ pub struct StakerEntry {
 pub enum DepositType {
     TimeBased,
     LedgerBased,
+}
+
+/// Lockdown history entry to track emergency lockdowns
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LockdownEntry {
+    pub activated_at: u64,
+    pub deactivated_at: Option<u64>,
+    pub admin: Address,
+    pub reason: String,
+    pub duration_secs: Option<u64>,
 }

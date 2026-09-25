@@ -207,3 +207,25 @@ pub fn interest_accrued(
     env.events()
         .publish(topics, (deposit_id, old_amount, new_amount));
 }
+
+/// Emitted when emergency lockdown is activated.
+pub fn emergency_lockdown_activated(
+    env: &Env,
+    admin: &Address,
+    reason: &soroban_sdk::String,
+    timestamp: u64,
+) {
+    let topics = (Symbol::new(env, "lockdown_on"), admin.clone());
+    env.events().publish(topics, (reason.clone(), timestamp));
+}
+
+/// Emitted when emergency lockdown is deactivated.
+pub fn emergency_lockdown_deactivated(
+    env: &Env,
+    admin: &Address,
+    timestamp: u64,
+    duration_secs: u64,
+) {
+    let topics = (Symbol::new(env, "lockdown_off"), admin.clone());
+    env.events().publish(topics, (timestamp, duration_secs));
+}

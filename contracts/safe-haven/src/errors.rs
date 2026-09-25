@@ -29,4 +29,6 @@ pub enum VaultError {
     RecipientNotWhitelisted = 18,
     /// Compound frequency must be >= 60 seconds if non-zero (issue #332).
     InvalidCompoundFrequency = 19,
+    /// Contract is in emergency lockdown mode — user operations blocked.
+    EmergencyLockdown = 20,
 }
