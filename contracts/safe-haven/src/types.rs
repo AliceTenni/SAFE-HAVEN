@@ -102,6 +102,10 @@ pub enum VaultKey {
     SubscriptionStats(Address, u32),
     /// Expiration timestamp for a wallet-authorized session key.
     SessionKey(Address, Address),
+    /// Tax-loss harvest records for a depositor.
+    TaxLossHarvests(Address),
+    /// End timestamp for a harvested token's wash-sale period.
+    TaxWashSaleUntil(Address, Address),
 }
 
 #[contracttype]
@@ -156,6 +160,22 @@ pub struct VaultEntry {
     pub compound_frequency_secs: u64,
     /// Timestamp of last compound accrual (issue #332).
     pub last_accrual_timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TaxLossHarvest {
+    pub depositor: Address,
+    pub original_token: Address,
+    pub replacement_token: Address,
+    pub original_deposit_id: u32,
+    pub replacement_deposit_id: u32,
+    pub cost_basis: i128,
+    pub current_value: i128,
+    pub realized_loss: i128,
+    pub tax_benefit: i128,
+    pub harvested_at: u64,
+    pub wash_sale_until: u64,
 }
 
 #[contracttype]

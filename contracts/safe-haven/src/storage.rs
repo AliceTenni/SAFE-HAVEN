@@ -1,6 +1,6 @@
 use soroban_sdk::{token, Address, Env, Vec};
 
-use crate::types::{DepositSubscription, MultiTokenVaultEntry, SubscriptionExecution, SubscriptionStats, VaultEntry, VaultKey, LedgerVaultEntry, MAX_LOCK_DURATION_SECS};
+use crate::types::{DepositSubscription, MultiTokenVaultEntry, SubscriptionExecution, SubscriptionStats, TaxLossHarvest, VaultEntry, VaultKey, LedgerVaultEntry, MAX_LOCK_DURATION_SECS};
 use crate::types::CircuitBreakerActivation;
 
 // ================================================================
@@ -167,6 +167,46 @@ pub fn remove_deposit(env: &Env, depositor: &Address, deposit_id: u32) {
     let key = VaultKey::Deposit(depositor.clone(), deposit_id);
     env.storage().persistent().remove(&key);
     remove_active_deposit_id(env, depositor, deposit_id);
+}
+
+pub fn add_tax_loss_harvest(env: &Env, depositor: &Address, harvest: &TaxLossHarvest) {
+    let key = VaultKey::TaxLossHarvests(depositor.clone());
+    let mut records: Vec<TaxLossHarvest> = env
+        .storage()
+        .persistent()
+        .get(&key)
+        .unwrap_or_else(|| Vec::new(env));
+    records.push_back(harvest.clone());
+    env.storage().persistent().set(&key, &records);
+    env.storage().persistent().extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
+}
+
+pub fn get_tax_loss_harvests(env: &Env, depositor: &Address) -> Vec<TaxLossHarvest> {
+    env.storage()
+        .persistent()
+        .get(&VaultKey::TaxLossHarvests(depositor.clone()))
+        .unwrap_or_else(|| Vec::new(env))
+}
+
+pub fn set_tax_wash_sale_until(
+    env: &Env,
+    depositor: &Address,
+    token: &Address,
+    until: u64,
+) {
+    let key = VaultKey::TaxWashSaleUntil(depositor.clone(), token.clone());
+    env.storage().persistent().set(&key, &until);
+    env.storage().persistent().extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
+}
+
+pub fn get_tax_wash_sale_until(
+    env: &Env,
+    depositor: &Address,
+    token: &Address,
+) -> Option<u64> {
+    env.storage()
+        .persistent()
+        .get(&VaultKey::TaxWashSaleUntil(depositor.clone(), token.clone()))
 }
 
 // ----------------------------------------------------------------

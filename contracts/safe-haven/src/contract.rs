@@ -14,7 +14,7 @@ use crate::{
     events, storage,
     types::{
         CircuitBreakerActivation, DepositSubscription, DepositType, MultiTokenVaultEntry, SubscriptionExecution, SubscriptionStats, TokenDeposit, VaultEntry,
-        LedgerVaultEntry, Page, STORAGE_VERSION, MAX_EMERGENCY_WITHDRAWAL_PER_LEDGER,
+        LedgerVaultEntry, Page, STORAGE_VERSION, TaxLossHarvest, MAX_EMERGENCY_WITHDRAWAL_PER_LEDGER,
         MAX_TOKENS_PER_DEPOSIT,
     },
 };
@@ -137,6 +137,19 @@ fn check_whitelist(
             }
         }
         return Err(VaultError::RecipientNotWhitelisted);
+    }
+    Ok(())
+}
+
+fn check_tax_wash_sale(
+    env: &Env,
+    depositor: &Address,
+    token: &Address,
+) -> Result<(), VaultError> {
+    if let Some(until) = storage::get_tax_wash_sale_until(env, depositor, token) {
+        if env.ledger().timestamp() < until {
+            return Err(VaultError::TaxWashSalePeriodActive);
+        }
     }
     Ok(())
 }
@@ -433,6 +446,7 @@ impl SafeHaven {
         if storage::is_strict_token_allowlist(&env) && !storage::is_token_allowed(&env, &token) {
             return Err(VaultError::TokenNotAllowed);
         }
+        check_tax_wash_sale(&env, &depositor, &token)?;
 
         if amount <= 0 {
             return Err(VaultError::InvalidAmount);
@@ -615,6 +629,7 @@ impl SafeHaven {
         if storage::is_strict_token_allowlist(&env) && !storage::is_token_allowed(&env, &token) {
             return Err(VaultError::TokenNotAllowed);
         }
+        check_tax_wash_sale(&env, &depositor, &token)?;
 
         if amount <= 0 {
             return Err(VaultError::InvalidAmount);
@@ -720,6 +735,7 @@ impl SafeHaven {
         if storage::is_paused(&env) {
             return Err(VaultError::ContractPaused);
         }
+        check_tax_wash_sale(&env, &depositor, &token)?;
         if amount <= 0 {
             return Err(VaultError::InvalidAmount);
         }
@@ -790,6 +806,7 @@ impl SafeHaven {
         if storage::is_strict_token_allowlist(&env) && !storage::is_token_allowed(&env, &token) {
             return Err(VaultError::TokenNotAllowed);
         }
+        check_tax_wash_sale(&env, &depositor, &token)?;
 
         if amount <= 0 {
             return Err(VaultError::InvalidAmount);
@@ -1483,6 +1500,110 @@ impl SafeHaven {
         Err(VaultError::NoDepositFound)
     }
 
+    /// Realize an explicit loss and replace the position with a non-identical token.
+    /// `current_value` and `tax_rate_bps` are supplied by the caller because this
+    /// contract has no price oracle and does not provide tax advice.
+    pub fn harvest_tax_losses(
+        env: Env,
+        depositor: Address,
+        deposit_id: u32,
+        current_value: i128,
+        replacement_token: Address,
+        replacement_amount: i128,
+        tax_rate_bps: u32,
+        wash_sale_period_secs: u64,
+    ) -> Result<TaxLossHarvest, VaultError> {
+        depositor.require_auth();
+
+        if current_value <= 0 || replacement_amount <= 0 || tax_rate_bps > 10_000 {
+            return Err(VaultError::InvalidTaxLossHarvest);
+        }
+        if storage::is_strict_token_allowlist(&env)
+            && !storage::is_token_allowed(&env, &replacement_token)
+        {
+            return Err(VaultError::ReplacementTokenNotAllowed);
+        }
+
+        let mut entry = storage::get_deposit(&env, &depositor, deposit_id)
+            .ok_or(VaultError::NoDepositFound)?;
+        if entry.token == replacement_token {
+            return Err(VaultError::InvalidTaxLossHarvest);
+        }
+
+        let now = env.ledger().timestamp();
+        entry.amount = compute_accrued_amount(
+            entry.amount,
+            entry.compound_frequency_secs,
+            entry.last_accrual_timestamp,
+            now,
+        );
+        if current_value >= entry.amount {
+            return Err(VaultError::InvalidTaxLossHarvest);
+        }
+
+        let original_token = entry.token.clone();
+        let cost_basis = entry.amount;
+        let realized_loss = cost_basis.saturating_sub(current_value);
+        let tax_benefit = realized_loss.saturating_mul(tax_rate_bps as i128) / 10_000;
+        let wash_sale_until = now.saturating_add(wash_sale_period_secs);
+        let replacement_unlock = entry.unlock_time.max(wash_sale_until);
+        let replacement_deposit_id = storage::next_deposit_id(&env, &depositor);
+
+        let contract = env.current_contract_address();
+        token::Client::new(&env, &original_token).transfer(&contract, &depositor, &cost_basis);
+        token::Client::new(&env, &replacement_token).transfer(
+            &depositor,
+            &contract,
+            &replacement_amount,
+        );
+
+        storage::remove_deposit(&env, &depositor, deposit_id);
+        storage::remove_withdrawal_whitelist(&env, &depositor, deposit_id);
+        storage::set_deposit(
+            &env,
+            &depositor,
+            replacement_deposit_id,
+            &VaultEntry {
+                token: replacement_token.clone(),
+                amount: replacement_amount,
+                unlock_time: replacement_unlock,
+                depositor: depositor.clone(),
+                penalty_bps: entry.penalty_bps,
+                compound_frequency_secs: entry.compound_frequency_secs,
+                last_accrual_timestamp: now,
+            },
+        );
+        storage::add_depositor(&env, &depositor);
+
+        let harvest = TaxLossHarvest {
+            depositor: depositor.clone(),
+            original_token: original_token.clone(),
+            replacement_token: replacement_token.clone(),
+            original_deposit_id: deposit_id,
+            replacement_deposit_id,
+            cost_basis,
+            current_value,
+            realized_loss,
+            tax_benefit,
+            harvested_at: now,
+            wash_sale_until,
+        };
+        storage::add_tax_loss_harvest(&env, &depositor, &harvest);
+        storage::set_tax_wash_sale_until(&env, &depositor, &original_token, wash_sale_until);
+        events::tax_loss_harvested(
+            &env,
+            &depositor,
+            &original_token,
+            &replacement_token,
+            realized_loss,
+            tax_benefit,
+            deposit_id,
+            replacement_deposit_id,
+            wash_sale_until,
+        );
+        Ok(harvest)
+    }
+
     /// Withdraw to a specific recipient address.
     ///
     /// If a whitelist has been set for this deposit, `recipient` must be in it.
@@ -2153,6 +2274,10 @@ impl SafeHaven {
 
     pub fn get_deposit_ids(env: Env, depositor: Address) -> Vec<u32> {
         storage::get_deposit_ids(&env, &depositor)
+    }
+
+    pub fn get_tax_loss_harvests(env: Env, depositor: Address) -> Vec<TaxLossHarvest> {
+        storage::get_tax_loss_harvests(&env, &depositor)
     }
 
     pub fn get_time(env: Env) -> u64 {

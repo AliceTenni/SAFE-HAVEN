@@ -43,4 +43,10 @@ pub enum VaultError {
     SessionKeyExpired = 28,
     /// Session-key authorization must expire in the future.
     InvalidSessionKeyExpiry = 29,
+    /// A tax-loss harvest requires a loss and a non-identical replacement token.
+    InvalidTaxLossHarvest = 30,
+    /// The replacement token is not allowed by the token allowlist.
+    ReplacementTokenNotAllowed = 31,
+    /// The token is still inside its wash-sale cooldown.
+    TaxWashSalePeriodActive = 32,
 }

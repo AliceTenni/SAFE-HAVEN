@@ -1002,6 +1002,71 @@ fn test_cancel_deposit_penalty_stored_in_vault_entry() {
     assert_eq!(vault.get_vault(&alice, &0).unwrap().penalty_bps, 500);
 }
 
+#[test]
+fn test_harvest_tax_losses_replaces_position_and_records_tax_impact() {
+    let (env, vault, token, admin, alice, _fee) = setup();
+    let replacement_id = env.register_stellar_asset_contract_v2(admin.clone());
+    let replacement_token = replacement_id.address();
+    StellarAssetClient::new(&env, &replacement_token).mint(&alice, &1_000);
+    let token_client = TokenClient::new(&env, &token);
+    let replacement_client = TokenClient::new(&env, &replacement_token);
+    let unlock_time = env.ledger().timestamp() + 3_600;
+
+    vault.deposit(&alice, &token, &1_000, &unlock_time, &0);
+    let harvest = vault.harvest_tax_losses(
+        &alice,
+        &0,
+        &700,
+        &replacement_token,
+        &700,
+        &500,
+        &86_400,
+    );
+
+    assert_eq!(harvest.original_deposit_id, 0);
+    assert_eq!(harvest.replacement_deposit_id, 1);
+    assert_eq!(harvest.cost_basis, 1_000);
+    assert_eq!(harvest.realized_loss, 300);
+    assert_eq!(harvest.tax_benefit, 15);
+    assert_eq!(harvest.wash_sale_until, env.ledger().timestamp() + 86_400);
+    assert!(vault.get_vault(&alice, &0).is_none());
+    assert_eq!(vault.get_vault(&alice, &1).unwrap().token, replacement_token);
+    assert_eq!(vault.get_tax_loss_harvests(&alice).len(), 1);
+    assert_eq!(token_client.balance(&alice), 10_000);
+    assert_eq!(replacement_client.balance(&alice), 300);
+
+    assert_eq!(
+        vault.try_deposit(
+            &alice,
+            &token,
+            &100,
+            &(env.ledger().timestamp() + 3_600),
+            &0,
+        ),
+        Err(Ok(VaultError::TaxWashSalePeriodActive))
+    );
+}
+
+#[test]
+fn test_harvest_tax_losses_rejects_same_token_replacement() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+    let unlock_time = env.ledger().timestamp() + 3_600;
+    vault.deposit(&alice, &token, &1_000, &unlock_time, &0);
+
+    assert_eq!(
+        vault.try_harvest_tax_losses(
+            &alice,
+            &0,
+            &700,
+            &token,
+            &700,
+            &500,
+            &86_400,
+        ),
+        Err(Ok(VaultError::InvalidTaxLossHarvest))
+    );
+}
+
 // ================================================================
 //  Time helpers
 // ================================================================
