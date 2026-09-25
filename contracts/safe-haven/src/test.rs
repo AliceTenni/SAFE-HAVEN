@@ -65,7 +65,7 @@ extern crate std;
 use soroban_sdk::{
     testutils::{Address as _, Events, Ledger, LedgerInfo},
     token::{Client as TokenClient, StellarAssetClient},
-    Address, Env, Vec,
+    Address, Bytes, Env, Vec,
 };
 
 use crate::{
@@ -184,6 +184,18 @@ impl UpgradeHarness {
 fn test_initialize_sets_admin() {
     let (_env, vault, _token, admin, _alice, _fee) = setup();
     assert_eq!(vault.get_admin(), Some(admin));
+}
+
+#[test]
+fn quantum_safe_key_registration_rejects_invalid_encoding() {
+    let (env, vault, _token, _admin, alice, _fee) = setup();
+    let invalid_key = Bytes::from_slice(&env, &[0; 32]);
+
+    assert_eq!(
+        vault.try_register_quantum_safe_key(&alice, &invalid_key),
+        Err(Ok(VaultError::InvalidQuantumSafeKey))
+    );
+    assert_eq!(vault.get_quantum_safe_key(&alice), None);
 }
 
 #[test]

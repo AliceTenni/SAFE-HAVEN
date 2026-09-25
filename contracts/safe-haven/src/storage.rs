@@ -1,4 +1,4 @@
-use soroban_sdk::{token, Address, Env, Vec};
+use soroban_sdk::{token, Address, Bytes, Env, Vec};
 
 use crate::types::{MultiTokenVaultEntry, VaultEntry, VaultKey, LedgerVaultEntry, MAX_LOCK_DURATION_SECS};
 
@@ -51,6 +51,40 @@ pub fn next_deposit_id(env: &Env, depositor: &Address) -> u32 {
         .persistent()
         .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
     id
+}
+
+pub fn peek_next_deposit_id(env: &Env, depositor: &Address) -> u32 {
+    let key = VaultKey::DepositCounter(depositor.clone());
+    env.storage().persistent().get(&key).unwrap_or(0)
+}
+
+pub fn set_quantum_safe_public_key(env: &Env, account: &Address, public_key: &Bytes) {
+    let key = VaultKey::QuantumSafePublicKey(account.clone());
+    env.storage().persistent().set(&key, public_key);
+}
+
+pub fn get_quantum_safe_public_key(env: &Env, account: &Address) -> Option<Bytes> {
+    let key = VaultKey::QuantumSafePublicKey(account.clone());
+    env.storage().persistent().get(&key)
+}
+
+pub fn set_quantum_safe_metadata(
+    env: &Env,
+    depositor: &Address,
+    deposit_id: u32,
+    metadata: &Bytes,
+) {
+    let key = VaultKey::QuantumSafeMetadata(depositor.clone(), deposit_id);
+    env.storage().persistent().set(&key, metadata);
+}
+
+pub fn get_quantum_safe_metadata(
+    env: &Env,
+    depositor: &Address,
+    deposit_id: u32,
+) -> Option<Bytes> {
+    let key = VaultKey::QuantumSafeMetadata(depositor.clone(), deposit_id);
+    env.storage().persistent().get(&key)
 }
 
 // ----------------------------------------------------------------

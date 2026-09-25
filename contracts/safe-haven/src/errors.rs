@@ -29,4 +29,8 @@ pub enum VaultError {
     RecipientNotWhitelisted = 18,
     /// Compound frequency must be >= 60 seconds if non-zero (issue #332).
     InvalidCompoundFrequency = 19,
+    /// The ML-DSA public key or signature has an invalid encoding or length.
+    InvalidQuantumSafeKey = 20,
+    /// The ML-DSA signature does not authorize the exact deposit payload.
+    InvalidQuantumSafeSignature = 21,
 }

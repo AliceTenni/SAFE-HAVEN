@@ -14,6 +14,7 @@ mod constants;
 mod contract;
 mod errors;
 mod events;
+mod pq;
 mod storage;
 mod types;
 
@@ -25,6 +26,7 @@ pub use constants::{
 pub use types::{
     DepositType, MultiTokenVaultEntry, Page, TokenDeposit, STORAGE_VERSION, MAX_TOKENS_PER_DEPOSIT,
 };
+pub use pq::{ML_DSA_PUBLIC_KEY_BYTES, ML_DSA_SIGNATURE_BYTES};
 
 pub use contract::SafeHaven;
 pub use contract::SafeHavenClient;

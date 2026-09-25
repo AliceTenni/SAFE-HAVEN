@@ -1,4 +1,4 @@
-use soroban_sdk::{contracttype, Address, Vec};
+use soroban_sdk::{contracttype, Address, Bytes, Vec};
 
 pub const MAX_DEPOSIT_AMOUNT: i128 = 1_000_000_000_000_000;
 pub const MAX_LOCK_DURATION_SECS: u64 = 157_788_000;
@@ -89,6 +89,10 @@ pub enum VaultKey {
     RewardsPool,
     /// Rewards claimed by a staker (track cumulative for auditing)
     StakerRewardsClaimed(Address),
+    /// ML-DSA public key registered for quantum-safe deposit authorization.
+    QuantumSafePublicKey(Address),
+    /// Encrypted client-side metadata associated with a quantum-safe deposit.
+    QuantumSafeMetadata(Address, u32),
 }
 
 #[contracttype]
@@ -103,6 +107,14 @@ pub struct VaultEntry {
     pub compound_frequency_secs: u64,
     /// Timestamp of last compound accrual (issue #332).
     pub last_accrual_timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct QuantumSafePayload {
+    pub entry: VaultEntry,
+    pub deposit_id: u32,
+    pub encrypted_metadata: Bytes,
 }
 
 #[contracttype]

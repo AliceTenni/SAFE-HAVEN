@@ -3,7 +3,7 @@
 //  Stellar Blockchain | Soroban SDK v22
 // ============================================================
 
-use soroban_sdk::{contract, contractimpl, token, Address, Env, String, Vec};
+use soroban_sdk::{contract, contractimpl, token, Address, Bytes, Env, String, Vec};
 
 use crate::{
     constants::{
@@ -11,9 +11,9 @@ use crate::{
         MIN_LOCK_LEDGERS, STAKER_PENALTY_BPS, FEE_RECIPIENT_PENALTY_BPS,
     },
     errors::VaultError,
-    events, storage,
+    events, pq, storage,
     types::{
-        DepositType, MultiTokenVaultEntry, TokenDeposit, VaultEntry, LedgerVaultEntry, Page,
+        DepositType, MultiTokenVaultEntry, QuantumSafePayload, TokenDeposit, VaultEntry, LedgerVaultEntry, Page,
         STORAGE_VERSION, MAX_TOKENS_PER_DEPOSIT,
     },
 };
@@ -103,6 +103,33 @@ fn check_whitelist(
         return Err(VaultError::RecipientNotWhitelisted);
     }
     Ok(())
+}
+
+fn quantum_safe_payload(
+    env: &Env,
+    depositor: Address,
+    token: Address,
+    amount: i128,
+    unlock_time: u64,
+    penalty_bps: u32,
+    encrypted_metadata: Bytes,
+    deposit_id: u32,
+) -> Bytes {
+    let entry = VaultEntry {
+        token,
+        amount,
+        unlock_time,
+        depositor,
+        penalty_bps,
+        compound_frequency_secs: 0,
+        last_accrual_timestamp: env.ledger().timestamp(),
+    };
+    QuantumSafePayload {
+        entry,
+        deposit_id,
+        encrypted_metadata,
+    }
+    .to_xdr(env)
 }
 
 #[contractimpl]
@@ -305,6 +332,99 @@ impl SafeHaven {
     // ----------------------------------------------------------------
     //  Core: Single-token Deposit
     // ----------------------------------------------------------------
+
+    pub fn register_quantum_safe_key(
+        env: Env,
+        account: Address,
+        public_key: Bytes,
+    ) -> Result<(), VaultError> {
+        account.require_auth();
+        if !pq::is_valid_public_key(&public_key) {
+            return Err(VaultError::InvalidQuantumSafeKey);
+        }
+        storage::set_quantum_safe_public_key(&env, &account, &public_key);
+        Ok(())
+    }
+
+    pub fn get_quantum_safe_key(env: Env, account: Address) -> Option<Bytes> {
+        storage::get_quantum_safe_public_key(&env, &account)
+    }
+
+    /// Returns the exact bytes that must be signed for the next deposit.
+    /// The payload includes the current deposit nonce and encrypted metadata.
+    pub fn quantum_safe_message(
+        env: Env,
+        depositor: Address,
+        token: Address,
+        amount: i128,
+        unlock_time: u64,
+        penalty_bps: u32,
+        encrypted_metadata: Bytes,
+    ) -> Bytes {
+        quantum_safe_payload(
+            &env,
+            depositor.clone(),
+            token,
+            amount,
+            unlock_time,
+            penalty_bps,
+            encrypted_metadata,
+            storage::peek_next_deposit_id(&env, &depositor),
+        )
+    }
+
+    /// Creates a deposit authorized by FIPS-204 ML-DSA-44 in addition to the
+    /// normal Stellar account authorization required by the token transfer.
+    pub fn deposit_quantum_safe(
+        env: Env,
+        depositor: Address,
+        token: Address,
+        amount: i128,
+        unlock_time: u64,
+        penalty_bps: u32,
+        encrypted_metadata: Bytes,
+        signature: Bytes,
+    ) -> Result<u32, VaultError> {
+        depositor.require_auth();
+        let public_key = storage::get_quantum_safe_public_key(&env, &depositor)
+            .ok_or(VaultError::InvalidQuantumSafeKey)?;
+        if !pq::has_valid_lengths(&public_key, &signature) {
+            return Err(VaultError::InvalidQuantumSafeKey);
+        }
+
+        let message = quantum_safe_payload(
+            &env,
+            depositor.clone(),
+            token.clone(),
+            amount,
+            unlock_time,
+            penalty_bps,
+            encrypted_metadata.clone(),
+            storage::peek_next_deposit_id(&env, &depositor),
+        );
+        if !pq::verify(&public_key, &signature, &message) {
+            return Err(VaultError::InvalidQuantumSafeSignature);
+        }
+
+        let deposit_id = Self::deposit(
+            env.clone(),
+            depositor.clone(),
+            token,
+            amount,
+            unlock_time,
+            penalty_bps,
+        )?;
+        storage::set_quantum_safe_metadata(&env, &depositor, deposit_id, &encrypted_metadata);
+        Ok(deposit_id)
+    }
+
+    pub fn get_quantum_safe_metadata(
+        env: Env,
+        depositor: Address,
+        deposit_id: u32,
+    ) -> Option<Bytes> {
+        storage::get_quantum_safe_metadata(&env, &depositor, deposit_id)
+    }
 
     pub fn deposit(
         env: Env,
