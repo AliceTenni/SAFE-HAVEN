@@ -1,4 +1,4 @@
-use soroban_sdk::{contracttype, Address, Vec};
+use soroban_sdk::{contracttype, Address, Bytes, BytesN, String, Vec};
 
 pub const MAX_DEPOSIT_AMOUNT: i128 = 1_000_000_000_000_000;
 pub const MAX_LOCK_DURATION_SECS: u64 = 157_788_000;
@@ -6,6 +6,8 @@ pub const MIN_LOCK_DURATION_SECS: u64 = 60;
 
 /// Maximum number of tokens allowed in a single multi-token deposit (issue #330).
 pub const MAX_TOKENS_PER_DEPOSIT: u32 = 5;
+/// Emergency withdrawals at or above this cumulative amount in one ledger trip the circuit breaker.
+pub const MAX_EMERGENCY_WITHDRAWAL_PER_LEDGER: i128 = 100_000_000;
 
 /// Current storage schema version. Bump this constant when the on-chain
 /// layout of a `contracttype` struct changes so `migrate()` can detect
@@ -17,25 +19,11 @@ pub const INSURANCE_POOL_BPS: u32 = 500; // 5% in basis points
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum DepositType {
-    TimeBased,
-    LedgerBased,
-}
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DepositRequest {
     pub token: Address,
     pub amount: i128,
     pub unlock_time: u64,
     pub penalty_bps: u32,
-}
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum DepositType {
-    TimeBased,
-    LedgerBased,
 }
 
 #[contracttype]
@@ -74,9 +62,19 @@ pub enum VaultKey {
     ProposalCounter,
     GovernanceProposal(u32),
     GovernanceVote(u32, Address),
+    NextUpgradeId,
+    UpgradeProposal(u32),
+    UpgradeVote(u32, Address),
+    UpgradeVeto(u32, Address),
     /// Persists the schema version written by the last `migrate()` call (or 1
     /// for contracts that were initialized before versioning was introduced).
     StorageVersion,
+    /// Guards flash-loan execution against re-entrant nested calls.
+    FlashLoanGuard,
+    /// Active borrower state for a single-token flash loan.
+    FlashLoanState(Address, Address),
+    /// Fee share owed to a depositor for a token after flash-loan repayment.
+    FlashLoanFeeBalance(Address, Address),
     /// Staker entry: maps staker address to their stake amount
     Staker(Address),
     /// List of all registered stakers
@@ -89,8 +87,8 @@ pub enum VaultKey {
     RewardsPool,
     /// Rewards claimed by a staker (track cumulative for auditing)
     StakerRewardsClaimed(Address),
-    /// ACL entry: maps an address to a bitmask of granted PermissionType bits.
-    AclEntry(Address),
+    /// NFT evolution record: maps (depositor, deposit_id) to NFTEvolutionRecord
+    NFTEvolution(Address, u32),
 }
 
 #[contracttype]
@@ -105,6 +103,22 @@ pub struct VaultEntry {
     pub compound_frequency_secs: u64,
     /// Timestamp of last compound accrual (issue #332).
     pub last_accrual_timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TaxLossHarvest {
+    pub depositor: Address,
+    pub original_token: Address,
+    pub replacement_token: Address,
+    pub original_deposit_id: u32,
+    pub replacement_deposit_id: u32,
+    pub cost_basis: i128,
+    pub current_value: i128,
+    pub realized_loss: i128,
+    pub tax_benefit: i128,
+    pub harvested_at: u64,
+    pub wash_sale_until: u64,
 }
 
 #[contracttype]
@@ -171,12 +185,69 @@ pub struct StakerEntry {
     pub stake_amount: i128,
 }
 
-/// Deposit type indicator — distinguishes between timestamp-based and ledger-based deposits
+/// Sponsorship fund configuration and state
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum DepositType {
-    TimeBased,
-    LedgerBased,
+pub struct SponsorshipFund {
+    /// Balance of native tokens available for sponsorship
+    pub balance: i128,
+
+    /// Address that manages the sponsorship fund (typically admin)
+    pub sponsor_address: Address,
+
+    /// Maximum tokens to sponsor per transaction
+    pub max_per_txn: i128,
+
+    /// Maximum tokens to sponsor per user per day
+    pub max_per_user_day: i128,
+
+    /// Minimum native balance required to be eligible for sponsorship (KYC-lite)
+    pub min_eligible_balance: i128,
+
+    /// Cooldown period (in seconds) between sponsored transactions per user
+    pub cooldown_seconds: u64,
+
+    /// Timestamp of last update (for tracking replenishment frequency)
+    pub last_replenished: u64,
+}
+
+/// Per-user sponsorship tracking for a specific day
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SponsorshipUsage {
+    /// Cumulative amount sponsored to this user today
+    pub amount_used_today: i128,
+
+    /// Timestamp of the last sponsored transaction for this user
+    pub last_sponsored_time: u64,
+
+    /// Counter of sponsored transactions for this user (for sybil detection)
+    pub transaction_count: u32,
+}
+
+/// Result of sponsorship eligibility check
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SponsorshipEligibility {
+    /// User is eligible if they meet all criteria
+    pub is_eligible: bool,
+
+    /// Reason if not eligible (empty string if eligible)
+    pub reason: soroban_sdk::String,
+
+    /// Amount available for this user today
+    pub available_today: i128,
+}
+
+/// Lockdown history entry to track emergency lockdowns
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LockdownEntry {
+    pub activated_at: u64,
+    pub deactivated_at: Option<u64>,
+    pub admin: Address,
+    pub reason: String,
+    pub duration_secs: Option<u64>,
 }
 
 // ----------------------------------------------------------------

@@ -68,6 +68,32 @@ pub fn withdraw(env: &Env, depositor: &Address, token: &Address, amount: i128, d
     env.events().publish(topics, (amount, deposit_id));
 }
 
+pub fn tax_loss_harvested(
+    env: &Env,
+    depositor: &Address,
+    original_token: &Address,
+    replacement_token: &Address,
+    realized_loss: i128,
+    tax_benefit: i128,
+    original_deposit_id: u32,
+    replacement_deposit_id: u32,
+    wash_sale_until: u64,
+) {
+    let topics = (Symbol::new(env, "tax_loss_harvested"), depositor.clone());
+    env.events().publish(
+        topics,
+        (
+            original_token.clone(),
+            replacement_token.clone(),
+            realized_loss,
+            tax_benefit,
+            original_deposit_id,
+            replacement_deposit_id,
+            wash_sale_until,
+        ),
+    );
+}
+
 /// Emitted when a multi-token deposit is withdrawn (issue #330).
 pub fn multi_withdraw(env: &Env, depositor: &Address, recipient: &Address, deposit_id: u32, token_count: u32) {
     let topics = (Symbol::new(env, "multi_wdraw"), depositor.clone());
@@ -139,6 +165,17 @@ pub fn unpaused(env: &Env, admin: &Address) {
     env.events().publish(topics, ());
 }
 
+pub fn circuit_breaker_tripped(
+    env: &Env,
+    admin: &Address,
+    ledger: u32,
+    amount: i128,
+    threshold: i128,
+) {
+    let topics = (Symbol::new(env, "CircuitBreakerTripped"), admin.clone(), ledger);
+    env.events().publish(topics, (amount, threshold));
+}
+
 pub fn token_proposed(env: &Env, token: &Address, proposer: &Address) {
     let topics = (Symbol::new(env, "token_proposed"), token.clone());
     env.events().publish(topics, proposer.clone());
@@ -154,19 +191,31 @@ pub fn token_approved(env: &Env, token: &Address, approver: &Address) {
     env.events().publish(topics, approver.clone());
 }
 
-pub fn governance_proposed(env: &Env, proposal_id: u32, proposer: &Address) {
-    let topics = (Symbol::new(env, "gov_proposed"), proposal_id);
+pub fn proposal_created(env: &Env, proposal_id: u32, proposer: &Address) {
+    let topics = (Symbol::new(env, "ProposalCreated"), proposal_id);
     env.events().publish(topics, proposer.clone());
 }
 
-pub fn governance_voted(env: &Env, proposal_id: u32, voter: &Address, support: bool, weight: i128) {
-    let topics = (Symbol::new(env, "gov_voted"), proposal_id, voter.clone());
+pub fn proposal_voted(env: &Env, proposal_id: u32, voter: &Address, support: bool, weight: i128) {
+    let topics = (Symbol::new(env, "Voted"), proposal_id, voter.clone());
     env.events().publish(topics, (support, weight));
 }
 
-pub fn governance_executed(env: &Env, proposal_id: u32) {
-    let topics = (Symbol::new(env, "gov_executed"), proposal_id);
+pub fn proposal_executed(env: &Env, proposal_id: u32) {
+    let topics = (Symbol::new(env, "ProposalExecuted"), proposal_id);
     env.events().publish(topics, ());
+}
+
+pub fn governance_proposed(env: &Env, proposal_id: u32, proposer: &Address) {
+    proposal_created(env, proposal_id, proposer);
+}
+
+pub fn governance_voted(env: &Env, proposal_id: u32, voter: &Address, support: bool, weight: i128) {
+    proposal_voted(env, proposal_id, voter, support, weight);
+}
+
+pub fn governance_executed(env: &Env, proposal_id: u32) {
+    proposal_executed(env, proposal_id);
 }
 
 pub fn withdraw_to(
@@ -208,18 +257,16 @@ pub fn interest_accrued(
         .publish(topics, (deposit_id, old_amount, new_amount));
 }
 
-/// Emitted when a permission is granted to an address by the admin.
-/// `permission_mask` is the bitmask value of the permission(s) granted.
-pub fn permission_granted(env: &Env, admin: &Address, grantee: &Address, permission_mask: u32) {
-    let topics = (Symbol::new(env, "perm_granted"), admin.clone());
+/// Emitted when a deposit NFT evolves to a new stage.
+pub fn nft_evolved(
+    env: &Env,
+    depositor: &Address,
+    deposit_id: u32,
+    old_stage: crate::nft::EvolutionStage,
+    new_stage: crate::nft::EvolutionStage,
+    rarity: crate::nft::RarityTier,
+) {
+    let topics = (Symbol::new(env, "nft_evolved"), depositor.clone());
     env.events()
-        .publish(topics, (grantee.clone(), permission_mask));
-}
-
-/// Emitted when a permission is revoked from an address by the admin.
-/// `permission_mask` is the bitmask value of the permission(s) revoked.
-pub fn permission_revoked(env: &Env, admin: &Address, grantee: &Address, permission_mask: u32) {
-    let topics = (Symbol::new(env, "perm_revoked"), admin.clone());
-    env.events()
-        .publish(topics, (grantee.clone(), permission_mask));
+        .publish(topics, (deposit_id, old_stage, new_stage, rarity));
 }
