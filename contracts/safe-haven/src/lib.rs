@@ -18,6 +18,13 @@ mod nft;
 mod storage;
 mod types;
 
+// Prediction Market modules
+mod prediction_market;
+mod prediction_market_errors;
+mod prediction_market_events;
+mod prediction_market_storage;
+mod prediction_market_types;
+
 pub use constants::{
     EPOCH_SIZE_LEDGERS, MAX_BATCH_SIZE, MAX_DEPOSIT_AMOUNT, MAX_LOCK_DURATION_SECS,
     MIN_LOCK_DURATION_SECS, WITHDRAWAL_LIMIT_PER_EPOCH,
@@ -29,6 +36,12 @@ pub use types::{
 
 pub use contract::SafeHaven;
 pub use contract::SafeHavenClient;
+
+// Prediction Market exports
+pub use prediction_market_types::{
+    PredictionMarket, MarketOutcome, Bet, MarketStatus, MarketConfig,
+};
+pub use prediction_market_errors::PredictionMarketError;
 
 #[cfg(test)]
 mod test;
