@@ -208,88 +208,16 @@ pub fn interest_accrued(
         .publish(topics, (deposit_id, old_amount, new_amount));
 }
 
-/// Emitted when sponsorship fund is initialized.
-pub fn sponsorship_fund_initialized(
-    env: &Env,
-    sponsor_address: &Address,
-    initial_balance: i128,
-    max_per_txn: i128,
-    max_per_user_day: i128,
-    min_eligible_balance: i128,
-) {
-    let topics = (Symbol::new(env, "spons_init"),);
-    env.events().publish(
-        topics,
-        (
-            sponsor_address.clone(),
-            initial_balance,
-            max_per_txn,
-            max_per_user_day,
-            min_eligible_balance,
-        ),
-    );
-}
-
-/// Emitted when a gasless (sponsored) transaction is executed.
-pub fn gasless_transaction_executed(
+/// Emitted when a deposit NFT evolves to a new stage.
+pub fn nft_evolved(
     env: &Env,
     depositor: &Address,
-    relayer: Option<&Address>,
-    token: &Address,
-    amount: i128,
-    resource_fee_covered: i128,
     deposit_id: u32,
+    old_stage: crate::nft::EvolutionStage,
+    new_stage: crate::nft::EvolutionStage,
+    rarity: crate::nft::RarityTier,
 ) {
-    let topics = (Symbol::new(env, "gasless_exec"), depositor.clone());
-    let relayer_opt = relayer.cloned();
-    env.events().publish(
-        topics,
-        (
-            relayer_opt,
-            token.clone(),
-            amount,
-            resource_fee_covered,
-            deposit_id,
-        ),
-    );
-}
-
-/// Emitted when sponsorship fund is used.
-pub fn sponsorship_used(env: &Env, user: &Address, amount: i128, new_balance: i128) {
-    let topics = (Symbol::new(env, "spons_used"), user.clone());
-    env.events().publish(topics, (amount, new_balance));
-}
-
-/// Emitted when sponsorship fund is replenished.
-pub fn sponsorship_fund_replenished(
-    env: &Env,
-    sponsor: &Address,
-    amount: i128,
-    new_balance: i128,
-) {
-    let topics = (Symbol::new(env, "spons_replenish"), sponsor.clone());
-    env.events().publish(topics, (amount, new_balance));
-}
-
-/// Emitted when sybil attack is detected.
-pub fn sybil_detected(env: &Env, user: &Address, reason: &str) {
-    let topics = (Symbol::new(env, "sybil_detect"), user.clone());
-    let reason_sym = Symbol::new(env, reason);
-    env.events().publish(topics, reason_sym);
-}
-
-/// Emitted when sponsorship configuration is updated.
-pub fn sponsorship_config_updated(
-    env: &Env,
-    admin: &Address,
-    max_per_txn: i128,
-    max_per_user_day: i128,
-    min_eligible_balance: i128,
-    cooldown_seconds: u64,
-) {
-    let topics = (Symbol::new(env, "spons_config"), admin.clone());
-    env.events().publish(
-        topics,
-        (max_per_txn, max_per_user_day, min_eligible_balance, cooldown_seconds),
-    );
+    let topics = (Symbol::new(env, "nft_evolved"), depositor.clone());
+    env.events()
+        .publish(topics, (deposit_id, old_stage, new_stage, rarity));
 }

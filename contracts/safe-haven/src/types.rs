@@ -89,12 +89,8 @@ pub enum VaultKey {
     RewardsPool,
     /// Rewards claimed by a staker (track cumulative for auditing)
     StakerRewardsClaimed(Address),
-    /// Sponsorship fund state (singleton)
-    SponsorshipFund,
-    /// Per-user sponsorship usage tracking: "spons_usage:{user}:{day}"
-    SponsorshipUsage(Address, u64),
-    /// Flag to track if sponsorship is initialized
-    SponsorshipInitialized,
+    /// NFT evolution record: maps (depositor, deposit_id) to NFTEvolutionRecord
+    NFTEvolution(Address, u32),
 }
 
 #[contracttype]

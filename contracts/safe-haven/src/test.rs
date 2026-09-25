@@ -5381,390 +5381,311 @@ fn test_multiple_depositors_independent_metrics() {
 
 
 // ================================================================
-//  Sponsorship Fund Tests
+//  NFT Evolution Tests
 // ================================================================
 
 #[test]
-fn test_sponsorship_fund_not_initialized() {
-    let (env, vault, _token, _admin, alice, _fee) = setup();
-    
-    // Should return None if not initialized
-    assert!(vault.get_sponsorship_fund_status().is_none());
-    
-    // Check eligibility should fail gracefully
-    let eligibility = vault.check_sponsorship_eligibility(&alice);
-    assert!(!eligibility.is_eligible);
-}
-
-#[test]
-fn test_initialize_sponsorship() {
-    let (env, vault, _token, admin, _alice, _fee) = setup();
-    
-    let sponsor = Address::generate(&env);
-    let initial_balance: i128 = 100_000;
-    let max_per_txn: i128 = 5_000;
-    let max_per_user_day: i128 = 25_000;
-    let min_eligible_balance: i128 = 1_000;
-    let cooldown_seconds: u64 = 60;
-    
-    vault.initialize_sponsorship(
-        &admin,
-        &sponsor,
-        &initial_balance,
-        &max_per_txn,
-        &max_per_user_day,
-        &min_eligible_balance,
-        &cooldown_seconds,
-    ).expect("initialize sponsorship");
-    
-    // Verify fund state
-    let fund = vault.get_sponsorship_fund_status().expect("fund exists");
-    assert_eq!(fund.balance, initial_balance);
-    assert_eq!(fund.sponsor_address, sponsor);
-    assert_eq!(fund.max_per_txn, max_per_txn);
-    assert_eq!(fund.max_per_user_day, max_per_user_day);
-    assert_eq!(fund.min_eligible_balance, min_eligible_balance);
-    assert_eq!(fund.cooldown_seconds, cooldown_seconds);
-}
-
-#[test]
-fn test_initialize_sponsorship_double_init_fails() {
-    let (env, vault, _token, admin, _alice, _fee) = setup();
-    
-    let sponsor = Address::generate(&env);
-    
-    // First init should succeed
-    vault.initialize_sponsorship(
-        &admin,
-        &sponsor,
-        &100_000,
-        &5_000,
-        &25_000,
-        &1_000,
-        &60,
-    ).expect("first init");
-    
-    // Second init should fail
-    let result = vault.initialize_sponsorship(
-        &admin,
-        &sponsor,
-        &100_000,
-        &5_000,
-        &25_000,
-        &1_000,
-        &60,
-    );
-    assert!(result.is_err());
-}
-
-#[test]
-fn test_replenish_sponsorship_fund() {
-    let (env, vault, _token, admin, _alice, _fee) = setup();
-    
-    let sponsor = Address::generate(&env);
-    env.mock_all_auths();
-    
-    vault.initialize_sponsorship(
-        &admin,
-        &sponsor,
-        &100_000,
-        &5_000,
-        &25_000,
-        &1_000,
-        &60,
-    ).expect("init");
-    
-    // Replenish
-    vault.replenish_sponsorship_fund(&sponsor, &50_000).expect("replenish");
-    
-    let fund = vault.get_sponsorship_fund_status().expect("fund");
-    assert_eq!(fund.balance, 150_000);
-}
-
-#[test]
-fn test_replenish_only_by_sponsor() {
-    let (env, vault, _token, admin, alice, _fee) = setup();
-    
-    let sponsor = Address::generate(&env);
-    env.mock_all_auths();
-    
-    vault.initialize_sponsorship(
-        &admin,
-        &sponsor,
-        &100_000,
-        &5_000,
-        &25_000,
-        &1_000,
-        &60,
-    ).expect("init");
-    
-    // Alice (non-sponsor) tries to replenish
-    let result = vault.replenish_sponsorship_fund(&alice, &50_000);
-    assert!(result.is_err());
-}
-
-#[test]
-fn test_adjust_sponsorship_config() {
-    let (env, vault, _token, admin, _alice, _fee) = setup();
-    
-    let sponsor = Address::generate(&env);
-    
-    vault.initialize_sponsorship(
-        &admin,
-        &sponsor,
-        &100_000,
-        &5_000,
-        &25_000,
-        &1_000,
-        &60,
-    ).expect("init");
-    
-    // Update config
-    vault.adjust_sponsorship_config(
-        &admin,
-        &10_000,  // new max_per_txn
-        &50_000,  // new max_per_user_day
-        &2_000,   // new min_eligible_balance
-        &120,     // new cooldown
-    ).expect("adjust config");
-    
-    let fund = vault.get_sponsorship_fund_status().expect("fund");
-    assert_eq!(fund.max_per_txn, 10_000);
-    assert_eq!(fund.max_per_user_day, 50_000);
-    assert_eq!(fund.min_eligible_balance, 2_000);
-    assert_eq!(fund.cooldown_seconds, 120);
-}
-
-// ================================================================
-//  Sponsorship Eligibility Tests
-// ================================================================
-
-#[test]
-fn test_sponsorship_eligibility_minimum_balance() {
-    let (env, vault, _token, admin, alice, _fee) = setup();
-    
-    let sponsor = Address::generate(&env);
-    env.mock_all_auths();
-    
-    vault.initialize_sponsorship(
-        &admin,
-        &sponsor,
-        &100_000,
-        &5_000,
-        &25_000,
-        &50_000,  // High minimum balance
-        &60,
-    ).expect("init");
-    
-    let eligibility = vault.check_sponsorship_eligibility(&alice);
-    assert!(!eligibility.is_eligible);
-    // Note: In a real test, we'd check the reason, but the reason field is complex
-}
-
-#[test]
-fn test_sponsorship_eligibility_fund_depleted() {
-    let (env, vault, token, admin, alice, _fee) = setup();
-    
-    let sponsor = Address::generate(&env);
-    env.mock_all_auths();
-    
-    vault.initialize_sponsorship(
-        &admin,
-        &sponsor,
-        &10,  // Tiny fund
-        &5,
-        &5,
-        &0,
-        &0,
-    ).expect("init");
-    
-    // Deplete fund by replenishing with negative (not possible) - so let's just verify
-    let fund = vault.get_sponsorship_fund_status().expect("fund");
-    assert!(fund.balance >= 0);
-}
-
-// ================================================================
-//  Sponsored Deposit Tests
-// ================================================================
-
-#[test]
-fn test_sponsored_deposit_not_initialized() {
+fn test_nft_creation_on_deposit() {
     let (env, vault, token, _admin, alice, _fee) = setup();
-    
-    let now = env.ledger().timestamp();
-    let unlock_time = now + 100;
-    
-    let result = vault.sponsored_deposit(
-        &alice,
-        &token,
-        &1_000,
-        &unlock_time,
-        &0,
-    );
-    
-    // Should fail because sponsorship not initialized
-    assert!(result.is_err());
-}
-
-#[test]
-fn test_sponsored_deposit_success() {
-    let (env, vault, token, admin, alice, _fee) = setup();
-    
-    let sponsor = Address::generate(&env);
-    env.mock_all_auths();
-    
-    // Mint extra tokens for sponsor
     let token_client = TokenClient::new(&env, &token);
-    token_client.mint(&sponsor, &100_000);
-    
-    vault.initialize_sponsorship(
-        &admin,
-        &sponsor,
-        &100_000,
-        &5_000,
-        &25_000,
-        &0,  // No minimum balance requirement
-        &60,
-    ).expect("init sponsorship");
-    
+
     let now = env.ledger().timestamp();
     let unlock_time = now + 1000;
-    
-    // Alice should now be able to do sponsored deposit
-    let deposit_id = vault.sponsored_deposit(
-        &alice,
-        &token,
-        &1_000,
-        &unlock_time,
-        &0,
-    ).expect("sponsored deposit");
-    
-    // Verify deposit was created
-    assert_eq!(deposit_id, 0);
-    
-    let vault_entry = vault.get_vault(&alice, &deposit_id).expect("vault entry");
-    assert_eq!(vault_entry.amount, 1_000);
-    assert_eq!(vault_entry.unlock_time, unlock_time);
+    let amount = 5_000;
+
+    // Create a deposit
+    let deposit_id = vault.deposit(&alice, &token, &amount, &unlock_time, &0)
+        .expect("deposit succeeds");
+
+    // NFT record should exist
+    let nft = vault.get_nft_evolution(&alice, &deposit_id)
+        .expect("NFT record exists");
+
+    // Verify initial state
+    assert_eq!(nft.deposit_id, deposit_id);
+    assert_eq!(nft.stage, crate::nft::EvolutionStage::Egg);
+    assert_eq!(nft.rarity, crate::nft::RarityTier::Uncommon); // 5000 >= 1000
+    assert_eq!(nft.created_at, now);
+    assert_eq!(nft.last_evolved_at, now);
+    assert_eq!(nft.evolution_count, 0);
+    assert_eq!(nft.current_amount, amount);
+    assert_eq!(nft.unlock_time, unlock_time);
 }
 
 #[test]
-fn test_sponsored_deposit_for_relayer() {
-    let (env, vault, token, admin, alice, _fee) = setup();
-    
-    let relayer = Address::generate(&env);
-    let sponsor = Address::generate(&env);
-    env.mock_all_auths();
-    
-    // Mint tokens for relayer
+fn test_nft_stage_egg_to_hatchling() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
     let token_client = TokenClient::new(&env, &token);
-    token_client.mint(&relayer, &100_000);
-    
-    vault.initialize_sponsorship(
-        &admin,
-        &sponsor,
-        &100_000,
-        &5_000,
-        &25_000,
-        &0,
-        &60,
-    ).expect("init");
-    
+
+    let now = env.ledger().timestamp();
+    let unlock_time = now + 100_000;
+    let amount = 5_000;
+
+    // Create a deposit
+    let deposit_id = vault.deposit(&alice, &token, &amount, &unlock_time, &0)
+        .expect("deposit succeeds");
+
+    // Initial stage should be Egg
+    let stage = vault.get_nft_stage(&alice, &deposit_id)
+        .expect("stage query succeeds");
+    assert_eq!(stage, crate::nft::EvolutionStage::Egg);
+
+    // Advance time to 14+ days
+    env.ledger().with_mut(|ledger| {
+        ledger.timestamp = now + (15 * 24 * 60 * 60); // 15 days
+    });
+
+    // Create another deposit to trigger time update
+    // (In practice, withdrawal or other operations would check evolution)
+    let unlock_time2 = now + (15 * 24 * 60 * 60) + 100_000;
+    let deposit_id2 = vault.deposit(&alice, &token, &amount, &unlock_time2, &0)
+        .expect("second deposit succeeds");
+
+    // Stage should still be Egg for first deposit (unless evolution check is called)
+    // This test verifies the calculation, not automatic evolution
+    let calc_stage = crate::nft::calculate_evolution_stage(15 * 24 * 60 * 60);
+    assert_eq!(calc_stage, crate::nft::EvolutionStage::Hatchling);
+}
+
+#[test]
+fn test_nft_rarity_common() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+
+    let now = env.ledger().timestamp();
+    let unlock_time = now + 1000; // Very short lock
+    let amount = 100; // Very small amount
+
+    let deposit_id = vault.deposit(&alice, &token, &amount, &unlock_time, &0)
+        .expect("deposit succeeds");
+
+    let rarity = vault.get_nft_rarity(&alice, &deposit_id)
+        .expect("rarity query succeeds");
+    assert_eq!(rarity, crate::nft::RarityTier::Common);
+}
+
+#[test]
+fn test_nft_rarity_legendary() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+
+    let now = env.ledger().timestamp();
+    let unlock_time = now + (400 * 24 * 60 * 60); // 400 days (exceeds 365 threshold)
+    let amount = 2_000_000; // Exceeds legendary threshold
+
+    let deposit_id = vault.deposit(&alice, &token, &amount, &unlock_time, &0)
+        .expect("deposit succeeds");
+
+    let rarity = vault.get_nft_rarity(&alice, &deposit_id)
+        .expect("rarity query succeeds");
+    assert_eq!(rarity, crate::nft::RarityTier::Legendary);
+}
+
+#[test]
+fn test_nft_metadata_uri_present() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+
+    let now = env.ledger().timestamp();
+    let unlock_time = now + 10_000;
+    let amount = 5_000;
+
+    let deposit_id = vault.deposit(&alice, &token, &amount, &unlock_time, &0)
+        .expect("deposit succeeds");
+
+    let metadata = vault.get_nft_metadata_uri(&alice, &deposit_id)
+        .expect("metadata uri query succeeds");
+
+    // Metadata should contain deposit ID and stage info
+    let metadata_str = metadata.to_string();
+    assert!(metadata_str.len() > 0);
+    assert!(metadata_str.contains("deposit_nft"));
+}
+
+#[test]
+fn test_nft_evolution_count_initial() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+
+    let now = env.ledger().timestamp();
+    let unlock_time = now + 10_000;
+    let amount = 5_000;
+
+    let deposit_id = vault.deposit(&alice, &token, &amount, &unlock_time, &0)
+        .expect("deposit succeeds");
+
+    let count = vault.get_nft_evolution_count(&alice, &deposit_id)
+        .expect("evolution count query succeeds");
+    assert_eq!(count, 0); // No evolutions yet
+}
+
+#[test]
+fn test_nft_removed_on_withdrawal() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+
     let now = env.ledger().timestamp();
     let unlock_time = now + 1000;
-    
-    let deposit_id = vault.sponsored_deposit_for(
-        &relayer,
-        &alice,
-        &token,
-        &500,
-        &unlock_time,
-        &0,
-    ).expect("sponsored deposit for");
-    
-    assert_eq!(deposit_id, 0);
-    
-    // Verify deposit is under alice's name
-    let vault_entry = vault.get_vault(&alice, &deposit_id).expect("vault");
-    assert_eq!(vault_entry.depositor, alice);
-    assert_eq!(vault_entry.amount, 500);
+    let amount = 5_000;
+
+    let deposit_id = vault.deposit(&alice, &token, &amount, &unlock_time, &0)
+        .expect("deposit succeeds");
+
+    // Verify NFT exists
+    let nft_before = vault.get_nft_evolution(&alice, &deposit_id)
+        .expect("NFT exists before withdrawal");
+    assert_eq!(nft_before.deposit_id, deposit_id);
+
+    // Advance time and withdraw
+    env.ledger().with_mut(|ledger| {
+        ledger.timestamp = unlock_time + 1;
+    });
+
+    vault.withdraw(&alice, &deposit_id)
+        .expect("withdraw succeeds");
+
+    // NFT should be removed
+    let nft_after = vault.get_nft_evolution(&alice, &deposit_id);
+    assert!(nft_after.is_none());
 }
 
 #[test]
-fn test_sponsored_deposit_daily_limit() {
-    let (env, vault, token, admin, alice, _fee) = setup();
-    
-    let sponsor = Address::generate(&env);
-    env.mock_all_auths();
-    
+fn test_nft_removed_on_cancel() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
     let token_client = TokenClient::new(&env, &token);
-    token_client.mint(&sponsor, &1_000_000);
-    
-    // Set low daily limit
-    vault.initialize_sponsorship(
-        &admin,
-        &sponsor,
-        &100_000,
-        &5_000,
-        &2_000,  // 2000 per day
-        &0,
-        &0,
-    ).expect("init");
-    
+
+    let now = env.ledger().timestamp();
+    let unlock_time = now + 100_000;
+    let amount = 5_000;
+
+    let deposit_id = vault.deposit(&alice, &token, &amount, &unlock_time, &0)
+        .expect("deposit succeeds");
+
+    // Verify NFT exists
+    let nft_before = vault.get_nft_evolution(&alice, &deposit_id)
+        .expect("NFT exists before cancellation");
+    assert_eq!(nft_before.deposit_id, deposit_id);
+
+    // Cancel the deposit
+    vault.cancel_deposit(&alice, &deposit_id)
+        .expect("cancel_deposit succeeds");
+
+    // NFT should be removed
+    let nft_after = vault.get_nft_evolution(&alice, &deposit_id);
+    assert!(nft_after.is_none());
+}
+
+#[test]
+fn test_nft_rarity_by_duration() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+
+    let now = env.ledger().timestamp();
+    let amount = 100; // Small amount
+
+    // Test each duration threshold
+    let test_cases = vec![
+        (now + (6 * 24 * 60 * 60), crate::nft::RarityTier::Common),
+        (now + (8 * 24 * 60 * 60), crate::nft::RarityTier::Uncommon),
+        (now + (31 * 24 * 60 * 60), crate::nft::RarityTier::Rare),
+        (now + (91 * 24 * 60 * 60), crate::nft::RarityTier::Epic),
+        (now + (400 * 24 * 60 * 60), crate::nft::RarityTier::Legendary),
+    ];
+
+    for (idx, (unlock_time, expected_rarity)) in test_cases.into_iter().enumerate() {
+        let deposit_id = vault.deposit(&alice, &token, &amount, &unlock_time, &0)
+            .expect("deposit succeeds");
+
+        let rarity = vault.get_nft_rarity(&alice, &deposit_id)
+            .expect("rarity query succeeds");
+        assert_eq!(rarity, expected_rarity, "Failed for test case {}", idx);
+    }
+}
+
+#[test]
+fn test_nft_multiple_deposits_independent() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+
+    let now = env.ledger().timestamp();
+
+    // Create first deposit with small amount
+    let deposit_id1 = vault.deposit(&alice, &token, &100, &(now + 1000), &0)
+        .expect("first deposit succeeds");
+
+    // Create second deposit with large amount
+    let deposit_id2 = vault.deposit(&alice, &token, &2_000_000, &(now + 100_000), &0)
+        .expect("second deposit succeeds");
+
+    // NFTs should have different rarities
+    let rarity1 = vault.get_nft_rarity(&alice, &deposit_id1)
+        .expect("first rarity query succeeds");
+    let rarity2 = vault.get_nft_rarity(&alice, &deposit_id2)
+        .expect("second rarity query succeeds");
+
+    assert_eq!(rarity1, crate::nft::RarityTier::Common);
+    assert_eq!(rarity2, crate::nft::RarityTier::Legendary);
+}
+
+#[test]
+fn test_nft_calculate_stage_progression() {
+    // Direct unit tests for stage calculation
+    let test_cases = vec![
+        (0, crate::nft::EvolutionStage::Egg),
+        (1 * 24 * 60 * 60, crate::nft::EvolutionStage::Egg),
+        (14 * 24 * 60 * 60, crate::nft::EvolutionStage::Hatchling),
+        (30 * 24 * 60 * 60, crate::nft::EvolutionStage::Juvenile),
+        (90 * 24 * 60 * 60, crate::nft::EvolutionStage::Adult),
+        (180 * 24 * 60 * 60, crate::nft::EvolutionStage::Adult),
+        (365 * 24 * 60 * 60, crate::nft::EvolutionStage::Ancient),
+        (400 * 24 * 60 * 60, crate::nft::EvolutionStage::Ancient),
+    ];
+
+    for (age_secs, expected_stage) in test_cases {
+        let stage = crate::nft::calculate_evolution_stage(age_secs);
+        assert_eq!(stage, expected_stage, "Stage mismatch for age_secs={}", age_secs);
+    }
+}
+
+#[test]
+fn test_nft_query_nonexistent() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+
+    // Query for nonexistent deposit should return None
+    let nft = vault.get_nft_evolution(&alice, &999);
+    assert!(nft.is_none());
+
+    let stage = vault.get_nft_stage(&alice, &999);
+    assert!(stage.is_none());
+
+    let rarity = vault.get_nft_rarity(&alice, &999);
+    assert!(rarity.is_none());
+
+    let metadata = vault.get_nft_metadata_uri(&alice, &999);
+    assert!(metadata.is_none());
+
+    let count = vault.get_nft_evolution_count(&alice, &999);
+    assert!(count.is_none());
+}
+
+#[test]
+fn test_nft_rarity_amount_threshold_boundary() {
+    let (env, vault, token, _admin, alice, _fee) = setup();
+
     let now = env.ledger().timestamp();
     let unlock_time = now + 1000;
-    
-    // First deposit: 1000 + estimated fee of 1000 = 2000 (at limit)
-    let id1 = vault.sponsored_deposit(
-        &alice,
-        &token,
-        &1_000,
-        &unlock_time,
-        &0,
-    ).expect("first sponsored deposit");
-    assert_eq!(id1, 0);
-    
-    // Second deposit should fail due to daily limit
-    let result2 = vault.sponsored_deposit(
-        &alice,
-        &token,
-        &500,
-        &unlock_time,
-        &0,
-    );
-    // This might fail or succeed depending on exact fee calculations
-    // For now, we just verify the mechanism is in place
-}
 
-#[test]
-fn test_get_sponsorship_relayer_info() {
-    let (env, vault, _token, admin, alice, _fee) = setup();
-    
-    let sponsor = Address::generate(&env);
-    
-    vault.initialize_sponsorship(
-        &admin,
-        &sponsor,
-        &100_000,
-        &5_000,
-        &25_000,
-        &0,
-        &60,
-    ).expect("init");
-    
-    // Relayer queries combined info
-    let result = vault.get_sponsorship_relayer_info(&alice);
-    assert!(result.is_ok());
-    
-    let (fund, eligibility, estimated_fee) = result.expect("relayer info");
-    assert_eq!(fund.balance, 100_000);
-    assert!(eligibility.is_eligible);
-    assert!(estimated_fee > 0);
-}
+    // Test boundary values
+    let test_cases = vec![
+        (999, crate::nft::RarityTier::Common),
+        (1_000, crate::nft::RarityTier::Uncommon),
+        (9_999, crate::nft::RarityTier::Uncommon),
+        (10_000, crate::nft::RarityTier::Rare),
+        (99_999, crate::nft::RarityTier::Rare),
+        (100_000, crate::nft::RarityTier::Epic),
+        (999_999, crate::nft::RarityTier::Epic),
+        (1_000_000, crate::nft::RarityTier::Legendary),
+    ];
 
-#[test]
-fn test_estimate_sponsorship_fee() {
-    let (env, vault, _token, _admin, _alice, _fee) = setup();
-    
-    let fee = vault.estimate_sponsorship_fee();
-    assert_eq!(fee, 1_000); // Fixed fee in this version
+    for (amount, expected_rarity) in test_cases {
+        let deposit_id = vault.deposit(&alice, &token, &amount, &unlock_time, &0)
+            .expect("deposit succeeds");
+
+        let rarity = vault.get_nft_rarity(&alice, &deposit_id)
+            .expect("rarity query succeeds");
+        assert_eq!(rarity, expected_rarity, "Failed for amount={}", amount);
+    }
 }

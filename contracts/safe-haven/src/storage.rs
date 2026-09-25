@@ -1138,61 +1138,51 @@ pub fn set_milestone_bitmap(env: &Env, depositor: &Address, bitmap: u32) {
 
 
 // ================================================================
-//  Sponsorship Fund Helpers
+//  NFT Evolution helpers
 // ================================================================
 
-use crate::types::{SponsorshipFund, SponsorshipUsage};
+/// Store an NFT evolution record for a deposit.
+pub fn set_nft_evolution(
+    env: &Env,
+    depositor: &Address,
+    deposit_id: u32,
+    record: &crate::nft::NFTEvolutionRecord,
+) {
+    let key = crate::types::VaultKey::NFTEvolution(depositor.clone(), deposit_id);
+    env.storage().persistent().set(&key, record);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
+}
 
-/// Get the sponsorship fund state (singleton).
-pub fn get_sponsorship_fund(env: &Env) -> Option<SponsorshipFund> {
-    let key = VaultKey::SponsorshipFund;
+/// Retrieve an NFT evolution record (mutable path — extends TTL).
+pub fn get_nft_evolution(
+    env: &Env,
+    depositor: &Address,
+    deposit_id: u32,
+) -> Option<crate::nft::NFTEvolutionRecord> {
+    let key = crate::types::VaultKey::NFTEvolution(depositor.clone(), deposit_id);
+    let record: Option<crate::nft::NFTEvolutionRecord> = env.storage().persistent().get(&key);
+    if record.is_some() {
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
+    }
+    record
+}
+
+/// Retrieve an NFT evolution record (read-only — does not extend TTL).
+pub fn get_nft_evolution_readonly(
+    env: &Env,
+    depositor: &Address,
+    deposit_id: u32,
+) -> Option<crate::nft::NFTEvolutionRecord> {
+    let key = crate::types::VaultKey::NFTEvolution(depositor.clone(), deposit_id);
     env.storage().persistent().get(&key)
 }
 
-/// Set the sponsorship fund state.
-pub fn set_sponsorship_fund(env: &Env, fund: &SponsorshipFund) {
-    let key = VaultKey::SponsorshipFund;
-    env.storage().persistent().set(&key, fund);
-    env.storage()
-        .persistent()
-        .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
-}
-
-/// Check if sponsorship has been initialized.
-pub fn is_sponsorship_initialized(env: &Env) -> bool {
-    let key = VaultKey::SponsorshipInitialized;
-    env.storage()
-        .persistent()
-        .get::<VaultKey, bool>(&key)
-        .unwrap_or(false)
-}
-
-/// Mark sponsorship as initialized.
-pub fn set_sponsorship_initialized(env: &Env) {
-    let key = VaultKey::SponsorshipInitialized;
-    env.storage().persistent().set(&key, &true);
-    env.storage()
-        .persistent()
-        .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
-}
-
-/// Get sponsorship usage for a user on a specific day.
-/// `day` is calculated as `timestamp / (24 * 3600)` to get a day bucket.
-pub fn get_sponsorship_usage(env: &Env, user: &Address, day: u64) -> Option<SponsorshipUsage> {
-    let key = VaultKey::SponsorshipUsage(user.clone(), day);
-    env.storage().persistent().get(&key)
-}
-
-/// Set sponsorship usage for a user on a specific day.
-pub fn set_sponsorship_usage(env: &Env, user: &Address, day: u64, usage: &SponsorshipUsage) {
-    let key = VaultKey::SponsorshipUsage(user.clone(), day);
-    env.storage().persistent().set(&key, usage);
-    env.storage()
-        .persistent()
-        .extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
-}
-
-/// Get the current day bucket from a timestamp.
-pub fn get_day_bucket(timestamp: u64) -> u64 {
-    timestamp / (24 * 3600)
+/// Remove an NFT evolution record from storage.
+pub fn remove_nft_evolution(env: &Env, depositor: &Address, deposit_id: u32) {
+    let key = crate::types::VaultKey::NFTEvolution(depositor.clone(), deposit_id);
+    env.storage().persistent().remove(&key);
 }
