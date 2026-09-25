@@ -207,3 +207,17 @@ pub fn interest_accrued(
     env.events()
         .publish(topics, (deposit_id, old_amount, new_amount));
 }
+
+/// Emitted when a deposit NFT evolves to a new stage.
+pub fn nft_evolved(
+    env: &Env,
+    depositor: &Address,
+    deposit_id: u32,
+    old_stage: crate::nft::EvolutionStage,
+    new_stage: crate::nft::EvolutionStage,
+    rarity: crate::nft::RarityTier,
+) {
+    let topics = (Symbol::new(env, "nft_evolved"), depositor.clone());
+    env.events()
+        .publish(topics, (deposit_id, old_stage, new_stage, rarity));
+}
