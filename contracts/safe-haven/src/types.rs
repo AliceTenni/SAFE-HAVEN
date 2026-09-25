@@ -6,6 +6,8 @@ pub const MIN_LOCK_DURATION_SECS: u64 = 60;
 
 /// Maximum number of tokens allowed in a single multi-token deposit (issue #330).
 pub const MAX_TOKENS_PER_DEPOSIT: u32 = 5;
+/// Emergency withdrawals at or above this cumulative amount in one ledger trip the circuit breaker.
+pub const MAX_EMERGENCY_WITHDRAWAL_PER_LEDGER: i128 = 100_000_000;
 
 /// Current storage schema version. Bump this constant when the on-chain
 /// layout of a `contracttype` struct changes so `migrate()` can detect
@@ -89,6 +91,18 @@ pub enum VaultKey {
     RewardsPool,
     /// Rewards claimed by a staker (track cumulative for auditing)
     StakerRewardsClaimed(Address),
+    /// Cumulative emergency withdrawals for a ledger.
+    EmergencyWithdrawalPerLedger(u32),
+    /// Historical circuit-breaker activations.
+    CircuitBreakerHistory,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CircuitBreakerActivation {
+    pub ledger: u32,
+    pub amount: i128,
+    pub threshold: i128,
 }
 
 #[contracttype]

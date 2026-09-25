@@ -139,6 +139,17 @@ pub fn unpaused(env: &Env, admin: &Address) {
     env.events().publish(topics, ());
 }
 
+pub fn circuit_breaker_tripped(
+    env: &Env,
+    admin: &Address,
+    ledger: u32,
+    amount: i128,
+    threshold: i128,
+) {
+    let topics = (Symbol::new(env, "CircuitBreakerTripped"), admin.clone(), ledger);
+    env.events().publish(topics, (amount, threshold));
+}
+
 pub fn token_proposed(env: &Env, token: &Address, proposer: &Address) {
     let topics = (Symbol::new(env, "token_proposed"), token.clone());
     env.events().publish(topics, proposer.clone());

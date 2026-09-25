@@ -4842,6 +4842,42 @@ fn test_emergency_withdrawal_limit_cumulative_tracking() {
 }
 
 #[test]
+fn test_emergency_withdrawal_circuit_breaker_trips_at_threshold() {
+    let (env, vault, token, admin, alice, _fee) = setup();
+    use crate::types::MAX_EMERGENCY_WITHDRAWAL_PER_LEDGER;
+
+    StellarAssetClient::new(&env, &token).mint(&alice, &MAX_EMERGENCY_WITHDRAWAL_PER_LEDGER);
+    let unlock_time = env.ledger().timestamp() + 3600;
+    let deposit_id = vault.deposit(&alice, &token, &MAX_EMERGENCY_WITHDRAWAL_PER_LEDGER, &unlock_time, &0);
+
+    vault.emergency_withdraw(&admin, &alice, &deposit_id);
+
+    assert!(vault.is_paused());
+    let history = vault.get_circuit_breaker_history();
+    assert_eq!(history.len(), 1);
+    assert_eq!(history.get(0).unwrap().ledger, env.ledger().sequence());
+    assert_eq!(history.get(0).unwrap().amount, MAX_EMERGENCY_WITHDRAWAL_PER_LEDGER);
+}
+
+#[test]
+fn test_emergency_withdrawal_circuit_breaker_rejects_above_threshold() {
+    let (env, vault, token, admin, alice, _fee) = setup();
+    use crate::types::MAX_EMERGENCY_WITHDRAWAL_PER_LEDGER;
+
+    let amount = MAX_EMERGENCY_WITHDRAWAL_PER_LEDGER + 1;
+    StellarAssetClient::new(&env, &token).mint(&alice, &amount);
+    let unlock_time = env.ledger().timestamp() + 3600;
+    let deposit_id = vault.deposit(&alice, &token, &amount, &unlock_time, &0);
+
+    assert_eq!(
+        vault.try_emergency_withdraw(&admin, &alice, &deposit_id),
+        Err(Ok(VaultError::EmergencyWithdrawalLimitExceeded))
+    );
+    assert!(!vault.is_paused());
+    assert!(vault.get_vault(&alice, &deposit_id).is_some());
+}
+
+#[test]
 fn test_emergency_withdrawal_limit_exceeds_fails() {
     let (env, vault, token, admin, alice, _fee) = setup();
     use crate::types::MAX_EMERGENCY_WITHDRAWAL_PER_LEDGER;

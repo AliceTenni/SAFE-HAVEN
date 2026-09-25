@@ -13,8 +13,9 @@ use crate::{
     errors::VaultError,
     events, storage,
     types::{
-        DepositType, MultiTokenVaultEntry, TokenDeposit, VaultEntry, LedgerVaultEntry, Page,
-        STORAGE_VERSION, MAX_TOKENS_PER_DEPOSIT,
+        CircuitBreakerActivation, DepositType, MultiTokenVaultEntry, TokenDeposit, VaultEntry,
+        LedgerVaultEntry, Page, STORAGE_VERSION, MAX_EMERGENCY_WITHDRAWAL_PER_LEDGER,
+        MAX_TOKENS_PER_DEPOSIT,
     },
 };
 
@@ -27,6 +28,41 @@ const ANNUAL_INTEREST_BPS: u128 = 500;
 
 /// Seconds in a year (non-leap) used for pro-rata interest calculations.
 const SECS_PER_YEAR: u128 = 31_536_000;
+
+fn auto_pause(env: &Env, amount: i128) {
+    let ledger = env.ledger().sequence();
+    let activation = CircuitBreakerActivation {
+        ledger,
+        amount,
+        threshold: MAX_EMERGENCY_WITHDRAWAL_PER_LEDGER,
+    };
+    storage::set_paused(env, true);
+    storage::record_circuit_breaker_activation(env, &activation);
+    let admin = storage::get_admin(env).expect("initialized contract must have admin");
+    events::circuit_breaker_tripped(
+        env,
+        &admin,
+        ledger,
+        amount,
+        MAX_EMERGENCY_WITHDRAWAL_PER_LEDGER,
+    );
+}
+
+fn check_emergency_withdrawal_limit(env: &Env, amount: i128) -> Result<(), VaultError> {
+    let total = storage::get_current_ledger_emergency_withdrawal(env);
+    if total.saturating_add(amount) > MAX_EMERGENCY_WITHDRAWAL_PER_LEDGER {
+        Err(VaultError::EmergencyWithdrawalLimitExceeded)
+    } else {
+        Ok(())
+    }
+}
+
+fn record_emergency_withdrawal(env: &Env, amount: i128) {
+    let total = storage::add_emergency_withdrawal(env, amount);
+    if total >= MAX_EMERGENCY_WITHDRAWAL_PER_LEDGER && !storage::is_paused(env) {
+        auto_pause(env, total);
+    }
+}
 
 #[contract]
 pub struct SafeHaven;
@@ -1499,6 +1535,7 @@ impl SafeHaven {
 
         // Try timestamp-based deposit first.
         if let Some(entry) = storage::get_deposit_readonly(&env, &depositor, deposit_id) {
+            check_emergency_withdrawal_limit(&env, entry.amount)?;
             storage::remove_deposit(&env, &depositor, deposit_id);
             storage::remove_withdrawal_whitelist(&env, &depositor, deposit_id);
             if storage::get_deposit_ids(&env, &depositor).len() == 0 {
@@ -1507,6 +1544,7 @@ impl SafeHaven {
 
             let token_client = token::Client::new(&env, &entry.token);
             token_client.transfer(&env.current_contract_address(), &depositor, &entry.amount);
+            record_emergency_withdrawal(&env, entry.amount);
 
             events::emergency_withdraw(
                 &env,
@@ -1521,6 +1559,7 @@ impl SafeHaven {
 
         // Try ledger-based deposit.
         if let Some(entry) = storage::get_deposit_by_ledger_readonly(&env, &depositor, deposit_id) {
+            check_emergency_withdrawal_limit(&env, entry.amount)?;
             storage::remove_deposit_by_ledger(&env, &depositor, deposit_id);
             storage::remove_withdrawal_whitelist(&env, &depositor, deposit_id);
             if storage::get_deposit_ids(&env, &depositor).len() == 0 {
@@ -1529,6 +1568,7 @@ impl SafeHaven {
 
             let token_client = token::Client::new(&env, &entry.token);
             token_client.transfer(&env.current_contract_address(), &depositor, &entry.amount);
+            record_emergency_withdrawal(&env, entry.amount);
 
             events::emergency_withdraw(
                 &env,
@@ -1543,6 +1583,11 @@ impl SafeHaven {
 
         // Try multi-token deposit.
         if let Some(entry) = storage::get_multi_deposit_readonly(&env, &depositor, deposit_id) {
+            let total = entry
+                .tokens
+                .iter()
+                .fold(0i128, |total, token| total.saturating_add(token.amount));
+            check_emergency_withdrawal_limit(&env, total)?;
             storage::remove_multi_deposit(&env, &depositor, deposit_id);
             storage::remove_withdrawal_whitelist(&env, &depositor, deposit_id);
             if storage::get_deposit_ids(&env, &depositor).len() == 0 {
@@ -1555,6 +1600,7 @@ impl SafeHaven {
                 token_client.transfer(&contract, &depositor, &td.amount);
                 events::emergency_withdraw(&env, &admin, &depositor, &td.token, td.amount, deposit_id);
             }
+            record_emergency_withdrawal(&env, total);
             return Ok(());
         }
 
@@ -2202,6 +2248,10 @@ impl SafeHaven {
     /// withdrawals have occurred in that ledger.
     pub fn get_emergency_withdrawal_total(env: Env, ledger: u32) -> i128 {
         storage::get_emergency_withdrawal_per_ledger(&env, ledger)
+    }
+
+    pub fn get_circuit_breaker_history(env: Env) -> Vec<CircuitBreakerActivation> {
+        storage::get_circuit_breaker_history(&env)
     }
 
     // ----------------------------------------------------------------

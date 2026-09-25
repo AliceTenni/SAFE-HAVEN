@@ -1,6 +1,7 @@
 use soroban_sdk::{token, Address, Env, Vec};
 
 use crate::types::{MultiTokenVaultEntry, VaultEntry, VaultKey, LedgerVaultEntry, MAX_LOCK_DURATION_SECS};
+use crate::types::CircuitBreakerActivation;
 
 // ================================================================
 // LEDGER_SECONDS: Average time between Stellar ledger closes
@@ -935,6 +936,25 @@ pub fn get_emergency_withdrawal_per_ledger(env: &Env, ledger: u32) -> i128 {
 /// Get the cumulative emergency withdrawal amount for the current ledger.
 pub fn get_current_ledger_emergency_withdrawal(env: &Env) -> i128 {
     get_emergency_withdrawal_per_ledger(env, env.ledger().sequence())
+}
+
+pub fn record_circuit_breaker_activation(env: &Env, activation: &CircuitBreakerActivation) {
+    let key = VaultKey::CircuitBreakerHistory;
+    let mut history: Vec<CircuitBreakerActivation> = env
+        .storage()
+        .persistent()
+        .get(&key)
+        .unwrap_or_else(|| Vec::new(env));
+    history.push_back(activation.clone());
+    env.storage().persistent().set(&key, &history);
+    env.storage().persistent().extend_ttl(&key, BUMP_THRESHOLD, BUMP_TARGET);
+}
+
+pub fn get_circuit_breaker_history(env: &Env) -> Vec<CircuitBreakerActivation> {
+    env.storage()
+        .persistent()
+        .get(&VaultKey::CircuitBreakerHistory)
+        .unwrap_or_else(|| Vec::new(env))
 }
 
 // ----------------------------------------------------------------

@@ -23,7 +23,8 @@ pub use constants::{
 };
 
 pub use types::{
-    DepositType, MultiTokenVaultEntry, Page, TokenDeposit, STORAGE_VERSION, MAX_TOKENS_PER_DEPOSIT,
+    CircuitBreakerActivation, DepositType, MultiTokenVaultEntry, Page, TokenDeposit, STORAGE_VERSION,
+    MAX_EMERGENCY_WITHDRAWAL_PER_LEDGER, MAX_TOKENS_PER_DEPOSIT,
 };
 
 pub use contract::SafeHaven;
